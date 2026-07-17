@@ -1,0 +1,13 @@
+[sections:app_builtin_apps]
+entries:
+    .app_builtin_apps
+
+[scheme:app_builtin_scheme]
+entries:
+    app_builtin_apps -> flash_rodata
+
+[mapping:app_builtin_apps_map]
+archive: *
+entries:
+    * (app_builtin_scheme);
+        app_builtin_apps -> flash_rodata KEEP() SURROUND(app_builtin_apps)

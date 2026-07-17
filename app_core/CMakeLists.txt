@@ -1,0 +1,26 @@
+idf_component_register(
+    SRCS "src/app_manager_pm.c"
+         "src/app_manager_pm_api.c"
+         "src/app_manager_pm_init.c"
+         "src/app_manager_pm_worker.c"
+         "src/app_manager_mailbox.c"
+         "src/app_manager_builtin.c"
+         "src/app_manager_lifecycle.c"
+         "src/app_manager_lifecycle_api.c"
+         "src/app_manager_lvgl_adapter.c"
+    INCLUDE_DIRS "include"
+    LDFRAGMENTS "linker.lf"
+    REQUIRES
+        app_theme
+        bsp
+        lvgl__lvgl
+        esp_common
+    PRIV_REQUIRES
+        espressif__esp_lvgl_adapter
+        esp_lcd
+        mt_log
+        nv_storage
+        esp_timer
+        freertos
+        esp_mmap_assets
+)
