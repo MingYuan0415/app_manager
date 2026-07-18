@@ -5,19 +5,20 @@
 #include "esp_err.h"
 
 /**
- * @brief Disable LVGL touch, pause rendering, and drain display transfers.
+ * @brief Pause the foreground page, disable touch, and fence LVGL rendering.
  * @return ESP_OK when prepared, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_sleep_prepare(void);
 
 /**
  * @brief Resume LVGL after the existing panel hardware has been rebuilt.
+ * @note The foreground page remains paused until refresh_and_enable_touch().
  * @return ESP_OK when recovered, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_sleep_recover(void);
 
 /**
- * @brief Redraw the active screen, then reset and enable the touch device.
+ * @brief Resume the foreground page, redraw it, then enable the touch device.
  * @return ESP_OK when refreshed, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_refresh_and_enable_touch(void);

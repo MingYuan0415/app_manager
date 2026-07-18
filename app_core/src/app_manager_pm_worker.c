@@ -13,6 +13,24 @@
     #include "nv_storage.h"
 #endif
 
+static void _control_discard_shutdown_pending(void)
+{
+    atomic_store_explicit(&s_wake_pending, false, memory_order_release);
+    atomic_store_explicit(&s_power_pending_events, 0U, memory_order_release);
+    atomic_store_explicit(&s_power_pending_wake, false, memory_order_release);
+    atomic_store_explicit(&s_power_input_pending, 0U, memory_order_release);
+    atomic_store_explicit(&s_touch_pending, false, memory_order_release);
+    atomic_store_explicit(&s_touch_restore_pending, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_standby_commit_pending, false,
+                          memory_order_release);
+    atomic_store_explicit(&s_home_pending, false, memory_order_release);
+    atomic_store_explicit(&s_brightness_temp_pending, false,
+                          memory_order_release);
+    s_power_wake_click_pending = false;
+    s_power_long_press_seen = false;
+}
+
 static esp_err_t _control_execute_input(const control_command_t *command)
 {
     esp_err_t result = app_manager_control_handle_input(command->data.input.key,
@@ -122,7 +140,8 @@ static esp_err_t _control_execute(const control_command_t *command)
                      &s_standby_timeout_ms);
         break;
     case CONTROL_STOP:
-        result = app_manager_control_restore_active();
+        _control_discard_shutdown_pending();
+        result = app_manager_control_prepare_shutdown();
         break;
     }
     return result;
@@ -374,10 +393,11 @@ void app_manager_control_task(void *arg)
     xSemaphoreGive(s_task_ready);
     for (;;)
     {
-        if (atomic_load(&s_lifecycle_state) == CONTROL_DEINITIALIZING)
+        if (atomic_load_explicit(&s_lifecycle_state, memory_order_acquire) ==
+                CONTROL_DEINITIALIZING)
         {
             wake_retry_pending = false;
-            atomic_store(&s_home_pending, false);
+            _control_discard_shutdown_pending();
         }
         else if (wake_retry_pending)
         {
@@ -396,7 +416,14 @@ void app_manager_control_task(void *arg)
         {
             for (size_t drained = 0; drained < APP_CONTROL_QUEUE_DEPTH; drained++)
             {
-                esp_err_t result = _control_execute(&command);
+                const bool deinitializing = atomic_load_explicit(
+                                                &s_lifecycle_state,
+                                                memory_order_acquire) ==
+                                            CONTROL_DEINITIALIZING;
+                esp_err_t result = deinitializing &&
+                                   command.type != CONTROL_STOP ?
+                                   ESP_ERR_INVALID_STATE :
+                                   _control_execute(&command);
                 command_wake_retry =
                     _control_command_needs_wake_retry(&command, result);
                 if (command.synchronous)
@@ -411,13 +438,20 @@ void app_manager_control_task(void *arg)
                     vTaskDelete(NULL);
                     return;
                 }
-                if (command_wake_retry ||
+                if (command.type == CONTROL_STOP || command_wake_retry ||
                         drained + 1U == APP_CONTROL_QUEUE_DEPTH ||
                         xQueueReceive(s_queue, &command, 0) != pdTRUE)
                 {
                     break;
                 }
             }
+        }
+        if (atomic_load_explicit(&s_lifecycle_state, memory_order_acquire) ==
+                CONTROL_DEINITIALIZING)
+        {
+            wake_retry_pending = false;
+            _control_discard_shutdown_pending();
+            continue;
         }
         if (command_wake_retry && app_manager_control_handle_activity() != ESP_OK)
         {

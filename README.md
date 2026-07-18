@@ -17,6 +17,10 @@
 - 初始化显示、触摸、资源文件系统和字体，并处理刷新栅栏、熄屏及恢复顺序。
 - 通过上层注入的 screen、input、standby 操作协调亮度、空闲熄屏、按键/触摸唤醒和待机提交。
 
+页面生命周期按资源所有权分工：`ONSTART` 只初始化长期保留的非可视状态，不创建 LVGL 对象、主动刷新或启动前台定时器/订阅；`ONRESUME` 创建可见 UI 并挂接前台资源；`ONPAUSE` 销毁 UI、停止定时器、退订事件并关闭活动会话；`ONSTOP` 释放页面实例剩余资源。未完成的清理必须保留未释放句柄，并通过 `app_manager_this_page_report_cleanup_error()` 上报，以便下次转换重试。
+
+熄屏只暂停当前前台页面，唤醒后恢复同一页面，应用栈和页面私有内存保持不变。`PAUSING/PAUSED` 期间 mailbox 不提供页面级拓扑查询：页面 userdata 返回 `NULL`，页面存在性返回 `false`，这些默认值不表示实例已销毁。成功进入 `PAUSED` 时会保存运行应用数，`app_manager_get_running_apps()` 与 `app_manager_is_all_closed()` 使用该快照；关闭过程中则返回保守默认值，实际页面拓扑需在唤醒后查询。
+
 公共应用代码通常只包含 `app_manager.h`；创建运行时的装配层还需包含 `app_manager_config.h`，填充有效的 panel、panel IO、touch 以及三组操作接口后调用 `app_manager_init()`。
 
 ## ESP-IDF 集成

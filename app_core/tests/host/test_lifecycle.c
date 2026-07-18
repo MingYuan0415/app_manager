@@ -1,9 +1,11 @@
 #include "host_freertos.h"
 #include "app_manager.h"
 #include "../../src/app_manager_lifecycle.h"
+#include "../../src/app_manager_lifecycle_internal.h"
 #include "../../src/app_manager_mailbox.h"
 
 #include <assert.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +17,14 @@ typedef struct trace
     int pause;
     int stop;
 } trace_t;
+
+typedef struct observer_event
+{
+    const char *app_id;
+    const char *page_id;
+    app_manager_msg_type_t message;
+    app_manager_lifecycle_observer_phase_t phase;
+} observer_event_t;
 
 static trace_t s_a_root;
 static trace_t s_b_root;
@@ -39,8 +49,58 @@ static int s_cleanup_failures_remaining;
 static uint8_t *s_cleanup_page_memory;
 static bool s_cleanup_resource_live;
 static bool s_expect_cleanup_zero_memory;
+static observer_event_t s_observer_events[8];
+static size_t s_observer_event_count;
+static atomic_bool s_admission_hook_enabled;
+static atomic_bool s_admission_reached;
+static atomic_bool s_admission_release;
+static atomic_bool s_pause_drain_started;
+static atomic_bool s_pause_drain_complete;
+static atomic_bool s_shutdown_complete;
+static atomic_int s_concurrent_api_result;
+static atomic_int s_pause_drain_result;
+static atomic_int s_shutdown_result;
 
 static void _generic_handler(app_manager_msg_type_t message, void *param);
+
+static void _lifecycle_observer(
+    const char *app_id, const char *page_id, app_manager_msg_type_t message,
+    app_manager_lifecycle_observer_phase_t phase)
+{
+    assert(s_observer_event_count <
+           sizeof(s_observer_events) / sizeof(s_observer_events[0]));
+    observer_event_t *event = &s_observer_events[s_observer_event_count++];
+    event->app_id = app_id;
+    event->page_id = page_id;
+    event->message = message;
+    event->phase = phase;
+}
+
+static void _admission_hook(void)
+{
+    if (!atomic_load(&s_admission_hook_enabled))
+    {
+        return;
+    }
+    atomic_store(&s_admission_reached, true);
+    while (!atomic_load(&s_admission_release))
+    {
+        usleep(1000);
+    }
+}
+
+static void _wait_for_flag(atomic_bool *flag)
+{
+    for (size_t attempt = 0; attempt < 2000U; attempt++)
+    {
+        if (atomic_load(flag))
+        {
+            return;
+        }
+        usleep(1000);
+    }
+    assert(atomic_load(flag));
+}
 
 esp_err_t app_theme_set_font(app_theme_font_id_t id, const lv_font_t *font)
 {
@@ -320,12 +380,309 @@ static void _reset_traces(void)
     s_cleanup_page_memory = NULL;
     s_cleanup_resource_live = false;
     s_expect_cleanup_zero_memory = false;
+    memset(s_observer_events, 0, sizeof(s_observer_events));
+    s_observer_event_count = 0;
 }
 
 static esp_err_t _lifecycle_deinit_on_ui(void *arg)
 {
     (void)arg;
     return app_manager_lifecycle_deinit();
+}
+
+static esp_err_t _screen_pause_on_ui(void *arg)
+{
+    (void)arg;
+    return app_manager_lifecycle_screen_pause();
+}
+
+static esp_err_t _screen_resume_on_ui(void *arg)
+{
+    (void)arg;
+    return app_manager_lifecycle_screen_resume();
+}
+
+static esp_err_t _screen_pause(void)
+{
+    return app_manager_ui_call(_screen_pause_on_ui, NULL, UINT32_MAX);
+}
+
+static esp_err_t _screen_resume(void)
+{
+    return app_manager_ui_call(_screen_resume_on_ui, NULL, UINT32_MAX);
+}
+
+static esp_err_t _lifecycle_deinit(void)
+{
+    esp_err_t result = app_manager_lifecycle_shutdown_begin_and_wait();
+    if (result == ESP_OK)
+    {
+        result = app_manager_ui_call(_lifecycle_deinit_on_ui, NULL,
+                                     UINT32_MAX);
+    }
+    return result;
+}
+
+static void *_concurrent_run_thread(void *arg)
+{
+    (void)arg;
+    atomic_store(&s_concurrent_api_result, app_manager_run("b"));
+    return NULL;
+}
+
+static void *_screen_pause_and_drain_thread(void *arg)
+{
+    (void)arg;
+    esp_err_t result = _screen_pause();
+    if (result == ESP_OK)
+    {
+        atomic_store(&s_pause_drain_started, true);
+        result = app_manager_lifecycle_screen_access_wait();
+    }
+    atomic_store(&s_pause_drain_result, result);
+    atomic_store(&s_pause_drain_complete, true);
+    return NULL;
+}
+
+static void *_lifecycle_shutdown_thread(void *arg)
+{
+    (void)arg;
+    esp_err_t result = app_manager_lifecycle_shutdown_begin_and_wait();
+    if (result == ESP_OK)
+    {
+        result = app_manager_mailbox_shutdown_call(
+                     _lifecycle_deinit_on_ui, NULL);
+    }
+    atomic_store(&s_shutdown_result, result);
+    atomic_store(&s_shutdown_complete, true);
+    return NULL;
+}
+
+static esp_err_t _expect_serial_mutations_rejected_on_ui(void *arg)
+{
+    (void)arg;
+    app_manager_lifecycle_request_t request =
+    {
+        .app_id = "a",
+        .page_id = "root",
+        .handler = _generic_handler,
+    };
+
+    assert(app_manager_lifecycle_run_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_exit_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_self_exit_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_create_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_goback_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_goback_to_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_remove_call(&request) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_set_userdata_call(&request) == ESP_ERR_INVALID_STATE);
+
+    request.condition = true;
+    assert(app_manager_lifecycle_is_active_call(&request) == ESP_OK);
+    assert(!request.condition);
+    request.value = (void *)1;
+    assert(app_manager_lifecycle_get_active_id_call(&request) == ESP_OK);
+    assert(request.value == NULL);
+    request.condition = true;
+    assert(app_manager_lifecycle_page_active_call(&request) == ESP_OK);
+    assert(!request.condition);
+    request.condition = false;
+    assert(app_manager_lifecycle_page_present_call(&request) == ESP_OK);
+    assert(request.condition);
+    request.count = 0;
+    assert(app_manager_lifecycle_running_count_call(&request) == ESP_OK);
+    assert(request.count == 1U);
+    return ESP_OK;
+}
+
+static void _test_screen_pause_without_app(void)
+{
+    assert(app_manager_lifecycle_screen_pause() == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_screen_resume() == ESP_ERR_INVALID_STATE);
+    assert(app_manager_lifecycle_screen_mutation_allowed());
+
+    assert(_screen_pause() == ESP_OK);
+    assert(_screen_pause() == ESP_OK);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    assert(!app_manager_is_actived("a"));
+    assert(app_manager_get_active_app_id() == NULL);
+    assert(app_manager_get_running_apps() == 0U);
+    assert(app_manager_is_all_closed());
+
+    assert(_screen_resume() == ESP_OK);
+    assert(_screen_resume() == ESP_OK);
+    assert(app_manager_lifecycle_screen_mutation_allowed());
+}
+
+static void _test_lifecycle_observer(void)
+{
+    _reset_traces();
+    app_manager_lifecycle_host_set_observer(_lifecycle_observer);
+    assert(app_manager_run("a") == ESP_OK);
+    app_manager_lifecycle_host_set_observer(NULL);
+
+    assert(s_observer_event_count == 4U);
+    for (size_t index = 0; index < s_observer_event_count; index++)
+    {
+        assert(strcmp(s_observer_events[index].app_id, "a") == 0);
+        assert(strcmp(s_observer_events[index].page_id, "root") == 0);
+        assert(s_observer_events[index].phase ==
+               (index % 2U == 0U ? APP_MANAGER_LIFECYCLE_OBSERVER_BEFORE :
+                APP_MANAGER_LIFECYCLE_OBSERVER_AFTER));
+    }
+    assert(s_observer_events[0].message == APP_MANAGER_MSG_ONSTART);
+    assert(s_observer_events[1].message == APP_MANAGER_MSG_ONSTART);
+    assert(s_observer_events[2].message == APP_MANAGER_MSG_ONRESUME);
+    assert(s_observer_events[3].message == APP_MANAGER_MSG_ONRESUME);
+    assert(app_manager_exit("a") == ESP_OK);
+}
+
+static void _test_pause_drains_admitted_api(void)
+{
+    _reset_traces();
+    assert(app_manager_run("a") == ESP_OK);
+    atomic_store(&s_admission_hook_enabled, true);
+    atomic_store(&s_admission_reached, false);
+    atomic_store(&s_admission_release, false);
+    atomic_store(&s_pause_drain_started, false);
+    atomic_store(&s_pause_drain_complete, false);
+    atomic_store(&s_concurrent_api_result, ESP_FAIL);
+    atomic_store(&s_pause_drain_result, ESP_FAIL);
+    app_manager_lifecycle_host_set_admission_hook(_admission_hook);
+
+    pthread_t api_thread;
+    pthread_t pause_thread;
+    assert(pthread_create(&api_thread, NULL, _concurrent_run_thread,
+                          NULL) == 0);
+    _wait_for_flag(&s_admission_reached);
+    assert(pthread_create(&pause_thread, NULL,
+                          _screen_pause_and_drain_thread, NULL) == 0);
+    _wait_for_flag(&s_pause_drain_started);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    usleep(10000);
+    assert(!atomic_load(&s_pause_drain_complete));
+
+    atomic_store(&s_admission_release, true);
+    assert(pthread_join(api_thread, NULL) == 0);
+    assert(pthread_join(pause_thread, NULL) == 0);
+    atomic_store(&s_admission_hook_enabled, false);
+    app_manager_lifecycle_host_set_admission_hook(NULL);
+
+    assert(atomic_load(&s_concurrent_api_result) == ESP_ERR_INVALID_STATE);
+    assert(atomic_load(&s_pause_drain_result) == ESP_OK);
+    assert(_screen_resume() == ESP_OK);
+    assert(app_manager_get_running_apps() == 1U);
+    assert(!app_manager_is_page_present("b", "root"));
+    assert(app_manager_exit("a") == ESP_OK);
+}
+
+static void _test_screen_pause_lifecycle(void)
+{
+    _reset_traces();
+    int original_user_data = 1;
+    int rejected_user_data = 2;
+    assert(app_manager_run("a") == ESP_OK);
+    assert(app_manager_set_page_userdata("root", &original_user_data) == ESP_OK);
+
+    s_attempt_navigation_during_teardown = true;
+    assert(_screen_pause() == ESP_OK);
+    s_attempt_navigation_during_teardown = false;
+    assert(_screen_pause() == ESP_OK);
+    assert(s_a_root.start == 1 && s_a_root.resume == 1 &&
+           s_a_root.pause == 1 && s_a_root.stop == 0);
+    assert(s_teardown_run_rejections == 1);
+    assert(s_teardown_page_rejections == 1);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    app_manager_mailbox_host_timer_pause(true);
+    assert(!app_manager_is_actived("a"));
+    assert(app_manager_get_active_app_id() == NULL);
+    assert(!app_page_is_actived("a", "root"));
+    assert(!app_manager_is_page_present("a", "root"));
+    assert(!app_manager_is_all_closed());
+    assert(app_manager_get_running_apps() == 1U);
+
+    assert(app_manager_run("b") == ESP_ERR_INVALID_STATE);
+    assert(app_manager_exit("a") == ESP_ERR_INVALID_STATE);
+    app_manager_self_exit();
+    assert(app_manager_create_page_ext("child", _generic_handler,
+                                       NULL, 0) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_create_page_for_app_ext(
+               "a", "child", _generic_handler, NULL,
+               0) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_goback() == ESP_ERR_INVALID_STATE);
+    assert(app_manager_goback_to_page("root") == ESP_ERR_INVALID_STATE);
+    assert(app_manager_remove_page("root") == ESP_ERR_INVALID_STATE);
+    assert(app_manager_set_page_userdata(
+               "root", &rejected_user_data) == ESP_ERR_INVALID_STATE);
+    assert(app_manager_get_page_userdata("root") == NULL);
+    assert(app_manager_get_running_apps() == 1U);
+    app_manager_mailbox_host_timer_pause(false);
+    assert(app_manager_ui_call(_expect_serial_mutations_rejected_on_ui, NULL,
+                               UINT32_MAX) == ESP_OK);
+
+    assert(_screen_resume() == ESP_OK);
+    assert(_screen_resume() == ESP_OK);
+    assert(app_manager_lifecycle_screen_mutation_allowed());
+    assert(app_manager_is_actived("a"));
+    assert(app_page_is_actived("a", "root"));
+    assert(s_a_root.start == 1 && s_a_root.resume == 2 &&
+           s_a_root.pause == 1 && s_a_root.stop == 0);
+    assert(app_manager_get_page_userdata("root") == &original_user_data);
+
+    s_defer_child = true;
+    assert(_screen_pause() == ESP_OK);
+    assert(_screen_resume() == ESP_OK);
+    assert(app_page_is_actived("a", "child"));
+    assert(s_a_root.start == 1);
+    assert(s_child.start == 1 && s_child.resume == 1);
+    assert(app_manager_exit("a") == ESP_OK);
+    assert(app_manager_is_all_closed());
+}
+
+static void _test_screen_pause_cleanup_retry(void)
+{
+    _reset_traces();
+    s_cleanup_failures_remaining = 1;
+    s_expect_cleanup_zero_memory = true;
+    assert(app_manager_run("cleanup") == ESP_OK);
+    uint8_t *retained_memory = s_cleanup_page_memory;
+
+    assert(_screen_pause() == ESP_FAIL);
+    assert(app_manager_lifecycle_screen_mutation_allowed());
+    assert(app_manager_is_actived("cleanup"));
+    assert(app_page_is_actived("cleanup", "root"));
+    assert(s_cleanup_resource_live);
+    assert(s_cleanup_root.pause == 1);
+
+    assert(_screen_pause() == ESP_OK);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    assert(!s_cleanup_resource_live);
+    assert(s_cleanup_page_memory == retained_memory);
+    assert(!app_manager_is_page_present("cleanup", "root"));
+    assert(app_manager_get_running_apps() == 1U);
+    assert(s_cleanup_root.start == 1 && s_cleanup_root.resume == 1 &&
+           s_cleanup_root.pause == 2 && s_cleanup_root.stop == 0);
+
+    assert(_screen_resume() == ESP_OK);
+    assert(s_cleanup_root.start == 1 && s_cleanup_root.resume == 2);
+    assert(app_manager_is_page_present("cleanup", "root"));
+    assert(app_manager_get_running_apps() == 1U);
+    assert(app_manager_exit("cleanup") == ESP_OK);
+}
+
+static void _test_paused_deinit_stops_without_resume(void)
+{
+    _reset_traces();
+    assert(app_manager_run("a") == ESP_OK);
+    assert(_screen_pause() == ESP_OK);
+    assert(s_a_root.start == 1 && s_a_root.resume == 1 &&
+           s_a_root.pause == 1 && s_a_root.stop == 0);
+
+    assert(_lifecycle_deinit() == ESP_OK);
+    assert(s_a_root.start == 1 && s_a_root.resume == 1 &&
+           s_a_root.pause == 1 && s_a_root.stop == 1);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    assert(app_manager_lifecycle_init(0) == ESP_OK);
 }
 
 static void _test_cleanup_failure_retains_page_slot(void)
@@ -374,8 +731,7 @@ static void _test_teardown_only_deinit(void)
            s_c_root.pause == 0 && s_c_root.stop == 0);
 
     s_attempt_navigation_during_teardown = true;
-    assert(app_manager_ui_call(_lifecycle_deinit_on_ui, NULL,
-                               UINT32_MAX) == ESP_OK);
+    assert(_lifecycle_deinit() == ESP_OK);
     s_attempt_navigation_during_teardown = false;
 
     assert(s_a_root.start == 1 && s_a_root.resume == 1 &&
@@ -389,7 +745,7 @@ static void _test_teardown_only_deinit(void)
     assert(s_generic.start == 0 && s_generic.resume == 0 &&
            s_generic.pause == 0 && s_generic.stop == 0);
     assert(app_manager_get_running_apps() == 0);
-    assert(app_manager_is_all_closed());
+    assert(!app_manager_is_all_closed());
     assert(!app_manager_is_page_present("a", "root"));
     assert(!app_manager_is_page_present("b", "root"));
     assert(!app_manager_is_page_present("c", "root"));
@@ -403,13 +759,72 @@ static void _test_teardown_only_deinit(void)
     assert(app_manager_get_running_apps() == 0);
 }
 
+static void _test_shutdown_releases_admitted_api(void)
+{
+    assert(app_manager_lifecycle_init(0) == ESP_OK);
+    atomic_store(&s_admission_hook_enabled, true);
+    atomic_store(&s_admission_reached, false);
+    atomic_store(&s_admission_release, false);
+    atomic_store(&s_concurrent_api_result, ESP_FAIL);
+    atomic_store(&s_shutdown_complete, false);
+    atomic_store(&s_shutdown_result, ESP_FAIL);
+    app_manager_lifecycle_host_set_admission_hook(_admission_hook);
+
+    pthread_t api_thread;
+    pthread_t shutdown_thread;
+    assert(pthread_create(&api_thread, NULL, _concurrent_run_thread,
+                          NULL) == 0);
+    _wait_for_flag(&s_admission_reached);
+    assert(pthread_create(&shutdown_thread, NULL,
+                          _lifecycle_shutdown_thread, NULL) == 0);
+    for (size_t attempt = 0; attempt < 2000U &&
+            app_manager_lifecycle_screen_mutation_allowed(); attempt++)
+    {
+        usleep(1000);
+    }
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    usleep(10000);
+    assert(!atomic_load(&s_shutdown_complete));
+    atomic_store(&s_admission_release, true);
+    assert(pthread_join(api_thread, NULL) == 0);
+    assert(pthread_join(shutdown_thread, NULL) == 0);
+    atomic_store(&s_admission_hook_enabled, false);
+    app_manager_lifecycle_host_set_admission_hook(NULL);
+    assert(atomic_load(&s_concurrent_api_result) == ESP_ERR_INVALID_STATE);
+    assert(atomic_load(&s_shutdown_result) == ESP_OK);
+    assert(app_manager_mailbox_deinit() == ESP_OK);
+
+    assert(app_manager_mailbox_init() == ESP_OK);
+    assert(app_manager_lifecycle_init(0) == ESP_OK);
+    assert(_screen_pause() == ESP_OK);
+    assert(app_manager_lifecycle_screen_access_wait() == ESP_OK);
+    assert(_screen_resume() == ESP_OK);
+    assert(_lifecycle_deinit() == ESP_OK);
+    assert(app_manager_mailbox_deinit() == ESP_OK);
+}
+
 int main(void)
 {
     _reset_traces();
     assert(app_manager_mailbox_init() == ESP_OK);
     assert(app_manager_register_builtin_apps(s_apps,
             sizeof(s_apps) / sizeof(s_apps[0])) == ESP_OK);
+    assert(!app_manager_lifecycle_screen_mutation_allowed());
+    assert(app_manager_run("a") == ESP_ERR_INVALID_STATE);
+    assert(!app_manager_is_actived("a"));
+    assert(!app_manager_is_page_present("a", "root"));
+    assert(app_manager_get_page_userdata("root") == NULL);
+    assert(app_manager_get_running_apps() == 0U);
+    assert(!app_manager_is_all_closed());
     assert(app_manager_lifecycle_init(0) == ESP_OK);
+
+    _test_screen_pause_without_app();
+    _test_lifecycle_observer();
+    _test_pause_drains_admitted_api();
+    _test_screen_pause_lifecycle();
+    _test_screen_pause_cleanup_retry();
+    _test_paused_deinit_stops_without_resume();
+    _reset_traces();
 
     assert(app_manager_run("a") == ESP_OK);
     assert(app_manager_is_actived("a"));
@@ -520,16 +935,14 @@ int main(void)
 
     _test_cleanup_failure_retains_page_slot();
     _test_teardown_only_deinit();
-    assert(app_manager_ui_call(_lifecycle_deinit_on_ui, NULL,
-                               UINT32_MAX) == ESP_OK);
+    assert(_lifecycle_deinit() == ESP_OK);
     _reset_traces();
     s_a_memory_size = 17;
     assert(app_manager_lifecycle_init(192) == ESP_OK);
     assert(app_manager_run("a") == ESP_ERR_NO_MEM);
     assert(app_manager_get_running_apps() == 0);
-    assert(app_manager_ui_call(_lifecycle_deinit_on_ui, NULL,
-                               UINT32_MAX) == ESP_OK);
-    assert(app_manager_mailbox_deinit() == ESP_OK);
+    assert(_lifecycle_deinit() == ESP_OK);
+    _test_shutdown_releases_admitted_api();
 
     puts("lifecycle production-core tests passed");
     return 0;

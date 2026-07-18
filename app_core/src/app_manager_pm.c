@@ -310,21 +310,9 @@ esp_err_t app_manager_control_suspend_hardware(void)
     esp_err_t result = app_manager_display_sleep_prepare();
     if (result != ESP_OK)
     {
-        esp_err_t restore_result =
-            app_manager_display_refresh_and_enable_touch();
-        if (restore_result != ESP_OK)
-        {
-            LOG_W("touch/display rollback after sleep prepare failed: %d",
-                  (int)restore_result);
-        }
-        else
-        {
-            _control_enable_touch_activity();
-        }
-        if (restore_result != ESP_OK)
-        {
-            _control_schedule_touch_restore();
-        }
+        /* The adapter may also have failed while restoring lifecycle or LVGL
+         * input. Keep the logical gate closed until a full active retry. */
+        _control_schedule_touch_restore();
         goto exit;
     }
 
@@ -352,6 +340,53 @@ esp_err_t app_manager_control_suspend_hardware(void)
         _control_schedule_touch_restore();
     }
     result = transition_error;
+
+exit:
+    return result;
+}
+
+esp_err_t app_manager_control_prepare_shutdown(void)
+{
+    const app_manager_pm_state_t state = s_state;
+    esp_err_t result = ESP_OK;
+    _control_disable_touch_activity();
+
+    if (state == APP_MANAGER_PM_STANDBY_PREPARING)
+    {
+        app_manager_control_standby_generation_abort();
+    }
+    if ((state == APP_MANAGER_PM_STANDBY_PREPARING ||
+            state == APP_MANAGER_PM_STANDBY) &&
+            s_standby_ops.cancel_standby != NULL)
+    {
+        result = s_standby_ops.cancel_standby();
+        if (result == ESP_ERR_INVALID_STATE)
+        {
+            result = ESP_OK;
+        }
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+    }
+
+    if (app_manager_display_is_sleeping())
+    {
+        result = app_manager_display_sleep_prepare();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+    }
+    if (s_screen_ops.is_suspended())
+    {
+        result = s_screen_ops.resume_prepare();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+    }
+    result = app_manager_display_sleep_recover();
 
 exit:
     return result;

@@ -2,6 +2,7 @@
 #include "app_manager.h"
 #include "app_manager_config.h"
 #include "../../src/app_manager_control.h"
+#include "../../src/app_manager_pm_internal.h"
 
 #include <assert.h>
 #include <pthread.h>
@@ -29,6 +30,7 @@ static atomic_bool s_block_failed_ui_post;
 static atomic_bool s_failed_ui_post_entered;
 static atomic_bool s_screen_suspended;
 static atomic_bool s_adapter_sleeping;
+static atomic_bool s_fail_lifecycle_pause;
 static atomic_bool s_fail_adapter_pause;
 static atomic_bool s_fail_adapter_recover;
 static atomic_bool s_fail_display_refresh;
@@ -84,6 +86,10 @@ esp_err_t app_manager_display_sleep_prepare(void)
     if (atomic_load(&s_adapter_sleeping))
     {
         return ESP_OK;
+    }
+    if (atomic_load(&s_fail_lifecycle_pause))
+    {
+        return ESP_FAIL;
     }
     _trace_transition(&s_adapter_pause_step);
     atomic_fetch_add(&s_adapter_pause_count, 1);
@@ -401,6 +407,7 @@ static void _reset_mocks(void)
     atomic_store(&s_run_home_count, 0);
     atomic_store(&s_screen_suspended, false);
     atomic_store(&s_adapter_sleeping, false);
+    atomic_store(&s_fail_lifecycle_pause, false);
     atomic_store(&s_fail_adapter_pause, false);
     atomic_store(&s_fail_adapter_recover, false);
     atomic_store(&s_fail_display_refresh, false);
@@ -878,9 +885,10 @@ int main(void)
     atomic_store(&s_fail_display_refresh, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
 
-    /* Never cut the rail when re-entering adapter sleep itself fails. */
+    /* A failed lifecycle PAUSE after RESUME must not pause the adapter or rail. */
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    int adapter_before_failed_pause = atomic_load(&s_adapter_pause_count);
     int suspend_before_failed_adapter_rollback =
         atomic_load(&s_screen_suspend_count);
     int prepare_before_failed_adapter_rollback =
@@ -888,46 +896,67 @@ int main(void)
     int refresh_before_failed_adapter_rollback =
         atomic_load(&s_display_refresh_count) + 1;
     atomic_store(&s_fail_display_refresh, true);
-    atomic_store(&s_fail_adapter_pause, true);
+    atomic_store(&s_fail_lifecycle_pause, true);
     assert(app_manager_pm_notify_system_wake() == ESP_OK);
     _wait_for_count(&s_display_refresh_count,
                     refresh_before_failed_adapter_rollback);
     usleep(150000);
     assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
     assert(!atomic_load(&s_adapter_sleeping));
+    assert(atomic_load(&s_adapter_pause_count) ==
+           adapter_before_failed_pause);
     assert(atomic_load(&s_screen_suspend_count) ==
            suspend_before_failed_adapter_rollback);
     assert(atomic_load(&s_screen_resume_count) ==
            prepare_before_failed_adapter_rollback + 1);
+    assert(!app_manager_control_notify_touch_activity_from_isr());
     atomic_store(&s_fail_display_refresh, false);
-    atomic_store(&s_fail_adapter_pause, false);
+    atomic_store(&s_fail_lifecycle_pause, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
+    assert(app_manager_control_notify_touch_activity_from_isr());
 
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     int failed_brightness = atomic_load(&s_brightness_restore_count) + 1;
-    int brightness_rollback_suspend = atomic_load(&s_screen_suspend_count) + 1;
+    int brightness_rollback_suspend = atomic_load(&s_screen_suspend_count);
+    adapter_before_failed_pause = atomic_load(&s_adapter_pause_count);
     atomic_store(&s_fail_brightness_restore, true);
+    atomic_store(&s_fail_lifecycle_pause, true);
     assert(app_manager_pm_notify_system_wake() == ESP_OK);
     _wait_for_count(&s_brightness_restore_count, failed_brightness);
-    _wait_for_count(&s_screen_suspend_count, brightness_rollback_suspend);
+    usleep(20000);
     assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
-    assert(atomic_load(&s_adapter_sleeping));
+    assert(!atomic_load(&s_adapter_sleeping));
+    assert(atomic_load(&s_adapter_pause_count) ==
+           adapter_before_failed_pause);
+    assert(atomic_load(&s_screen_suspend_count) ==
+           brightness_rollback_suspend);
+    assert(!app_manager_control_notify_touch_activity_from_isr());
     atomic_store(&s_fail_brightness_restore, false);
+    atomic_store(&s_fail_lifecycle_pause, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
+    assert(app_manager_control_notify_touch_activity_from_isr());
 
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     int failed_commit = atomic_load(&s_screen_commit_count) + 1;
-    int commit_rollback_suspend = atomic_load(&s_screen_suspend_count) + 1;
+    int commit_rollback_suspend = atomic_load(&s_screen_suspend_count);
+    adapter_before_failed_pause = atomic_load(&s_adapter_pause_count);
     atomic_store(&s_fail_screen_commit, true);
+    atomic_store(&s_fail_lifecycle_pause, true);
     assert(app_manager_pm_notify_system_wake() == ESP_OK);
     _wait_for_count(&s_screen_commit_count, failed_commit);
-    _wait_for_count(&s_screen_suspend_count, commit_rollback_suspend);
+    usleep(20000);
     assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
-    assert(atomic_load(&s_adapter_sleeping));
+    assert(!atomic_load(&s_adapter_sleeping));
+    assert(atomic_load(&s_adapter_pause_count) ==
+           adapter_before_failed_pause);
+    assert(atomic_load(&s_screen_suspend_count) == commit_rollback_suspend);
+    assert(!app_manager_control_notify_touch_activity_from_isr());
     atomic_store(&s_fail_screen_commit, false);
+    atomic_store(&s_fail_lifecycle_pause, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
+    assert(app_manager_control_notify_touch_activity_from_isr());
 
     /* Typed touch activity can undim, but can neither wake OFF nor survive a gate epoch. */
     uint32_t stale_touch_generation =
@@ -997,22 +1026,124 @@ int main(void)
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     int resume_before_deinit = atomic_load(&s_screen_resume_count);
+    int adapter_resume_before_deinit = atomic_load(&s_adapter_resume_count);
+    int refresh_before_deinit = atomic_load(&s_display_refresh_count);
+    int brightness_before_deinit = atomic_load(&s_brightness_restore_count);
+    int commit_before_deinit = atomic_load(&s_screen_commit_count);
     atomic_store(&s_fail_screen_resume, true);
     assert(app_manager_control_deinit() == ESP_FAIL);
     assert(atomic_load(&s_screen_suspended));
-    assert(app_manager_pm_notify_user_activity() == ESP_ERR_INVALID_STATE);
-    atomic_store(&s_fail_screen_resume, false);
-    assert(app_manager_control_deinit() == ESP_OK);
-    assert(atomic_load(&s_screen_resume_count) >= resume_before_deinit + 2);
-    assert(!atomic_load(&s_screen_suspended));
+    assert(atomic_load(&s_adapter_sleeping));
+    assert(atomic_load(&s_adapter_resume_count) ==
+           adapter_resume_before_deinit);
     assert(app_manager_pm_notify_user_activity() == ESP_ERR_INVALID_STATE);
 
+    const int resume_during_failed_stop =
+        atomic_load(&s_screen_resume_count);
+    const int adapter_during_failed_stop =
+        atomic_load(&s_adapter_resume_count);
+    const int refresh_during_failed_stop =
+        atomic_load(&s_display_refresh_count);
+    const int commit_during_failed_stop = atomic_load(&s_screen_commit_count);
+    const int brightness_during_failed_stop =
+        atomic_load(&s_brightness_restore_count);
+    const int suspend_during_failed_stop =
+        atomic_load(&s_screen_suspend_count);
+    const int home_during_failed_stop = atomic_load(&s_run_home_count);
+    const uint32_t power_click =
+        POWER_PENDING_EVENT(APP_MANAGER_KEY_EVENT_CLICK);
+    atomic_store(&s_wake_pending, true);
+    atomic_store(&s_power_pending_events, power_click);
+    atomic_store(&s_power_pending_wake, true);
+    atomic_store(&s_power_input_pending, power_click);
+    atomic_store(&s_touch_restore_pending, true);
+    atomic_store(&s_touch_pending_generation,
+                 atomic_load(&s_touch_generation));
+    atomic_store(&s_touch_pending, true);
+    atomic_store(&s_brightness_temp_pending, true);
+    atomic_store(&s_standby_commit_pending, true);
+    atomic_store(&s_home_pending, true);
+    const control_command_t queued_resume = {.type = CONTROL_RESUME};
+    assert(xQueueSend(s_queue, &queued_resume, 0) == pdTRUE);
+    usleep(250000);
+    assert(atomic_load(&s_screen_resume_count) == resume_during_failed_stop);
+    assert(atomic_load(&s_adapter_resume_count) == adapter_during_failed_stop);
+    assert(atomic_load(&s_display_refresh_count) == refresh_during_failed_stop);
+    assert(atomic_load(&s_screen_commit_count) == commit_during_failed_stop);
+    assert(atomic_load(&s_brightness_restore_count) ==
+           brightness_during_failed_stop);
+    assert(atomic_load(&s_screen_suspend_count) == suspend_during_failed_stop);
+    assert(atomic_load(&s_run_home_count) == home_during_failed_stop);
+    assert(!atomic_load(&s_wake_pending));
+    assert(atomic_load(&s_power_pending_events) == 0U);
+    assert(!atomic_load(&s_power_pending_wake));
+    assert(atomic_load(&s_power_input_pending) == 0U);
+    assert(!atomic_load(&s_touch_restore_pending));
+    assert(!atomic_load(&s_touch_pending));
+    assert(!atomic_load(&s_brightness_temp_pending));
+    assert(!atomic_load(&s_standby_commit_pending));
+    assert(!atomic_load(&s_home_pending));
+
+    atomic_store(&s_fail_screen_resume, false);
+    assert(app_manager_control_deinit() == ESP_OK);
+    assert(atomic_load(&s_screen_resume_count) == resume_before_deinit + 2);
+    assert(atomic_load(&s_adapter_resume_count) ==
+           adapter_resume_before_deinit + 1);
+    assert(atomic_load(&s_display_refresh_count) == refresh_before_deinit);
+    assert(atomic_load(&s_brightness_restore_count) == brightness_before_deinit);
+    assert(atomic_load(&s_screen_commit_count) == commit_before_deinit);
+    assert(atomic_load(&s_screen_suspended));
+    assert(!atomic_load(&s_adapter_sleeping));
+    assert(app_manager_pm_notify_user_activity() == ESP_ERR_INVALID_STATE);
+
+    /* Shutdown rebuilds only the layers required by each partial state. */
     assert(app_manager_control_init(&config) == ESP_OK);
     atomic_store(&s_screen_suspended, true);
+    atomic_store(&s_adapter_sleeping, false);
     int mismatch_resume_count = atomic_load(&s_screen_resume_count) + 1;
+    int mismatch_adapter_count = atomic_load(&s_adapter_resume_count);
+    refresh_before_deinit = atomic_load(&s_display_refresh_count);
+    brightness_before_deinit = atomic_load(&s_brightness_restore_count);
+    commit_before_deinit = atomic_load(&s_screen_commit_count);
     assert(app_manager_control_deinit() == ESP_OK);
-    assert(atomic_load(&s_screen_resume_count) >= mismatch_resume_count);
+    assert(atomic_load(&s_screen_resume_count) == mismatch_resume_count);
+    assert(atomic_load(&s_adapter_resume_count) == mismatch_adapter_count);
+    assert(atomic_load(&s_display_refresh_count) == refresh_before_deinit);
+    assert(atomic_load(&s_brightness_restore_count) == brightness_before_deinit);
+    assert(atomic_load(&s_screen_commit_count) == commit_before_deinit);
+    assert(atomic_load(&s_screen_suspended));
+
+    assert(app_manager_control_init(&config) == ESP_OK);
+    atomic_store(&s_screen_suspended, false);
+    atomic_store(&s_adapter_sleeping, true);
+    mismatch_resume_count = atomic_load(&s_screen_resume_count);
+    mismatch_adapter_count = atomic_load(&s_adapter_resume_count) + 1;
+    refresh_before_deinit = atomic_load(&s_display_refresh_count);
+    brightness_before_deinit = atomic_load(&s_brightness_restore_count);
+    commit_before_deinit = atomic_load(&s_screen_commit_count);
+    assert(app_manager_control_deinit() == ESP_OK);
+    assert(atomic_load(&s_screen_resume_count) == mismatch_resume_count);
+    assert(atomic_load(&s_adapter_resume_count) == mismatch_adapter_count);
+    assert(atomic_load(&s_display_refresh_count) == refresh_before_deinit);
+    assert(atomic_load(&s_brightness_restore_count) == brightness_before_deinit);
+    assert(atomic_load(&s_screen_commit_count) == commit_before_deinit);
     assert(!atomic_load(&s_screen_suspended));
+    assert(!atomic_load(&s_adapter_sleeping));
+
+    assert(app_manager_control_init(&config) == ESP_OK);
+    atomic_store(&s_screen_suspended, false);
+    atomic_store(&s_adapter_sleeping, false);
+    mismatch_resume_count = atomic_load(&s_screen_resume_count);
+    mismatch_adapter_count = atomic_load(&s_adapter_resume_count);
+    refresh_before_deinit = atomic_load(&s_display_refresh_count);
+    brightness_before_deinit = atomic_load(&s_brightness_restore_count);
+    commit_before_deinit = atomic_load(&s_screen_commit_count);
+    assert(app_manager_control_deinit() == ESP_OK);
+    assert(atomic_load(&s_screen_resume_count) == mismatch_resume_count);
+    assert(atomic_load(&s_adapter_resume_count) == mismatch_adapter_count);
+    assert(atomic_load(&s_display_refresh_count) == refresh_before_deinit);
+    assert(atomic_load(&s_brightness_restore_count) == brightness_before_deinit);
+    assert(atomic_load(&s_screen_commit_count) == commit_before_deinit);
 
     puts("app-control production-core tests passed");
     return 0;

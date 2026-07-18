@@ -99,7 +99,9 @@ static void IRAM_ATTR _app_adapter_touch_interrupt(esp_lcd_touch_handle_t touch,
     (void)app_manager_control_notify_touch_activity_from_isr();
 }
 
-static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
+static esp_err_t _app_adapter_refresh_on_ui(void *arg);
+
+static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
 {
     (void)arg;
     esp_err_t result = ESP_OK;
@@ -110,23 +112,7 @@ static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
     }
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
-
-exit:
-    return result;
-}
-
-static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
-{
-    (void)arg;
-    esp_err_t result = ESP_OK;
-    if (s_touch == NULL || !app_manager_mailbox_is_worker())
-    {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
-    }
-    lv_indev_reset(s_touch, NULL);
-    (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
-    lv_indev_enable(s_touch, true);
+    result = app_manager_lifecycle_screen_pause();
 
 exit:
     return result;
@@ -179,12 +165,12 @@ static esp_err_t _app_adapter_restore_prepare_failure(esp_err_t primary_error)
         goto exit;
     }
 
-    const esp_err_t touch_result = app_manager_ui_call(
-                                       _app_adapter_enable_touch_on_ui,
-                                       NULL, UINT32_MAX);
-    if (touch_result != ESP_OK)
+    const esp_err_t restore_result = app_manager_ui_call(
+                                         _app_adapter_refresh_on_ui,
+                                         NULL, UINT32_MAX);
+    if (restore_result != ESP_OK)
     {
-        result = touch_result;
+        result = restore_result;
     }
 
 exit:
@@ -201,9 +187,16 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
         goto exit;
     }
 
+    result = app_manager_lifecycle_screen_resume();
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+
     lv_obj_t *screen = lv_display_get_screen_active(s_display);
     if (screen == NULL)
     {
+        result = ESP_ERR_INVALID_STATE;
         goto exit;
     }
 
@@ -251,8 +244,13 @@ esp_err_t app_manager_display_sleep_prepare(void)
         goto exit;
     }
 
-    result = app_manager_ui_call(_app_adapter_disable_touch_on_ui, NULL,
+    result = app_manager_ui_call(_app_adapter_pause_lifecycle_on_ui, NULL,
                                  UINT32_MAX);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    result = app_manager_lifecycle_screen_access_wait();
     if (result != ESP_OK)
     {
         goto exit;
@@ -456,8 +454,8 @@ static esp_err_t _app_adapter_lifecycle_deinit_on_ui(void *arg)
 static esp_err_t _app_adapter_cleanup_services(void)
 {
     esp_err_t result = ESP_OK;
-    /* CONTROL_STOP restores a sleeping display through the UI mailbox. Keep
-     * the LVGL worker and mailbox alive until control teardown completes. */
+    /* CONTROL_STOP restarts a sleeping LVGL worker without resuming pages.
+     * Keep the adapter alive until control teardown completes. */
     if (s_control_ready)
     {
         result = app_manager_control_deinit();
@@ -469,6 +467,11 @@ static esp_err_t _app_adapter_cleanup_services(void)
     }
     if (s_lifecycle_ready && s_mailbox_ready)
     {
+        result = app_manager_lifecycle_shutdown_begin_and_wait();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
         result = app_manager_mailbox_shutdown_call(
                      _app_adapter_lifecycle_deinit_on_ui, NULL);
         if (result != ESP_OK)
@@ -479,6 +482,11 @@ static esp_err_t _app_adapter_cleanup_services(void)
     }
     else if (s_lifecycle_ready)
     {
+        result = app_manager_lifecycle_shutdown_begin_and_wait();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
         result = app_manager_lifecycle_deinit();
         if (result != ESP_OK)
         {

@@ -37,6 +37,13 @@ void app_manager_control_standby_generation_abort(void);
 esp_err_t app_manager_control_suspend_hardware(void);
 
 /**
+ * @brief Recover only the hardware and LVGL worker required for teardown.
+ * @note This does not resume pages, repaint, restore brightness, or show LCD.
+ * @return ESP_OK on success, otherwise a retryable transition error.
+ */
+esp_err_t app_manager_control_prepare_shutdown(void);
+
+/**
  * @brief Restore display hardware, brightness, and touch to active state.
  * @return ESP_OK on success, otherwise a retryable transition error.
  */

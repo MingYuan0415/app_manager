@@ -22,10 +22,10 @@ extern "C" {
 /** @brief Lifecycle messages delivered to application page handlers. */
 typedef enum
 {
-    APP_MANAGER_MSG_ONSTART = 0, /**< Page resources should be created. */
-    APP_MANAGER_MSG_ONRESUME,   /**< Page became the active page. */
-    APP_MANAGER_MSG_ONPAUSE,    /**< Page is no longer active. */
-    APP_MANAGER_MSG_ONSTOP,     /**< Page resources must be released. */
+    APP_MANAGER_MSG_ONSTART = 0, /**< Initialize retained nonvisual state. */
+    APP_MANAGER_MSG_ONRESUME,   /**< Create visible UI and foreground resources. */
+    APP_MANAGER_MSG_ONPAUSE,    /**< Release visible UI and foreground resources. */
+    APP_MANAGER_MSG_ONSTOP,     /**< Release the remaining retained page state. */
     APP_MANAGER_MSG_USER_END,   /**< First application-defined message value. */
 } app_manager_msg_type_t;
 

@@ -4,20 +4,25 @@
 #ifndef HOST_TEST
     #include "mt_log.h"
     #include "esp_heap_caps.h"
+    #include "freertos/FreeRTOS.h"
+    #include "freertos/task.h"
 #else
     #include <stdio.h>
     #include <stdlib.h>
+    #include <unistd.h>
     #define LOG_E(fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
     #define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
-    #define LOG_I(fmt, ...) ((void)0)
+    #define LOG_I(fmt, ...) fprintf(stderr, "[I][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
 #endif
 
 #include "app_manager.h"
 #include "app_manager_builtin.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_lifecycle_internal.h"
+#include "app_manager_mailbox.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #define APP_MANAGER_MAX_APPS             8
@@ -75,6 +80,15 @@ typedef struct deferred_command
     uint32_t memory_size;
 } deferred_command_t;
 
+typedef enum lifecycle_screen_phase
+{
+    LIFECYCLE_SCREEN_CLOSED = 0,
+    LIFECYCLE_SCREEN_INITIALIZING,
+    LIFECYCLE_SCREEN_ACTIVE,
+    LIFECYCLE_SCREEN_PAUSING,
+    LIFECYCLE_SCREEN_PAUSED,
+} lifecycle_screen_phase_t;
+
 static app_node_t s_apps[APP_MANAGER_MAX_APPS];
 static page_node_t s_pages[APP_MANAGER_MAX_PAGES];
 static deferred_command_t s_deferred[APP_MANAGER_DEFERRED_COMMANDS];
@@ -90,6 +104,21 @@ static uint8_t *s_page_arena;
 static size_t s_page_stride;
 static bool s_initialized;
 static bool s_tearing_down;
+static atomic_int s_screen_phase = ATOMIC_VAR_INIT(LIFECYCLE_SCREEN_CLOSED);
+static atomic_uint s_screen_accesses = ATOMIC_VAR_INIT(0U);
+static atomic_uint s_paused_running_apps;
+
+#ifdef HOST_TEST
+    static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
+#endif
+
+static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_USER_END] =
+{
+    [APP_MANAGER_MSG_ONSTART] = "START",
+    [APP_MANAGER_MSG_ONRESUME] = "RESUME",
+    [APP_MANAGER_MSG_ONPAUSE] = "PAUSE",
+    [APP_MANAGER_MSG_ONSTOP] = "STOP",
+};
 
 static void _lifecycle_copy_id(char *destination, const char *source)
 {
@@ -236,7 +265,24 @@ static esp_err_t _lifecycle_call_handler(page_node_t *page,
     s_handler_cleanup_error = ESP_OK;
     s_handler_page = page;
     s_callback_depth++;
+#ifdef HOST_TEST
+    app_manager_lifecycle_observer_t observer = atomic_load(&s_host_observer);
+    if (observer != NULL)
+    {
+        observer(page->app->descriptor->id, page->id, message,
+                 APP_MANAGER_LIFECYCLE_OBSERVER_BEFORE);
+    }
+#endif
+    LOG_I("[%s][%s] ON %s", page->app->descriptor->name, page->id,
+          s_lifecycle_message_names[message]);
     page->handler(message, page->user_data);
+#ifdef HOST_TEST
+    if (observer != NULL)
+    {
+        observer(page->app->descriptor->id, page->id, message,
+                 APP_MANAGER_LIFECYCLE_OBSERVER_AFTER);
+    }
+#endif
     s_callback_depth--;
     s_handler_page = previous_context;
     esp_err_t cleanup_error = s_handler_cleanup_error;
@@ -717,9 +763,31 @@ exit:
 esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
 {
     esp_err_t result = ESP_OK;
+    bool phase_owned = false;
     if (s_initialized)
     {
+        if (atomic_load(&s_screen_phase) == LIFECYCLE_SCREEN_CLOSED)
+        {
+            result = ESP_ERR_INVALID_STATE;
+        }
         goto exit;
+    }
+    int expected = LIFECYCLE_SCREEN_CLOSED;
+    if (!atomic_compare_exchange_strong_explicit(
+                &s_screen_phase, &expected, LIFECYCLE_SCREEN_INITIALIZING,
+                memory_order_acq_rel, memory_order_acquire))
+    {
+        result = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
+    phase_owned = true;
+    while (atomic_load(&s_screen_accesses) != 0U)
+    {
+#ifdef HOST_TEST
+        usleep(1000);
+#else
+        vTaskDelay(1);
+#endif
     }
     if (arena_bytes == 0)
     {
@@ -761,14 +829,31 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
     s_callback_depth = 0;
     s_operation_depth = 0;
     s_tearing_down = false;
+    atomic_store(&s_paused_running_apps, 0U);
     s_initialized = true;
+    expected = LIFECYCLE_SCREEN_INITIALIZING;
+    if (!atomic_compare_exchange_strong_explicit(
+                &s_screen_phase, &expected, LIFECYCLE_SCREEN_ACTIVE,
+                memory_order_release, memory_order_acquire))
+    {
+        result = ESP_ERR_INVALID_STATE;
+        app_manager_lifecycle_force_deinit();
+        goto exit;
+    }
 
 exit:
+    if (phase_owned && !s_initialized)
+    {
+        atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_CLOSED,
+                              memory_order_release);
+    }
     return result;
 }
 
 void app_manager_lifecycle_force_deinit(void)
 {
+    atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_CLOSED,
+                          memory_order_release);
     if (s_initialized)
     {
 #ifndef HOST_TEST
@@ -789,13 +874,19 @@ void app_manager_lifecycle_force_deinit(void)
         s_tearing_down = false;
         s_initialized = false;
     }
+    atomic_store(&s_paused_running_apps, 0U);
 }
 
 esp_err_t app_manager_lifecycle_deinit(void)
 {
-    esp_err_t result = ESP_OK;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_initialized)
     {
+        if (atomic_load(&s_screen_phase) != LIFECYCLE_SCREEN_CLOSED ||
+                atomic_load(&s_screen_accesses) != 0U)
+        {
+            goto exit;
+        }
         s_tearing_down = true;
         memset(s_deferred, 0, sizeof(s_deferred));
         s_deferred_head = 0;
@@ -818,6 +909,191 @@ esp_err_t app_manager_lifecycle_deinit(void)
         s_deferred_count = 0;
         app_manager_lifecycle_force_deinit();
     }
+    result = ESP_OK;
+
+exit:
+    return result;
+}
+
+bool app_manager_lifecycle_screen_mutation_allowed(void)
+{
+    return atomic_load_explicit(&s_screen_phase, memory_order_acquire) ==
+           LIFECYCLE_SCREEN_ACTIVE;
+}
+
+static uint32_t _lifecycle_running_app_count(void)
+{
+    uint32_t count = 0;
+    for (size_t i = 0; i < APP_MANAGER_MAX_APPS; i++)
+    {
+        count += s_apps[i].in_use ? 1U : 0U;
+    }
+    return count;
+}
+
+bool app_manager_lifecycle_screen_access_begin(void)
+{
+    atomic_fetch_add(&s_screen_accesses, 1U);
+    bool admitted = app_manager_lifecycle_screen_mutation_allowed();
+    if (!admitted)
+    {
+        atomic_fetch_sub(&s_screen_accesses, 1U);
+    }
+    return admitted;
+}
+
+void app_manager_lifecycle_screen_access_end(void)
+{
+    atomic_fetch_sub(&s_screen_accesses, 1U);
+}
+
+esp_err_t app_manager_lifecycle_screen_access_wait(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (app_manager_mailbox_is_worker() ||
+            atomic_load(&s_screen_phase) != LIFECYCLE_SCREEN_PAUSED)
+    {
+        goto exit;
+    }
+
+    while (atomic_load(&s_screen_accesses) != 0U)
+    {
+#ifdef HOST_TEST
+        usleep(1000);
+#else
+        vTaskDelay(1);
+#endif
+    }
+    if (atomic_load(&s_screen_phase) != LIFECYCLE_SCREEN_PAUSED)
+    {
+        goto exit;
+    }
+    result = ESP_OK;
+
+exit:
+    return result;
+}
+
+esp_err_t app_manager_lifecycle_shutdown_begin_and_wait(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (app_manager_mailbox_is_worker())
+    {
+        goto exit;
+    }
+
+    atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_CLOSED,
+                          memory_order_release);
+    while (atomic_load(&s_screen_accesses) != 0U)
+    {
+#ifdef HOST_TEST
+        usleep(1000);
+#else
+        vTaskDelay(1);
+#endif
+    }
+    result = ESP_OK;
+
+exit:
+    return result;
+}
+
+bool app_manager_lifecycle_screen_running_snapshot(uint32_t *count)
+{
+    bool available = false;
+    uint32_t snapshot = 0;
+    if (count == NULL ||
+            atomic_load_explicit(&s_screen_phase, memory_order_acquire) !=
+            LIFECYCLE_SCREEN_PAUSED)
+    {
+        goto exit;
+    }
+    snapshot = atomic_load(&s_paused_running_apps);
+    available = atomic_load_explicit(&s_screen_phase, memory_order_acquire) ==
+                LIFECYCLE_SCREEN_PAUSED;
+    if (available)
+    {
+        *count = snapshot;
+    }
+
+exit:
+    return available;
+}
+
+esp_err_t app_manager_lifecycle_screen_pause(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    lifecycle_screen_phase_t phase = atomic_load(&s_screen_phase);
+    if (!s_initialized || s_tearing_down || !app_manager_mailbox_is_worker())
+    {
+        goto exit;
+    }
+    if (phase == LIFECYCLE_SCREEN_PAUSED)
+    {
+        result = ESP_OK;
+        goto exit;
+    }
+    if (phase != LIFECYCLE_SCREEN_ACTIVE || _lifecycle_should_defer())
+    {
+        goto exit;
+    }
+
+    int pause_expected = LIFECYCLE_SCREEN_ACTIVE;
+    if (!atomic_compare_exchange_strong_explicit(
+                &s_screen_phase, &pause_expected, LIFECYCLE_SCREEN_PAUSING,
+                memory_order_acq_rel, memory_order_acquire))
+    {
+        result = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
+    s_operation_depth++;
+    result = _lifecycle_pause_app(s_active_app);
+    _lifecycle_operation_end();
+    lifecycle_screen_phase_t next_phase = result == ESP_OK ?
+                                          LIFECYCLE_SCREEN_PAUSED :
+                                          LIFECYCLE_SCREEN_ACTIVE;
+    if (result == ESP_OK)
+    {
+        atomic_store(&s_paused_running_apps, _lifecycle_running_app_count());
+    }
+    int expected = LIFECYCLE_SCREEN_PAUSING;
+    (void)atomic_compare_exchange_strong_explicit(
+        &s_screen_phase, &expected, next_phase,
+        memory_order_release, memory_order_relaxed);
+
+exit:
+    return result;
+}
+
+esp_err_t app_manager_lifecycle_screen_resume(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    lifecycle_screen_phase_t phase = atomic_load(&s_screen_phase);
+    if (!s_initialized || s_tearing_down || !app_manager_mailbox_is_worker())
+    {
+        goto exit;
+    }
+    if (phase == LIFECYCLE_SCREEN_ACTIVE)
+    {
+        result = ESP_OK;
+        goto exit;
+    }
+    if (phase != LIFECYCLE_SCREEN_PAUSED || _lifecycle_should_defer())
+    {
+        goto exit;
+    }
+
+    int expected = LIFECYCLE_SCREEN_PAUSED;
+    if (!atomic_compare_exchange_strong_explicit(
+                &s_screen_phase, &expected, LIFECYCLE_SCREEN_ACTIVE,
+                memory_order_acq_rel, memory_order_acquire))
+    {
+        goto exit;
+    }
+    s_operation_depth++;
+    _lifecycle_resume_app(s_active_app);
+    _lifecycle_operation_end();
+    result = ESP_OK;
 
 exit:
     return result;
@@ -827,7 +1103,7 @@ esp_err_t app_manager_lifecycle_run_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -851,7 +1127,7 @@ esp_err_t app_manager_lifecycle_exit_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -875,7 +1151,7 @@ esp_err_t app_manager_lifecycle_self_exit_call(void *opaque)
 {
     (void)opaque;
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -904,7 +1180,7 @@ esp_err_t app_manager_lifecycle_create_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -936,7 +1212,7 @@ esp_err_t app_manager_lifecycle_goback_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -962,7 +1238,7 @@ esp_err_t app_manager_lifecycle_goback_to_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -988,7 +1264,7 @@ esp_err_t app_manager_lifecycle_remove_call(void *opaque)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
-    if (!s_initialized)
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
     {
         goto exit;
     }
@@ -1020,8 +1296,12 @@ esp_err_t app_manager_lifecycle_get_userdata_call(void *opaque)
 
 esp_err_t app_manager_lifecycle_set_userdata_call(void *opaque)
 {
-    esp_err_t result = ESP_OK;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
     app_manager_lifecycle_request_t *request = opaque;
+    if (!s_initialized || !app_manager_lifecycle_screen_mutation_allowed())
+    {
+        goto exit;
+    }
     page_node_t *page = _lifecycle_find_page(s_active_app, request->page_id);
     if (page == NULL)
     {
@@ -1029,6 +1309,7 @@ esp_err_t app_manager_lifecycle_set_userdata_call(void *opaque)
         goto exit;
     }
     page->user_data = request->value;
+    result = ESP_OK;
 
 exit:
     return result;
@@ -1037,7 +1318,8 @@ exit:
 esp_err_t app_manager_lifecycle_is_active_call(void *opaque)
 {
     app_manager_lifecycle_request_t *request = opaque;
-    request->condition = s_active_app != NULL &&
+    request->condition = app_manager_lifecycle_screen_mutation_allowed() &&
+                         s_active_app != NULL &&
                          strcmp(s_active_app->descriptor->id,
                                 request->app_id) == 0;
     return ESP_OK;
@@ -1046,7 +1328,8 @@ esp_err_t app_manager_lifecycle_is_active_call(void *opaque)
 esp_err_t app_manager_lifecycle_get_active_id_call(void *opaque)
 {
     app_manager_lifecycle_request_t *request = opaque;
-    request->value = s_active_app != NULL ?
+    request->value = app_manager_lifecycle_screen_mutation_allowed() &&
+                     s_active_app != NULL ?
                      (void *)s_active_app->descriptor->id : NULL;
     return ESP_OK;
 }
@@ -1056,7 +1339,8 @@ esp_err_t app_manager_lifecycle_page_active_call(void *opaque)
     app_manager_lifecycle_request_t *request = opaque;
     app_node_t *app = _lifecycle_find_app(request->app_id);
     page_node_t *page = _lifecycle_find_page(app, request->page_id);
-    request->condition = page != NULL && page->active;
+    request->condition = app_manager_lifecycle_screen_mutation_allowed() &&
+                         page != NULL && page->active;
     return ESP_OK;
 }
 
@@ -1078,11 +1362,7 @@ esp_err_t app_manager_lifecycle_all_closed_call(void *opaque)
 esp_err_t app_manager_lifecycle_running_count_call(void *opaque)
 {
     app_manager_lifecycle_request_t *request = opaque;
-    request->count = 0;
-    for (size_t i = 0; i < APP_MANAGER_MAX_APPS; i++)
-    {
-        request->count += s_apps[i].in_use ? 1U : 0U;
-    }
+    request->count = _lifecycle_running_app_count();
     return ESP_OK;
 }
 
@@ -1138,3 +1418,11 @@ void app_manager_this_page_report_cleanup_error(esp_err_t error)
         s_handler_cleanup_error = error;
     }
 }
+
+#ifdef HOST_TEST
+void app_manager_lifecycle_host_set_observer(
+    app_manager_lifecycle_observer_t observer)
+{
+    atomic_store(&s_host_observer, observer);
+}
+#endif

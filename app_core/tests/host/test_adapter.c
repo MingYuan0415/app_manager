@@ -44,6 +44,7 @@ typedef enum
     MOCK_REGISTER_DISPLAY,
     MOCK_REGISTER_TOUCH,
     MOCK_UI_CALL,
+    MOCK_GET_ACTIVE_SCREEN,
     MOCK_ADAPTER_PAUSE,
     MOCK_IO_FENCE,
     MOCK_ADAPTER_RESUME,
@@ -56,8 +57,12 @@ typedef enum
     MOCK_ADAPTER_START,
     MOCK_MAILBOX_INIT,
     MOCK_LIFECYCLE_INIT,
+    MOCK_LIFECYCLE_PAUSE,
+    MOCK_LIFECYCLE_ACCESS_WAIT,
+    MOCK_LIFECYCLE_RESUME,
     MOCK_CONTROL_INIT,
     MOCK_CONTROL_DEINIT,
+    MOCK_LIFECYCLE_SHUTDOWN_BEGIN,
     MOCK_LIFECYCLE_SHUTDOWN,
     MOCK_LIFECYCLE_DEINIT,
     MOCK_MAILBOX_DEINIT,
@@ -97,9 +102,11 @@ typedef enum
     EVENT_TOUCH_DISABLE = 1,
     EVENT_TOUCH_ENABLE,
     EVENT_TOUCH_RESET,
+    EVENT_LIFECYCLE_PAUSE,
     EVENT_ADAPTER_PAUSE,
     EVENT_IO_FENCE,
     EVENT_ADAPTER_RESUME,
+    EVENT_LIFECYCLE_RESUME,
     EVENT_GET_ACTIVE_SCREEN,
     EVENT_INVALIDATE,
     EVENT_REFRESH,
@@ -121,6 +128,9 @@ static bool s_state_observation_error;
 static bool s_ui_worker;
 static bool s_adapter_paused;
 static bool s_paused_fence_complete;
+static bool s_lifecycle_paused;
+static bool s_lifecycle_access_drained;
+static bool s_lifecycle_admission_closed;
 static char s_expected_drive_letter;
 static unsigned s_lvgl_lock_depth;
 static unsigned s_mmap_del_failures_remaining;
@@ -209,6 +219,9 @@ static void _mock_reset(void)
     s_ui_worker = false;
     s_adapter_paused = false;
     s_paused_fence_complete = false;
+    s_lifecycle_paused = false;
+    s_lifecycle_access_drained = false;
+    s_lifecycle_admission_closed = false;
     s_expected_drive_letter = 'F';
     s_lvgl_lock_depth = 0;
     s_mmap_del_failures_remaining = 0;
@@ -485,7 +498,8 @@ lv_indev_t *esp_lv_adapter_register_touch(
 
 esp_err_t esp_lv_adapter_pause(int32_t timeout_ms)
 {
-    if (s_live.adapter == 0 || s_ui_worker || timeout_ms != -1)
+    if (s_live.adapter == 0 || s_ui_worker || timeout_ms != -1 ||
+            (s_lifecycle_paused && !s_lifecycle_access_drained))
     {
         s_contract_error = true;
     }
@@ -522,6 +536,10 @@ lv_obj_t *lv_display_get_screen_active(lv_display_t *display)
         s_contract_error = true;
     }
     _record_event(EVENT_GET_ACTIVE_SCREEN);
+    if (_mock_should_fail(MOCK_GET_ACTIVE_SCREEN))
+    {
+        return NULL;
+    }
     return &s_screen_handle;
 }
 
@@ -747,6 +765,7 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
         return s_failure.result;
     }
     s_live.lifecycle = 1;
+    s_lifecycle_admission_closed = false;
     return ESP_OK;
 }
 
@@ -777,12 +796,12 @@ esp_err_t app_manager_control_deinit(void)
     }
     if (app_manager_display_is_sleeping())
     {
-        esp_err_t result = app_manager_display_sleep_recover();
+        esp_err_t result = app_manager_display_sleep_prepare();
         if (result != ESP_OK)
         {
             return result;
         }
-        result = app_manager_display_refresh_and_enable_touch();
+        result = app_manager_display_sleep_recover();
         if (result != ESP_OK)
         {
             return result;
@@ -790,6 +809,78 @@ esp_err_t app_manager_control_deinit(void)
     }
     s_live.control = 0;
     return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_screen_pause(void)
+{
+    if (!s_ui_worker || s_live.lifecycle == 0 ||
+            s_lifecycle_admission_closed)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_lifecycle_paused)
+    {
+        return ESP_OK;
+    }
+    _record_event(EVENT_LIFECYCLE_PAUSE);
+    if (_mock_should_fail(MOCK_LIFECYCLE_PAUSE))
+    {
+        return s_failure.result;
+    }
+    s_lifecycle_paused = true;
+    s_lifecycle_access_drained = false;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_screen_access_wait(void)
+{
+    if (s_ui_worker || s_live.lifecycle == 0 || !s_lifecycle_paused ||
+            s_adapter_paused)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (_mock_should_fail(MOCK_LIFECYCLE_ACCESS_WAIT))
+    {
+        return s_failure.result;
+    }
+    s_lifecycle_access_drained = true;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_shutdown_begin_and_wait(void)
+{
+    if (s_ui_worker || s_live.lifecycle == 0 || s_live.control != 0)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (_mock_should_fail(MOCK_LIFECYCLE_SHUTDOWN_BEGIN))
+    {
+        return s_failure.result;
+    }
+    s_lifecycle_admission_closed = true;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_screen_resume(void)
+{
+    if (!s_ui_worker || s_live.lifecycle == 0 ||
+            s_lifecycle_admission_closed)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_lifecycle_paused)
+    {
+        return ESP_OK;
+    }
+    s_lifecycle_paused = false;
+    s_lifecycle_access_drained = false;
+    _record_event(EVENT_LIFECYCLE_RESUME);
+    return _mock_should_fail(MOCK_LIFECYCLE_RESUME) ?
+           s_failure.result : ESP_OK;
 }
 
 esp_err_t app_manager_lifecycle_deinit(void)
@@ -804,6 +895,9 @@ esp_err_t app_manager_lifecycle_deinit(void)
     {
         return s_failure.result;
     }
+    s_lifecycle_paused = false;
+    s_lifecycle_access_drained = false;
+    s_lifecycle_admission_closed = false;
     s_live.lifecycle = 0;
     return ESP_OK;
 }
@@ -823,7 +917,8 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn callback,
         return s_failure.result;
     }
     if (callback == NULL || s_live.mailbox == 0 || s_live.lifecycle == 0 ||
-            s_live.control != 0 || s_adapter_paused)
+            s_live.control != 0 || s_adapter_paused ||
+            !s_lifecycle_admission_closed)
     {
         s_contract_error = true;
         return ESP_FAIL;
@@ -974,6 +1069,9 @@ static void _check_clean_state(void)
     CHECK(!s_state_observation_error);
     CHECK(!s_adapter_paused);
     CHECK(!s_paused_fence_complete);
+    CHECK(!s_lifecycle_paused);
+    CHECK(!s_lifecycle_access_drained);
+    CHECK(!s_lifecycle_admission_closed);
 }
 
 static void _init_then_deinit_successfully(void)
@@ -1202,9 +1300,11 @@ static void _test_display_sleep_recovery_transaction(void)
     {
         EVENT_TOUCH_DISABLE,
         EVENT_TOUCH_RESET,
+        EVENT_LIFECYCLE_PAUSE,
         EVENT_ADAPTER_PAUSE,
         EVENT_IO_FENCE,
         EVENT_ADAPTER_RESUME,
+        EVENT_LIFECYCLE_RESUME,
         EVENT_GET_ACTIVE_SCREEN,
         EVENT_INVALIDATE,
         EVENT_REFRESH,
@@ -1222,6 +1322,7 @@ static void _test_display_sleep_recovery_transaction(void)
     CHECK(app_manager_display_sleep_prepare() == ESP_OK);
     CHECK(app_manager_display_sleep_prepare() == ESP_OK);
     CHECK(s_calls[MOCK_ADAPTER_PAUSE] == 1);
+    CHECK(s_calls[MOCK_LIFECYCLE_ACCESS_WAIT] == 1);
     CHECK(app_manager_display_sleep_recover() == ESP_OK);
     CHECK(app_manager_display_sleep_recover() == ESP_OK);
     CHECK(s_calls[MOCK_ADAPTER_RESUME] == 1);
@@ -1266,8 +1367,8 @@ static void _test_display_refresh_fence_failure(void)
     _mock_inject(MOCK_IO_FENCE, 1);
     CHECK(app_manager_display_refresh_and_enable_touch() == ESP_FAIL);
     CHECK(s_fence_calls == 2);
-    CHECK(s_event_count == 9);
-    CHECK(s_events[8] == EVENT_IO_FENCE);
+    CHECK(s_event_count == 11);
+    CHECK(s_events[10] == EVENT_IO_FENCE);
     _mock_clear_injection();
     CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
@@ -1283,7 +1384,34 @@ static void _test_display_refresh_draw_failure(void)
     s_draw_bitmap_result = ESP_FAIL;
     CHECK(app_manager_display_refresh_and_enable_touch() == ESP_FAIL);
     CHECK(s_fence_calls == 2);
-    CHECK(s_event_count == 9);
+    CHECK(s_event_count == 11);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_display_refresh_requires_active_screen(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_display_sleep_prepare() == ESP_OK);
+    CHECK(app_manager_display_sleep_recover() == ESP_OK);
+
+    s_event_count = 0;
+    const unsigned fence_calls = s_fence_calls;
+    const unsigned panel_draw_calls = s_panel_draw_calls;
+    _mock_inject(MOCK_GET_ACTIVE_SCREEN, 1);
+    CHECK(app_manager_display_refresh_and_enable_touch() ==
+          ESP_ERR_INVALID_STATE);
+    CHECK(s_event_count == 2);
+    CHECK(s_events[0] == EVENT_LIFECYCLE_RESUME);
+    CHECK(s_events[1] == EVENT_GET_ACTIVE_SCREEN);
+    CHECK(s_fence_calls == fence_calls);
+    CHECK(s_panel_draw_calls == panel_draw_calls);
+
+    _mock_clear_injection();
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
+    CHECK(s_events[s_event_count - 1U] == EVENT_TOUCH_ENABLE);
     CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
 }
@@ -1300,29 +1428,54 @@ static void _test_display_sleep_failures_are_retryable(void)
     CHECK(s_event_count == 0);
 
     _mock_clear_injection();
-    _mock_inject(MOCK_ADAPTER_PAUSE, 1);
+    _mock_inject(MOCK_LIFECYCLE_PAUSE, 1);
     CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
-    CHECK(s_event_count == 6);
+    CHECK(s_calls[MOCK_ADAPTER_PAUSE] == 0);
+    CHECK(s_event_count == 3);
     CHECK(s_events[0] == EVENT_TOUCH_DISABLE);
     CHECK(s_events[1] == EVENT_TOUCH_RESET);
-    CHECK(s_events[2] == EVENT_ADAPTER_PAUSE);
-    CHECK(s_events[3] == EVENT_TOUCH_RESET);
-    CHECK(s_events[4] == EVENT_TOUCH_NOTIFY);
-    CHECK(s_events[5] == EVENT_TOUCH_ENABLE);
+    CHECK(s_events[2] == EVENT_LIFECYCLE_PAUSE);
+    CHECK(!s_lifecycle_paused);
+
+    _mock_clear_injection();
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
+    CHECK(s_event_count == 10);
+    CHECK(s_events[9] == EVENT_TOUCH_ENABLE);
+
+    s_event_count = 0;
+    _mock_inject(MOCK_ADAPTER_PAUSE, 1);
+    CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
+    CHECK(s_event_count == 12);
+    CHECK(s_events[0] == EVENT_TOUCH_DISABLE);
+    CHECK(s_events[1] == EVENT_TOUCH_RESET);
+    CHECK(s_events[2] == EVENT_LIFECYCLE_PAUSE);
+    CHECK(s_events[3] == EVENT_ADAPTER_PAUSE);
+    CHECK(s_events[4] == EVENT_LIFECYCLE_RESUME);
+    CHECK(s_events[5] == EVENT_GET_ACTIVE_SCREEN);
+    CHECK(s_events[6] == EVENT_INVALIDATE);
+    CHECK(s_events[7] == EVENT_REFRESH);
+    CHECK(s_events[8] == EVENT_IO_FENCE);
+    CHECK(s_events[9] == EVENT_TOUCH_RESET);
+    CHECK(s_events[10] == EVENT_TOUCH_NOTIFY);
+    CHECK(s_events[11] == EVENT_TOUCH_ENABLE);
+    CHECK(!s_lifecycle_paused);
     CHECK(app_manager_display_sleep_recover() == ESP_OK);
     CHECK(s_calls[MOCK_ADAPTER_RESUME] == 0);
 
+    s_event_count = 0;
     _mock_clear_injection();
     _mock_inject(MOCK_IO_FENCE, 1);
     CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
-    CHECK(s_events[8] == EVENT_ADAPTER_PAUSE);
-    CHECK(s_events[9] == EVENT_IO_FENCE);
-    CHECK(s_event_count == 10);
+    CHECK(s_events[2] == EVENT_LIFECYCLE_PAUSE);
+    CHECK(s_events[3] == EVENT_ADAPTER_PAUSE);
+    CHECK(s_events[4] == EVENT_IO_FENCE);
+    CHECK(s_event_count == 5);
     CHECK(app_manager_display_is_sleeping());
+    CHECK(s_lifecycle_paused);
 
     _mock_clear_injection();
     CHECK(app_manager_display_sleep_prepare() == ESP_OK);
-    CHECK(s_events[10] == EVENT_IO_FENCE);
+    CHECK(s_events[5] == EVENT_IO_FENCE);
     _mock_inject(MOCK_ADAPTER_RESUME, 1);
     CHECK(app_manager_display_sleep_recover() == ESP_FAIL);
     CHECK(app_manager_display_is_sleeping());
@@ -1331,11 +1484,65 @@ static void _test_display_sleep_failures_are_retryable(void)
     _mock_clear_injection();
     CHECK(app_manager_display_sleep_recover() == ESP_OK);
 
+    _mock_inject(MOCK_LIFECYCLE_RESUME, 1);
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_FAIL);
+    CHECK(!s_lifecycle_paused);
+    CHECK(s_events[s_event_count - 1U] == EVENT_LIFECYCLE_RESUME);
+
+    _mock_clear_injection();
     _mock_inject(MOCK_UI_CALL, 1);
     CHECK(app_manager_display_refresh_and_enable_touch() == ESP_FAIL);
     _mock_clear_injection();
     CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
     CHECK(!s_contract_error);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_resumed_pause_failure_keeps_touch_disabled(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_display_sleep_prepare() == ESP_OK);
+    CHECK(app_manager_display_sleep_recover() == ESP_OK);
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
+
+    const unsigned pause_calls = s_calls[MOCK_ADAPTER_PAUSE];
+    s_event_count = 0;
+    _mock_inject(MOCK_LIFECYCLE_PAUSE, 1);
+    CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
+    CHECK(s_calls[MOCK_ADAPTER_PAUSE] == pause_calls);
+    CHECK(s_event_count == 3);
+    CHECK(s_events[0] == EVENT_TOUCH_DISABLE);
+    CHECK(s_events[1] == EVENT_TOUCH_RESET);
+    CHECK(s_events[2] == EVENT_LIFECYCLE_PAUSE);
+
+    _mock_clear_injection();
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
+    CHECK(s_events[s_event_count - 1U] == EVENT_TOUCH_ENABLE);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_pause_and_restore_double_failure(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+
+    _mock_inject(MOCK_ADAPTER_PAUSE, 1);
+    s_draw_bitmap_result = ESP_FAIL;
+    CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
+    CHECK(!app_manager_display_is_sleeping());
+    CHECK(!s_lifecycle_paused);
+    CHECK(s_event_count == 9);
+    CHECK(s_events[8] == EVENT_IO_FENCE);
+
+    _mock_clear_injection();
+    s_draw_bitmap_result = ESP_OK;
+    CHECK(app_manager_display_refresh_and_enable_touch() == ESP_OK);
+    CHECK(s_events[s_event_count - 1U] == EVENT_TOUCH_ENABLE);
     CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
 }
@@ -1346,13 +1553,6 @@ static void _test_deinit_while_display_is_paused(void)
     {
         EVENT_CONTROL_DEINIT,
         EVENT_ADAPTER_RESUME,
-        EVENT_GET_ACTIVE_SCREEN,
-        EVENT_INVALIDATE,
-        EVENT_REFRESH,
-        EVENT_IO_FENCE,
-        EVENT_TOUCH_RESET,
-        EVENT_TOUCH_NOTIFY,
-        EVENT_TOUCH_ENABLE,
         EVENT_LIFECYCLE_SHUTDOWN,
         EVENT_LIFECYCLE_DEINIT,
         EVENT_MAILBOX_DEINIT,
@@ -1376,8 +1576,8 @@ static void _test_deinit_while_display_is_paused(void)
     CHECK(app_manager_deinit() == ESP_OK);
     CHECK(s_calls[MOCK_ADAPTER_PAUSE] == pause_calls + 1U);
     CHECK(s_calls[MOCK_ADAPTER_RESUME] == resume_calls + 1U);
-    CHECK(s_panel_draw_calls == panel_draw_calls + 1U);
-    CHECK(s_fence_calls == fence_calls + 2U);
+    CHECK(s_panel_draw_calls == panel_draw_calls);
+    CHECK(s_fence_calls == fence_calls + 1U);
     CHECK(s_event_count == sizeof(expected) / sizeof(expected[0]));
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
     {
@@ -1407,6 +1607,24 @@ static void _test_paused_deinit_control_failure_is_retryable(void)
     _check_clean_state();
 }
 
+static void _test_paused_deinit_retries_incomplete_fence(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+
+    _mock_inject(MOCK_IO_FENCE, 1);
+    CHECK(app_manager_display_sleep_prepare() == ESP_FAIL);
+    CHECK(app_manager_display_is_sleeping());
+    CHECK(s_lifecycle_paused);
+    const unsigned fence_calls = s_fence_calls;
+
+    _mock_clear_injection();
+    CHECK(app_manager_deinit() == ESP_OK);
+    CHECK(s_fence_calls == fence_calls + 2U);
+    _check_clean_state();
+}
+
 int main(void)
 {
     _test_invalid_config_and_ready_state();
@@ -1420,9 +1638,13 @@ int main(void)
     _test_display_sleep_recovery_transaction();
     _test_display_refresh_fence_failure();
     _test_display_refresh_draw_failure();
+    _test_display_refresh_requires_active_screen();
     _test_display_sleep_failures_are_retryable();
+    _test_resumed_pause_failure_keeps_touch_disabled();
+    _test_pause_and_restore_double_failure();
     _test_deinit_while_display_is_paused();
     _test_paused_deinit_control_failure_is_retryable();
+    _test_paused_deinit_retries_incomplete_fence();
 
     if (s_failures != 0)
     {

@@ -55,36 +55,41 @@ void     app_manager_self_exit(void);
 /**
  * @brief Report whether an application is active.
  * @param app_id identifies the application to query.
- * @return true when active; false otherwise.
+ * @return true when active; false otherwise or while the screen is paused.
  */
 bool        app_manager_is_actived(const char *app_id);
 /**
  * @brief Return the active application identifier.
- * @return Stable active identifier, or NULL when none is active.
+ * @return Stable active identifier, or NULL when none is active or the screen
+ *         is paused.
  */
 const char *app_manager_get_active_app_id(void);
 /**
  * @brief Report whether a page is active in an application.
  * @param app_id identifies the application.
  * @param pg_id identifies the page.
- * @return true when active; false otherwise.
+ * @return true when active; false otherwise or while the screen is paused.
  */
 bool        app_page_is_actived(const char *app_id, const char *pg_id);
 /**
  * @brief Report whether a page exists in an application.
  * @param app_id identifies the application.
  * @param pg_id identifies the page.
- * @return true when present; false otherwise.
+ * @return true when present; false when absent or topology queries are paused.
+ * @note A false result during screen PAUSING/PAUSED does not mean the retained
+ *       page instance was destroyed.
  */
 bool        app_manager_is_page_present(const char *app_id, const char *pg_id);
 /**
  * @brief Report whether every application is closed.
- * @return true when no application is running; false otherwise.
+ * @return true when no application is running, including in the retained
+ *         screen-PAUSED snapshot; false otherwise or during teardown.
  */
 bool        app_manager_is_all_closed(void);
 /**
  * @brief Return the number of running applications.
- * @return Current running-application count.
+ * @return Current running-application count. While screen-PAUSED, returns the
+ *         retained count captured after ONPAUSE; returns 0 during teardown.
  */
 uint32_t    app_manager_get_running_apps(void);
 
@@ -192,7 +197,8 @@ void      app_manager_this_page_report_cleanup_error(esp_err_t error);
 /**
  * @brief Return user data for a named page.
  * @param pg_id identifies the page in the active application.
- * @return Page user data, or NULL when unavailable.
+ * @return Page user data, or NULL when unavailable or topology queries are
+ *         paused.
  */
 void     *app_manager_get_page_userdata(const char *pg_id);
 /**
