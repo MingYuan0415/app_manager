@@ -13,6 +13,7 @@
 #endif
 
 #include "app_manager.h"
+#include "app_manager_back_gesture.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
@@ -30,6 +31,7 @@ typedef struct navigation_command
     bool completed;
     bool cancelled;
     bool screen_access_owned;
+    bool navigation_started;
     app_manager_nav_request_t request;
     char app_id[APP_MANAGER_ID_BYTES];
     char page_id[APP_MANAGER_ID_BYTES];
@@ -51,6 +53,10 @@ static atomic_bool s_initialized;
 static atomic_bool s_accepting;
 static atomic_uint s_api_users;
 static atomic_uint s_sync_waiters;
+static uint32_t s_epoch;
+static uint32_t s_pending_count;
+
+static void _navigation_execute(void *context);
 
 static bool _navigation_id_copy(char destination[APP_MANAGER_ID_BYTES],
                                 const char *source)
@@ -83,6 +89,7 @@ static navigation_command_t *_navigation_alloc_locked(
             command->completed = false;
             command->cancelled = false;
             command->screen_access_owned = false;
+            command->navigation_started = false;
             command->request = *request;
             command->completion = NULL;
             command->completion_context = NULL;
@@ -104,6 +111,7 @@ static void _navigation_free_locked(navigation_command_t *command)
     command->completed = false;
     command->cancelled = false;
     command->screen_access_owned = false;
+    command->navigation_started = false;
     memset(&command->request, 0, sizeof(command->request));
     memset(command->app_id, 0, sizeof(command->app_id));
     memset(command->page_id, 0, sizeof(command->page_id));
@@ -140,12 +148,75 @@ static bool _navigation_release_screen_access_locked(
     return owned;
 }
 
+static void _navigation_epoch_advance_locked(void)
+{
+    s_epoch++;
+    if (s_epoch == 0U)
+    {
+        s_epoch = 1U;
+    }
+}
+
+static bool _navigation_token_current_locked(
+    const app_manager_navigation_gesture_token_t *token)
+{
+    return token != NULL && token->epoch != 0U &&
+           atomic_load(&s_accepting) && s_pending_count == 0U &&
+           token->epoch == s_epoch;
+}
+
+static esp_err_t _navigation_post_locked(
+    const app_manager_nav_request_t *request, const char *app_id,
+    bool synchronous, app_manager_nav_completion_cb_t completion,
+    void *completion_context, navigation_command_t **out_command)
+{
+    esp_err_t result = ESP_ERR_NO_MEM;
+    navigation_command_t *command = _navigation_alloc_locked(request);
+    if (command == NULL)
+    {
+        goto exit;
+    }
+    if (!_navigation_id_copy(command->app_id, app_id) ||
+            !_navigation_id_copy(command->page_id, request->page_id))
+    {
+        _navigation_free_locked(command);
+        result = ESP_ERR_INVALID_ARG;
+        goto exit;
+    }
+    command->request.app_id = app_id != NULL ? command->app_id : NULL;
+    command->request.page_id = request->page_id != NULL ?
+                               command->page_id : NULL;
+    command->synchronous = synchronous;
+    command->completion = completion;
+    command->completion_context = completion_context;
+
+    result = app_manager_ui_post(_navigation_execute, command);
+    if (result != ESP_OK)
+    {
+        _navigation_free_locked(command);
+        goto exit;
+    }
+    command->screen_access_owned = true;
+    s_pending_count++;
+    _navigation_epoch_advance_locked();
+    if (out_command != NULL)
+    {
+        *out_command = command;
+    }
+
+exit:
+    return result;
+}
+
 static void _navigation_complete(esp_err_t result, void *context)
 {
     navigation_command_t *command = context;
     app_manager_nav_completion_cb_t completion = NULL;
     void *completion_context = NULL;
     bool release_screen_access = false;
+    bool navigation_started = false;
+    bool synchronous = false;
+    SemaphoreHandle_t done = NULL;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (!command->in_use || command->completed)
@@ -158,11 +229,10 @@ static void _navigation_complete(esp_err_t result, void *context)
     command->completed = true;
     release_screen_access =
         _navigation_release_screen_access_locked(command);
-    if (command->synchronous)
-    {
-        xSemaphoreGive(command->done);
-    }
-    else
+    navigation_started = command->navigation_started;
+    synchronous = command->synchronous;
+    done = command->done;
+    if (!synchronous)
     {
         completion = command->completion;
         completion_context = command->completion_context;
@@ -170,13 +240,29 @@ static void _navigation_complete(esp_err_t result, void *context)
     }
     xSemaphoreGive(s_lock);
 
-    if (completion != NULL)
-    {
-        completion(result, completion_context);
-    }
     if (release_screen_access)
     {
         app_manager_lifecycle_screen_access_end();
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_pending_count > 0U)
+    {
+        s_pending_count--;
+    }
+    xSemaphoreGive(s_lock);
+
+    if (navigation_started)
+    {
+        app_manager_back_gesture_navigation_settled();
+    }
+
+    if (synchronous)
+    {
+        xSemaphoreGive(done);
+    }
+    else if (completion != NULL)
+    {
+        completion(result, completion_context);
     }
 
 exit:
@@ -194,12 +280,17 @@ static void _navigation_execute(void *context)
     {
         release_screen_access =
             _navigation_release_screen_access_locked(command);
+        if (s_pending_count > 0U)
+        {
+            s_pending_count--;
+        }
         _navigation_free_locked(command);
         cancelled = true;
     }
     else
     {
         command->executing = true;
+        command->navigation_started = true;
     }
     xSemaphoreGive(s_lock);
     if (cancelled)
@@ -208,9 +299,11 @@ static void _navigation_execute(void *context)
         {
             app_manager_lifecycle_screen_access_end();
         }
+        app_manager_back_gesture_navigation_settled();
         goto exit;
     }
 
+    app_manager_back_gesture_navigation_begin();
     app_manager_navigation_finish_transition();
     esp_err_t result = app_manager_lifecycle_navigate(
                            &command->request, _navigation_complete, command);
@@ -232,7 +325,6 @@ static esp_err_t _navigation_submit(const app_manager_nav_request_t *request,
     esp_err_t result = ESP_ERR_INVALID_STATE;
     bool lock_owned = false;
     bool screen_access_owned = false;
-    navigation_command_t *command = NULL;
     const char *app_id = NULL;
 
     if (request == NULL || out_command == NULL)
@@ -271,40 +363,12 @@ static esp_err_t _navigation_submit(const app_manager_nav_request_t *request,
     {
         goto exit;
     }
-    command = _navigation_alloc_locked(request);
-    if (command == NULL)
+    result = _navigation_post_locked(request, app_id, synchronous, completion,
+                                     completion_context, out_command);
+    if (result == ESP_OK)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        screen_access_owned = false;
     }
-    if (!_navigation_id_copy(command->app_id, app_id) ||
-            !_navigation_id_copy(command->page_id, request->page_id))
-    {
-        _navigation_free_locked(command);
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
-    }
-    command->request.app_id = app_id != NULL ? command->app_id : NULL;
-    command->request.page_id = request->page_id != NULL ? command->page_id : NULL;
-    command->synchronous = synchronous;
-    command->completion = completion;
-    command->completion_context = completion_context;
-    command->screen_access_owned = true;
-    screen_access_owned = false;
-    xSemaphoreGive(s_lock);
-    lock_owned = false;
-
-    result = app_manager_ui_post(_navigation_execute, command);
-    if (result != ESP_OK)
-    {
-        xSemaphoreTake(s_lock, portMAX_DELAY);
-        screen_access_owned =
-            _navigation_release_screen_access_locked(command);
-        _navigation_free_locked(command);
-        xSemaphoreGive(s_lock);
-        goto exit;
-    }
-    *out_command = command;
 
 exit:
     if (lock_owned)
@@ -423,6 +487,15 @@ esp_err_t app_manager_navigation_init(void)
     }
     atomic_store(&s_api_users, 0U);
     atomic_store(&s_sync_waiters, 0U);
+    s_pending_count = 0U;
+    if (s_epoch == 0U)
+    {
+        s_epoch = 1U;
+    }
+    else
+    {
+        _navigation_epoch_advance_locked();
+    }
     atomic_store(&s_accepting, true);
     atomic_store(&s_initialized, true);
     goto exit;
@@ -473,6 +546,11 @@ esp_err_t app_manager_navigation_deinit(void)
             goto exit;
         }
     }
+    if (s_pending_count != 0U)
+    {
+        result = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
     xSemaphoreGive(s_lock);
     lock_owned = false;
 
@@ -494,6 +572,114 @@ void app_manager_navigation_finish_transition(void)
     {
         app_manager_presentation_finish_now();
     }
+}
+
+bool app_manager_navigation_gesture_token_acquire(
+    app_manager_navigation_gesture_token_t *token)
+{
+    bool acquired = false;
+    if (token == NULL)
+    {
+        goto exit;
+    }
+    token->epoch = 0U;
+    if (!_navigation_access_begin())
+    {
+        goto exit;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (atomic_load(&s_accepting) && s_pending_count == 0U)
+    {
+        token->epoch = s_epoch;
+        acquired = true;
+    }
+    xSemaphoreGive(s_lock);
+    _navigation_access_end();
+
+exit:
+    return acquired;
+}
+
+bool app_manager_navigation_gesture_token_is_current(
+    const app_manager_navigation_gesture_token_t *token)
+{
+    bool current = false;
+    if (token == NULL || !_navigation_access_begin())
+    {
+        goto exit;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    current = _navigation_token_current_locked(token);
+    xSemaphoreGive(s_lock);
+    _navigation_access_end();
+
+exit:
+    return current;
+}
+
+esp_err_t app_manager_navigation_submit_gesture_back(
+    const app_manager_navigation_gesture_token_t *token,
+    app_manager_nav_completion_cb_t completion, void *context)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    bool lock_owned = false;
+    bool screen_access_owned = false;
+
+    if (token == NULL || !app_manager_mailbox_is_worker() ||
+            !_navigation_access_begin())
+    {
+        goto exit;
+    }
+    if (!app_manager_lifecycle_screen_access_begin())
+    {
+        goto access_end;
+    }
+    screen_access_owned = true;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    lock_owned = true;
+    if (!_navigation_token_current_locked(token))
+    {
+        goto access_end;
+    }
+
+    const char *source_app_id = NULL;
+    app_manager_lifecycle_back_target_t target =
+        app_manager_lifecycle_back_target(&source_app_id);
+    if (target == APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE ||
+            source_app_id == NULL)
+    {
+        goto access_end;
+    }
+    const app_manager_nav_request_t request =
+    {
+        .operation = APP_MANAGER_NAV_OP_BACK,
+        .app_id = source_app_id,
+        .transition =
+        {
+            .effect = APP_MANAGER_TRANSITION_DEFAULT,
+        },
+    };
+    result = _navigation_post_locked(&request, source_app_id, false,
+                                     completion, context, NULL);
+    if (result == ESP_OK)
+    {
+        screen_access_owned = false;
+    }
+
+access_end:
+    if (lock_owned)
+    {
+        xSemaphoreGive(s_lock);
+    }
+    if (screen_access_owned)
+    {
+        app_manager_lifecycle_screen_access_end();
+    }
+    _navigation_access_end();
+
+exit:
+    return result;
 }
 
 esp_err_t app_manager_navigate(const app_manager_nav_request_t *request,

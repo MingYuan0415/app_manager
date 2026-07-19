@@ -243,7 +243,7 @@ exit:
 esp_err_t app_manager_presentation_init(void)
 {
     esp_err_t result = ESP_OK;
-    lv_obj_t *top_layer = NULL;
+    lv_obj_t *system_layer = NULL;
 
     if (s_presentation.initialized)
     {
@@ -270,13 +270,13 @@ esp_err_t app_manager_presentation_init(void)
     lv_obj_remove_flag(s_presentation.neutral_screen,
                        LV_OBJ_FLAG_SCROLLABLE);
 
-    top_layer = lv_display_get_layer_top(s_presentation.display);
-    if (top_layer == NULL)
+    system_layer = lv_display_get_layer_sys(s_presentation.display);
+    if (system_layer == NULL)
     {
         result = ESP_ERR_INVALID_STATE;
         goto fail;
     }
-    s_presentation.input_blocker = lv_obj_create(top_layer);
+    s_presentation.input_blocker = lv_obj_create(system_layer);
     if (s_presentation.input_blocker == NULL)
     {
         result = ESP_ERR_NO_MEM;

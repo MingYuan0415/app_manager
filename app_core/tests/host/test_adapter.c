@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_manager.h"
+#include "app_manager_back_gesture.h"
 #include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
@@ -64,15 +65,18 @@ typedef enum
     MOCK_LIFECYCLE_CONFIGURE,
     MOCK_LIFECYCLE_INIT,
     MOCK_NAVIGATION_INIT,
+    MOCK_GESTURE_INIT,
     MOCK_LIFECYCLE_PAUSE,
     MOCK_LIFECYCLE_ACCESS_WAIT,
     MOCK_LIFECYCLE_RESUME,
     MOCK_CONTROL_INIT,
     MOCK_CONTROL_DEINIT,
+    MOCK_GESTURE_SHUTDOWN,
     MOCK_NAVIGATION_DEINIT,
     MOCK_LIFECYCLE_SHUTDOWN_BEGIN,
     MOCK_LIFECYCLE_SHUTDOWN,
     MOCK_LIFECYCLE_DEINIT,
+    MOCK_GESTURE_DEINIT,
     MOCK_PRESENTATION_DEINIT,
     MOCK_REGISTRY_RESET,
     MOCK_MAILBOX_DEINIT,
@@ -99,6 +103,7 @@ typedef struct live_resources
     int presentation;
     int lifecycle;
     int navigation;
+    int gesture;
     int control;
 } live_resources_t;
 
@@ -145,6 +150,8 @@ static bool s_paused_fence_complete;
 static bool s_lifecycle_paused;
 static bool s_lifecycle_access_drained;
 static bool s_lifecycle_admission_closed;
+static bool s_gesture_accepting;
+static bool s_gesture_suspended;
 static char s_expected_drive_letter;
 static unsigned s_lvgl_lock_depth;
 static unsigned s_mmap_del_failures_remaining;
@@ -237,6 +244,8 @@ static void _mock_reset(void)
     s_lifecycle_paused = false;
     s_lifecycle_access_drained = false;
     s_lifecycle_admission_closed = false;
+    s_gesture_accepting = false;
+    s_gesture_suspended = true;
     s_expected_drive_letter = 'F';
     s_lvgl_lock_depth = 0;
     s_mmap_del_failures_remaining = 0;
@@ -590,6 +599,11 @@ void lv_indev_enable(lv_indev_t *indev, bool enable)
     {
         s_contract_error = true;
     }
+    if ((enable && s_gesture_suspended) ||
+            (!enable && !s_gesture_suspended))
+    {
+        s_order_error = true;
+    }
     _record_event(enable ? EVENT_TOUCH_ENABLE : EVENT_TOUCH_DISABLE);
 }
 
@@ -795,7 +809,7 @@ esp_err_t app_manager_builtin_registry_reset(void)
 {
     _mock_observe_initializing_or_deinitializing();
     if (s_live.lifecycle != 0 || s_live.presentation != 0 ||
-            s_live.navigation != 0)
+            s_live.navigation != 0 || s_live.gesture != 0)
     {
         s_contract_error = true;
     }
@@ -825,7 +839,8 @@ esp_err_t app_manager_presentation_init(void)
 esp_err_t app_manager_presentation_deinit(void)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (!s_ui_worker || s_live.lifecycle != 0 || s_live.navigation != 0)
+    if (!s_ui_worker || s_live.lifecycle != 0 || s_live.navigation != 0 ||
+            s_live.gesture != 0)
     {
         s_contract_error = true;
     }
@@ -893,7 +908,8 @@ esp_err_t app_manager_navigation_init(void)
 esp_err_t app_manager_navigation_deinit(void)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (s_ui_worker || s_live.control != 0 || s_live.lifecycle == 0)
+    if (s_ui_worker || s_live.control != 0 || s_live.lifecycle == 0 ||
+            (s_live.gesture != 0 && s_gesture_accepting))
     {
         s_contract_error = true;
     }
@@ -905,10 +921,82 @@ esp_err_t app_manager_navigation_deinit(void)
     return ESP_OK;
 }
 
+esp_err_t app_manager_back_gesture_init(lv_display_t *display,
+                                        lv_indev_t *touch)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (!s_ui_worker || display != &s_display_handle ||
+            touch != &s_touch_handle || s_live.navigation == 0 ||
+            s_live.lifecycle == 0 || s_live.presentation == 0 ||
+            s_live.gesture != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_GESTURE_INIT))
+    {
+        return s_failure.result;
+    }
+    s_live.gesture = 1;
+    s_gesture_accepting = true;
+    s_gesture_suspended = false;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_back_gesture_shutdown_begin(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (s_ui_worker || s_live.gesture == 0 || s_live.control != 0 ||
+            (s_gesture_accepting && s_live.navigation == 0))
+    {
+        s_contract_error = true;
+    }
+    s_gesture_accepting = false;
+    s_gesture_suspended = true;
+    return _mock_should_fail(MOCK_GESTURE_SHUTDOWN) ?
+           s_failure.result : ESP_OK;
+}
+
+esp_err_t app_manager_back_gesture_deinit(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (!s_ui_worker || s_live.gesture == 0 || s_gesture_accepting ||
+            s_live.navigation != 0 || s_live.lifecycle != 0 ||
+            s_live.presentation == 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_GESTURE_DEINIT))
+    {
+        return s_failure.result;
+    }
+    s_live.gesture = 0;
+    return ESP_OK;
+}
+
+void app_manager_back_gesture_screen_suspend(void)
+{
+    if (!s_ui_worker || s_live.gesture == 0)
+    {
+        s_contract_error = true;
+        return;
+    }
+    s_gesture_suspended = true;
+}
+
+void app_manager_back_gesture_screen_resume(void)
+{
+    if (!s_ui_worker || s_live.gesture == 0)
+    {
+        s_contract_error = true;
+        return;
+    }
+    s_gesture_suspended = false;
+}
+
 esp_err_t app_manager_control_init(const app_manager_config_t *config)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (config == NULL || s_live.navigation == 0)
+    if (config == NULL || s_live.navigation == 0 || s_live.gesture == 0)
     {
         s_contract_error = true;
     }
@@ -1065,6 +1153,7 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn callback,
     }
     if (callback == NULL || s_live.mailbox == 0 || s_live.lifecycle == 0 ||
             s_live.presentation == 0 || s_live.navigation != 0 ||
+            (s_live.gesture != 0 && s_gesture_accepting) ||
             s_live.control != 0 || s_adapter_paused ||
             !s_lifecycle_admission_closed)
     {
@@ -1083,7 +1172,7 @@ esp_err_t app_manager_mailbox_deinit(void)
     _record_event(EVENT_MAILBOX_DEINIT);
     if (s_live.control != 0 || s_live.navigation != 0 ||
             s_live.lifecycle != 0 || s_live.presentation != 0 ||
-            s_live.registry != 0)
+            s_live.gesture != 0 || s_live.registry != 0)
     {
         s_order_error = true;
     }
@@ -1154,7 +1243,8 @@ esp_err_t esp_lv_adapter_deinit(void)
     _record_event(EVENT_ADAPTER_DEINIT);
     if (s_live.control != 0 || s_live.navigation != 0 ||
             s_live.lifecycle != 0 || s_live.presentation != 0 ||
-            s_live.registry != 0 || s_live.mailbox != 0 || s_live.fonts != 0 ||
+            s_live.gesture != 0 || s_live.registry != 0 ||
+            s_live.mailbox != 0 || s_live.fonts != 0 ||
             s_lvgl_lock_depth != 0 || !s_adapter_paused ||
             (s_live.display != 0 && !s_paused_fence_complete))
     {
@@ -1223,6 +1313,8 @@ static void _check_clean_state(void)
     CHECK(!s_lifecycle_paused);
     CHECK(!s_lifecycle_access_drained);
     CHECK(!s_lifecycle_admission_closed);
+    CHECK(!s_gesture_accepting);
+    CHECK(s_gesture_suspended);
 }
 
 static void _init_then_deinit_successfully(void)
@@ -1322,6 +1414,7 @@ static void _test_each_init_failure_rolls_back(void)
         {MOCK_LIFECYCLE_CONFIGURE, 1, "lifecycle config"},
         {MOCK_LIFECYCLE_INIT, 1, "lifecycle"},
         {MOCK_NAVIGATION_INIT, 1, "navigation"},
+        {MOCK_GESTURE_INIT, 1, "back gesture"},
         {MOCK_CONTROL_INIT, 1, "control"},
     };
 
@@ -1369,9 +1462,11 @@ static void _test_all_cleanup_failures_are_retryable(void)
     static const mock_op_t cases[] =
     {
         MOCK_CONTROL_DEINIT,
+        MOCK_GESTURE_SHUTDOWN,
         MOCK_NAVIGATION_DEINIT,
         MOCK_LIFECYCLE_SHUTDOWN,
         MOCK_LIFECYCLE_DEINIT,
+        MOCK_GESTURE_DEINIT,
         MOCK_PRESENTATION_DEINIT,
         MOCK_REGISTRY_RESET,
         MOCK_MAILBOX_DEINIT,

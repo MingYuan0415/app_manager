@@ -2551,6 +2551,65 @@ static bool _lifecycle_topology_query_allowed(void)
                                  memory_order_acquire);
 }
 
+app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
+    const char **source_app_id)
+{
+    app_manager_lifecycle_back_target_t target =
+        APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE;
+    app_manager_app_node_t *source_app = s_model.active_app;
+    app_manager_page_node_t *source_page = source_app != NULL ?
+                                           source_app->current_page : NULL;
+
+    if (source_app_id != NULL)
+    {
+        *source_app_id = NULL;
+    }
+    if (source_app_id == NULL || !s_initialized || s_tearing_down ||
+            !app_manager_mailbox_is_worker() ||
+            !_lifecycle_topology_query_allowed() || s_handler_page != NULL ||
+            !app_manager_nav_model_invariants(&s_model) || source_app == NULL ||
+            !source_app->in_use || source_app->cleanup_pending ||
+            !source_app->active || source_app->descriptor == NULL ||
+            source_page == NULL || !source_page->in_use ||
+            source_page->cleanup_pending || source_page->unmount_pending ||
+            !source_page->started || !source_page->mounted ||
+            !source_page->active || source_page->app != source_app)
+    {
+        goto exit;
+    }
+
+    app_manager_page_node_t *target_page = source_page->previous;
+    if (target_page != NULL)
+    {
+        if (!target_page->in_use || target_page->cleanup_pending ||
+                target_page->unmount_pending || !target_page->started ||
+                target_page->active || target_page->app != source_app)
+        {
+            goto exit;
+        }
+        target = APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE;
+    }
+    else
+    {
+        app_manager_app_node_t *target_app = source_app->previous;
+        target_page = target_app != NULL ? target_app->current_page : NULL;
+        if (target_app == NULL || !target_app->in_use ||
+                target_app->cleanup_pending || target_app->active ||
+                target_app->descriptor == NULL || target_page == NULL ||
+                !target_page->in_use || target_page->cleanup_pending ||
+                target_page->unmount_pending || !target_page->started ||
+                target_page->active || target_page->app != target_app)
+        {
+            goto exit;
+        }
+        target = APP_MANAGER_LIFECYCLE_BACK_TARGET_APP;
+    }
+    *source_app_id = source_app->descriptor->id;
+
+exit:
+    return target;
+}
+
 esp_err_t app_manager_lifecycle_is_active_call(void *opaque)
 {
     app_manager_lifecycle_request_t *request = opaque;

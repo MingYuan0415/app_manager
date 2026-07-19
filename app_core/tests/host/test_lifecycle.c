@@ -48,6 +48,12 @@ typedef struct nav_call
     unsigned completions;
 } nav_call_t;
 
+typedef struct back_target_call
+{
+    app_manager_lifecycle_back_target_t target;
+    const char *source_app_id;
+} back_target_call_t;
+
 typedef struct presentation_mock
 {
     struct _lv_obj_t neutral;
@@ -85,6 +91,14 @@ static page_state_t *const s_page_states[] =
 static trace_event_t s_trace[TEST_TRACE_CAPACITY];
 static size_t s_trace_count;
 static presentation_mock_t s_presentation;
+
+void app_manager_back_gesture_navigation_begin(void)
+{
+}
+
+void app_manager_back_gesture_navigation_settled(void)
+{
+}
 
 static void _page_handler(app_manager_msg_type_t message, void *user_data)
 {
@@ -512,6 +526,31 @@ static esp_err_t _screen_pause_on_ui(void *context)
     return app_manager_lifecycle_screen_pause();
 }
 
+static esp_err_t _back_target_on_ui(void *context)
+{
+    back_target_call_t *call = context;
+    call->target = app_manager_lifecycle_back_target(&call->source_app_id);
+    return ESP_OK;
+}
+
+static void _expect_back_target(app_manager_lifecycle_back_target_t target,
+                                const char *source_app_id)
+{
+    back_target_call_t call = {0};
+    assert(app_manager_ui_call(_back_target_on_ui, &call, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(call.target == target);
+    if (source_app_id == NULL)
+    {
+        assert(call.source_app_id == NULL);
+    }
+    else
+    {
+        assert(call.source_app_id != NULL);
+        assert(strcmp(call.source_app_id, source_app_id) == 0);
+    }
+}
+
 static esp_err_t _screen_resume_on_ui(void *context)
 {
     (void)context;
@@ -569,6 +608,7 @@ static void _test_run_and_page_navigation(void)
     _expect_start_handoff_complete();
     assert(s_a_root.has_arguments && s_a_root.arguments.type == 7U);
     assert(_live_screen_count() == 1U);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     call.request.has_arguments = true;
@@ -599,9 +639,11 @@ static void _test_run_and_page_navigation(void)
                   sizeof(open_one_expected) / sizeof(open_one_expected[0]));
     _expect_start_handoff_complete();
     assert(_live_screen_count() == 1U);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE, "a");
 
     call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "two");
     assert(_navigate(&call) == ESP_OK);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE, "a");
     call = _request(APP_MANAGER_NAV_OP_BACK, NULL, NULL);
     _trace_reset();
     assert(_navigate(&call) == ESP_OK);
@@ -640,6 +682,7 @@ static void _test_run_and_page_navigation(void)
                   sizeof(back_to_expected) / sizeof(back_to_expected[0]));
     _expect_start_handoff_complete();
     assert(s_presentation.starts == starts_before + 1U);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 }
 
 static void _test_pause_and_stop_rollback(void)
@@ -665,6 +708,7 @@ static void _test_pause_and_stop_rollback(void)
 
     call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
     assert(_navigate(&call) == ESP_OK);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_APP, "b");
     s_b_root.stop_failures = 1U;
     call = _request(APP_MANAGER_NAV_OP_EXIT, "b", NULL);
     _trace_reset();
@@ -750,10 +794,12 @@ static void _test_forward_unmount_and_target_pause_failure(void)
     _expect_trace(pause_expected,
                   sizeof(pause_expected) / sizeof(pause_expected[0]));
     assert(_live_screen_count() == 0U);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
     assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
            ESP_OK);
     assert(app_page_is_actived("a", "one"));
     assert(_live_screen_count() == 1U);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE, "a");
 
     call = _request(APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND, NULL, NULL);
     _trace_reset();
@@ -876,6 +922,7 @@ static void _test_async_transition_queries(void)
     assert(call.completions == 0U);
     assert(app_manager_is_transitioning());
     assert(s_presentation.running);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
     assert(s_presentation.last_effect == APP_MANAGER_TRANSITION_FADE);
     assert(s_presentation.last_duration_ms == 50U);
     assert(!app_manager_is_actived("a"));
@@ -1182,6 +1229,7 @@ int main(void)
                s_pages, sizeof(s_pages) / sizeof(s_pages[0])) == ESP_OK);
     assert(app_manager_mailbox_init() == ESP_OK);
     assert(app_manager_lifecycle_init(12U * 64U) == ESP_OK);
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 
     _test_run_and_page_navigation();
     _test_presentation_start_failure_rollback();

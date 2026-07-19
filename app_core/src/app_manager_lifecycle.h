@@ -11,6 +11,14 @@
 typedef void (*app_manager_lifecycle_nav_complete_t)(esp_err_t result,
         void *context);
 
+/** @brief Stable destination available to the framework back gesture. */
+typedef enum app_manager_lifecycle_back_target
+{
+    APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE = 0, /**< Back is unavailable. */
+    APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE,     /**< Previous page in this App. */
+    APP_MANAGER_LIFECYCLE_BACK_TARGET_APP,      /**< Previous resident App. */
+} app_manager_lifecycle_back_target_t;
+
 /**
  * @brief Configure resident policy and resolved navigation defaults.
  * @note Call before app_manager_lifecycle_init(). Zero resident capacity
@@ -59,6 +67,15 @@ esp_err_t app_manager_lifecycle_navigate(
  * @return Stable descriptor ID while inside a callback, otherwise NULL.
  */
 const char *app_manager_lifecycle_callback_app_id(void);
+
+/**
+ * @brief Query the stable destination for a framework back gesture.
+ * @param source_app_id receives the current App ID, or NULL when unavailable.
+ * @return PAGE or APP only when a conditional BACK can be admitted safely.
+ * @note Call only from the UI worker outside a lifecycle callback.
+ */
+app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
+    const char **source_app_id);
 
 /**
  * @brief Pause the active page for display sleep on the mailbox worker.

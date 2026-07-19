@@ -3,6 +3,7 @@
 #include "mt_log.h"
 
 #include "app_manager.h"
+#include "app_manager_back_gesture.h"
 #include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
@@ -51,6 +52,7 @@ static bool s_registry_ready;
 static bool s_presentation_ready;
 static bool s_lifecycle_ready;
 static bool s_navigation_ready;
+static bool s_gesture_ready;
 static bool s_control_ready;
 static bsp_display_port_t s_display_port_storage;
 static const bsp_display_port_t *s_display_port;
@@ -118,6 +120,7 @@ static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
     {
         goto exit;
     }
+    app_manager_back_gesture_screen_resume();
     lv_indev_reset(s_touch, NULL);
     (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
     lv_indev_enable(s_touch, true);
@@ -135,6 +138,7 @@ static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
     {
         goto exit;
     }
+    app_manager_back_gesture_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
     result = ESP_OK;
@@ -152,6 +156,7 @@ static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
         result = ESP_ERR_INVALID_STATE;
         goto exit;
     }
+    app_manager_back_gesture_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
     result = app_manager_lifecycle_screen_pause();
@@ -270,6 +275,7 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
         result = _app_adapter_enable_touch_on_ui(NULL);
         goto exit;
     }
+    app_manager_back_gesture_screen_suspend();
     lv_indev_reset(s_touch, NULL);
     lv_indev_enable(s_touch, false);
 
@@ -530,6 +536,12 @@ static esp_err_t _app_adapter_presentation_init_on_ui(void *arg)
     return app_manager_presentation_init();
 }
 
+static esp_err_t _app_adapter_gesture_init_on_ui(void *arg)
+{
+    (void)arg;
+    return app_manager_back_gesture_init(s_display, s_touch);
+}
+
 static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
 {
     (void)arg;
@@ -543,6 +555,15 @@ static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
             goto exit;
         }
         s_lifecycle_ready = false;
+    }
+    if (s_gesture_ready)
+    {
+        result = app_manager_back_gesture_deinit();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+        s_gesture_ready = false;
     }
     if (s_presentation_ready)
     {
@@ -571,6 +592,14 @@ static esp_err_t _app_adapter_cleanup_services(void)
             goto exit;
         }
         s_control_ready = false;
+    }
+    if (s_gesture_ready)
+    {
+        result = app_manager_back_gesture_shutdown_begin();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
     }
     if (s_navigation_ready)
     {
@@ -806,6 +835,7 @@ static void _app_adapter_reset_runtime(void)
     s_presentation_ready = false;
     s_lifecycle_ready = false;
     s_navigation_ready = false;
+    s_gesture_ready = false;
     s_control_ready = false;
     s_display_port = NULL;
     s_display_port_storage = (bsp_display_port_t)
@@ -989,6 +1019,13 @@ static esp_err_t _app_adapter_start_services(
         goto exit;
     }
     s_navigation_ready = true;
+    result = app_manager_ui_call(_app_adapter_gesture_init_on_ui,
+                                 NULL, UINT32_MAX);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    s_gesture_ready = true;
     s_control_ready = true;
     result = app_manager_control_init(config);
 

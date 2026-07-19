@@ -113,6 +113,26 @@ uint32_t    app_manager_get_running_apps(void);
  */
 bool        app_manager_is_transitioning(void);
 
+/**
+ * @brief Enable or disable the global edge-back gesture policy.
+ *
+ * @note The policy defaults to enabled after app_manager_init(). Disabling it
+ *       cancels pointer tracking that has not submitted BACK, but does not
+ *       revoke a navigation command already admitted by the gateway.
+ *
+ * @param enabled selects whether stable pages may expose edge-back capture.
+ * @return ESP_OK when applied or retained for the next Screen resume,
+ *         otherwise an admission or UI-dispatch error.
+ */
+esp_err_t app_manager_back_gesture_set_enabled(bool enabled);
+
+/**
+ * @brief Return the global edge-back gesture policy.
+ * @return true when enabled; false before init, after deinit, or when disabled.
+ * @note This does not report whether the current page has a back target.
+ */
+bool app_manager_back_gesture_is_enabled(void);
+
 /* ── 页面私有内存（handler 内使用） ── */
 
 /**

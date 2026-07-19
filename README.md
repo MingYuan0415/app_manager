@@ -1,12 +1,13 @@
-# MicroTech App Manager 0.2.0
+# MicroTech App Manager 0.3.0
 
 `layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
 导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-0.2.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+0.3.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
 使用静态 descriptor；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
-同一个固定容量 command gateway。
+同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
+Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
 
 ## 1. 设计不变量
 
@@ -22,6 +23,8 @@
 8. 屏幕休眠和 deinit 会先快进当前动画，再进入稳定页面状态并关闭新准入。
 9. PM generation/commit、mailbox 超时和显示 DMA fence 语义保持独立有效。
 10. 冷启动期间物理按键和 inactivity PM 保持关闭；首帧、面板和依赖服务提交后才开放。
+11. 边缘返回捕获条和 indicator 只属于 Sys Layer，不进入 Page Screen 生命周期。
+12. 手势 PRESSING 只更新 indicator；Page Screen 的位置、透明度和样式始终不实时跟手。
 
 ## 2. 模块职责
 
@@ -35,6 +38,7 @@
 | `app_core/src/app_manager_navigation.c` | 24 槽 sync/async command gateway 和超时语义 |
 | `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
 | `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、LVGL 原生动画和触摸屏障 |
+| `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
@@ -45,7 +49,7 @@
 主要依赖关系如下：
 
 ```text
-ordinary task / UI callback / lifecycle callback
+ordinary task / UI callback / lifecycle callback / Sys Layer gesture
                     |
                     v
         navigation command gateway (24)
@@ -130,7 +134,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 builtin provider 实现 `find`、`enumerate`、`acquire` 和 `release`。运行实例持有
 value-owned lease，生命周期核心通过 lease 访问 App/Page descriptor，释放 App 时才
-归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.2.0 不提供公共 provider 注册、
+归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.3.0 不提供公共 provider 注册、
 动态模块 ABI 或脚本应用。
 
 ## 5. Typed Blob 与 New Intent
@@ -276,7 +280,7 @@ RESUME source。动画结束后的 source `STOP` 失败也使用相同补偿顺�
 `BACK_TO` 只在起点和最终目标之间播放一次动画；中间页面按栈顶到栈底执行 STOP/free，
 清理失败前已经成功移除的页面属于允许的部分提交。
 
-动画期间 presentation 在 top layer 放置透明触摸屏障。它只阻止 LVGL 触摸，不阻止
+动画期间 presentation 在 Sys Layer 放置透明触摸屏障。它只阻止 LVGL 触摸，不阻止
 HOME、POWER 或 app-control。新导航到达时先把当前动画推进到完成回调和稳定 target，
 再执行 FIFO 中的下一条命令。Screen 创建或动画启动失败遵循上述降级或补偿回滚规则，
 任何失败都不能绕过 target PAUSE、遗失 cleanup ownership 或形成双 active 会话。
@@ -284,6 +288,85 @@ HOME、POWER 或 app-control。新导航到达时先把当前动画推进到完�
 `app_manager_is_transitioning()` 可区分动画临时状态。动画期间 active/present/userdata
 等拓扑查询返回与 Screen 暂停相同的保守值，不能把 `false` 或 `NULL` 解释为实例已被
 销毁。
+
+### 7.2 Sys Layer 边缘返回
+
+边缘返回属于 app-manager 的系统级输入，不属于任何 App 或 Page。框架在 LVGL
+Sys Layer 上永久创建左右两个透明捕获条；捕获条使用 `LV_OBJ_FLAG_CLICKABLE` 和
+`LV_OBJ_FLAG_PRESS_LOCK`，保证按下后移出窄边缘区域仍能收到本次指针序列。手势反馈是
+独立的 `64x144` A8 Canvas indicator，不接收点击，也不进入 Page 的
+MOUNT/UNMOUNT 生命周期。框架不携带静态图片，也不依赖 LVGL Vector 或 ThorVG；弧形
+alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本次手势所属的屏幕外侧
+水平移入；两侧图标文本都使用 `LV_SYMBOL_LEFT`，不改用 `LV_SYMBOL_RIGHT`。
+
+一次有效手势必须同时满足：
+
+- 全局边缘返回开关已启用；
+- Screen 处于稳定可交互状态，没有页面动画、Screen suspend 或 deinit；
+- 当前页面存在合法返回目标；
+- 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
+
+0.3.0 的几何参数按显示分辨率计算并限制上下界：
+
+| 参数 | 计算规则 |
+| --- | --- |
+| 边缘捕获宽度 | 屏宽 8%，限制为 24..32 px；368 px 屏宽下为 29 px |
+| 提交距离 | 屏宽 15%，限制为 48..80 px；368 px 屏宽下为 55 px |
+| 方向判定 slop | 屏宽 3%，限制为 10..16 px |
+| armed 回退滞回 | 提交距离的 1/5，限制为 10..18 px |
+| Canvas 尺寸 | 固定 64x144 px，手势期间不缩放、不变形 |
+| indicator Y 锚点 | 按下时以触点居中并限制 8 px 垂直边距，本次手势内保持固定 |
+| indicator 样式 | 固定 `#202124`、不透明度 220；仅轮廓边缘使用 1 px alpha 抗锯齿 |
+
+Canvas 使用一块 9,220 bytes（约 9.0 KiB）的固定内部 BSS A8 draw buffer，不在手势期间分配内存。
+弧形按行计算：先按 `u = abs(2*y-(H-1))/(H-1)` 将行坐标归一化到 Q15，再计算
+`smooth = u * u * (3 - 2 * u)` 和 `depth = 62 - (62 - 28) * smooth`，把有效深度
+从中部 62 px 平滑收窄到上下端 28 px。
+左侧填充 `[0, depth)`，右侧填充 `[64-depth, 64)`；左右手势共用同一缓冲区，仅在捕获
+侧发生变化时重新生成镜像轮廓并 invalidate Canvas。
+
+向内位移达到 slop，且垂直位移不大于向内位移的两倍时锁定水平方向。尚未锁定时，只有
+垂直位移达到两个 slop，且大于两倍的非负向内位移时才抑制本次序列；位于两者之间的
+斜向移动保持未决并继续观察，避免轻微垂直偏移导致误取消。明显向外移动超过一个 slop
+时仍立即取消。向内位移达到提交距离后进入 armed；回撤到“提交距离减滞回值”以下才
+解除 armed，避免阈值附近抖动反复切换。
+
+Home 始终没有手势返回入口，即使全局开关已启用。其他 App 的子页返回上一 Page；
+非 Home 根页只有在 App 历史中存在前一个 App 时才能手势返回。没有目标时捕获条保持
+无效，边缘输入继续由正常 LVGL hit-test 处理。
+
+`PRESSING` 期间框架只按 `inward / trigger_distance` 更新 Canvas 的水平位置。左侧 X 从
+`-64` 移到 `0`，右侧 X 从屏宽移到“屏宽减 64”；Canvas 尺寸、轮廓、不透明度和 Y
+锚点全程不变。`LV_SYMBOL_LEFT` Label 是 Canvas 子对象，仅在进入 ARMED 后显示，回撤
+解除 ARMED 后立即隐藏。Page Screen 的坐标、透明度、样式和 active 状态不随手指实时
+变化，也不创建全屏快照。释放前未达到阈值、方向错误、输入取消或状态被抢占时，只复位
+indicator，不产生导航命令；达到阈值后提交一条既有异步 `BACK`，并由 Page/App 返回
+场景的默认动画完成实际 Screen 切换。
+
+按下时手势控制器会取得 navigation epoch token，并在移动和释放时持续校验。若期间已有
+其他导航获得准入，token 立即失效，本次手势只隐藏 indicator，不再提交过期 `BACK`；
+释放时的条件提交还会再次核对 epoch 和当前 source App。成功提交后命令仍进入统一的
+24 槽 FIFO，不建立第二套导航队列。
+
+新导航开始、Screen suspend 或 deinit 会取消尚未提交的指针序列并隐藏 indicator；
+Screen resume 或导航稳定结束后重新计算当前页面是否允许捕获。已经成功准入 navigation
+gateway 的手势 `BACK` 不会因随后关闭开关而撤销，仍按普通异步导航的 exactly-once
+完成语义达到稳定状态。
+
+运行时开关是公共 API，不增加 `app_manager_config_t` 字段：
+
+```c
+esp_err_t app_manager_back_gesture_set_enabled(bool enabled);
+bool app_manager_back_gesture_is_enabled(void);
+```
+
+初始化成功后全局开关默认为 `true`。
+`app_manager_back_gesture_set_enabled(false)` 会阻止新手势并复位尚未提交的 indicator；
+`app_manager_back_gesture_is_enabled()` 只报告这个全局策略值，不表示当前页面一定存在返回
+目标。Home、无 App 历史、Screen 暂停或动画期间，策略值仍可能为 `true`，但有效捕获为
+`false`；初始化前和 deinit 后 getter 返回 `false`。setter 在策略已应用或已保存供下次
+Screen resume 使用时返回 `ESP_OK`，否则返回准入或 UI dispatcher 错误。业务页面不得
+直接访问或重排 Sys Layer 捕获对象。
 
 ## 8. 统一导航 Gateway
 
@@ -553,7 +636,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 ## 13. 初始化配置
 
-`app_manager_config_t` 中与 0.2.0 导航直接相关的字段：
+`app_manager_config_t` 中与 0.3.0 导航直接相关的字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -566,7 +649,8 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 | `page_back_transition` | Page 返回默认动画 |
 
 其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
-`standby_ops`。配置结构由初始化路径读取，硬件操作表会复制到内部 owner。
+`standby_ops`。配置结构由初始化路径读取，硬件操作表会复制到内部 owner。边缘返回不增加
+配置字段；初始化后默认启用，需要运行时关闭时调用公共开关 API。
 
 推荐启动顺序：
 
@@ -597,7 +681,9 @@ ctest --test-dir /tmp/mt-app-core --output-on-failure
 ```
 
 该套件包括 `mailbox`、`navigation`、`registry`、`nav_model`、`lifecycle`、`control`
-和 `adapter`。ASan/UBSan 与 TSan 分别使用：
+和 `adapter`。其中 navigation/lifecycle 测试覆盖边缘返回的 epoch 准入、条件 BACK、
+并发 FIFO 和稳定 back-target；Sys Layer 对象、几何识别及跨层资源清理由下述
+cross-layer 套件覆盖。ASan/UBSan 与 TSan 分别使用：
 
 ```sh
 cmake -S layers/app_manager/app_core/tests/host \
@@ -632,7 +718,17 @@ ctest --test-dir /tmp/mt-integration --output-on-failure
 对应 sanitizer cache 变量为 `APPS_SANITIZER`、`MAIN_HOST_SANITIZER` 和
 `CROSS_LAYER_SANITIZER`，取值同样是 `address` 或 `thread`。跨层 `presentation` 测试
 覆盖 14 种效果、立即完成、正常完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
-App/Page 前进返回、Screen pause/resume 和清理回滚。
+App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘手势。手势断言除
+导航结果外，还应检查稳定时一个 Page Screen、操作期间不创建快照、Page Screen 不随
+`PRESSING` 改变、Canvas 固定为 `64x144`、indicator Y 锚点固定、左右弧形互为镜像，
+以及 indicator、timer、订阅和活动会话在取消或完成后回到基线。A8 buffer 测试还应采样
+顶部、四分之一、中部和底部的 depth 与边缘 alpha，验证 Q15 曲线和 1 px 抗锯齿；
+368 px 屏宽下检查捕获条为 29 px、提交距离为 55 px，并分别检查左侧 X 为
+`-64/-31/0`、右侧 X 为 `368/335/304`（中间值对应 inward=28）；左侧 `x=28` 命中而
+`x=29` 不命中，右侧
+`x=339` 命中而 `x=338` 不命中，提交边界应覆盖向内位移 `54/55`。同时确认轻微斜滑
+能够锁定水平，明显垂直或向外移动被取消，以及箭头在阈值前隐藏、ARMED 后显示、迟滞
+回撤后再次隐藏。
 
 提交前还应执行：
 
@@ -646,17 +742,22 @@ idf.py size
 C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
 
 - App/Page 双向切换至少 100 次，无空白帧和触摸穿透；
+- 左右边缘分别执行至少 100 次提交和取消，Home、无目标、休眠和动画抢占均不误导航；
+- 拖动时 Sys Layer Canvas 仅从屏幕外水平平移，固定尺寸、轮廓、不透明度和 Y 锚点；
+  箭头仅在 ARMED 时可见，Page Screen 在释放提交前保持不动；
 - 动画平均帧率不低于 25 FPS；
 - Screen、LVGL object、timer、订阅和活动会话无增长；
 - 无 panel IO、DMA 或 fence 错误；
-- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量。
+- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量，新增内部 BSS 不超过 10 KiB。
 
 ## 15. 明确边界
 
-0.2.0 不包含：
+0.3.0 不包含：
 
 - 动态模块加载、公共 provider 插件 ABI 或脚本应用；
-- 手势跟手返回、自定义 ZOOM 或全屏快照；
+- Page Screen 实时跟手返回、自定义 ZOOM 或全屏快照；边缘拖动只更新 Sys Layer
+  indicator，释放提交后仍播放既有 Page/App 返回动画；
+- 静态 indicator 图片、LVGL Vector 或 ThorVG；弧形只由固定 A8 Canvas 程序化生成；
 - popup/overlay manager；
 - 多个 app-manager 实例；
 - 对 ESP-IDF、LVGL 或 `managed_components/` 的本地修改。
@@ -669,10 +770,11 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 4. `app_core/src/app_manager_nav_model.c`
 5. `app_core/src/app_manager_lifecycle.c`
 6. `app_core/src/app_manager_presentation.c`
-7. `app_core/src/app_manager_builtin.c`
-8. `app_core/src/app_manager_lvgl_adapter.c`
-9. `app_core/tests/host/`
-10. `tests/integration/test_cross_layer.c`
+7. `app_core/src/app_manager_back_gesture.c`
+8. `app_core/src/app_manager_builtin.c`
+9. `app_core/src/app_manager_lvgl_adapter.c`
+10. `app_core/tests/host/`
+11. `tests/integration/test_cross_layer.c`
 
 ## 17. License
 

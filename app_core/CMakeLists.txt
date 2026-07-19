@@ -5,6 +5,7 @@ idf_component_register(
          "src/app_manager_pm_worker.c"
          "src/app_manager_mailbox.c"
          "src/app_manager_builtin.c"
+         "src/app_manager_back_gesture.c"
          "src/app_manager_nav_model.c"
          "src/app_manager_navigation.c"
          "src/app_manager_presentation.c"

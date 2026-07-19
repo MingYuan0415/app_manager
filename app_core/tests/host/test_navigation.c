@@ -36,6 +36,15 @@ typedef struct host_sync_call
     atomic_bool complete;
 } host_sync_call_t;
 
+typedef struct host_async_call
+{
+    app_manager_nav_request_t request;
+    unsigned tag;
+    esp_err_t result;
+    atomic_bool started;
+    atomic_bool complete;
+} host_async_call_t;
+
 static pthread_mutex_t s_post_lock = PTHREAD_MUTEX_INITIALIZER;
 static host_posted_call_t s_posts[HOST_POST_CAPACITY];
 static size_t s_post_count;
@@ -55,6 +64,17 @@ static atomic_bool s_screen_accepting;
 static atomic_uint s_screen_access_count;
 static atomic_uint s_callback_owner_query_count;
 static const char *s_callback_app_id;
+static app_manager_lifecycle_back_target_t s_back_target;
+static const char *s_back_source_app_id;
+static unsigned s_gesture_begin_count;
+static unsigned s_gesture_settled_count;
+static bool s_acquire_token_on_settled;
+static bool s_settled_token_acquired;
+static atomic_bool s_block_next_post;
+static atomic_bool s_blocked_post_entered;
+static atomic_bool s_blocked_post_release;
+static unsigned s_ordered_completions[2];
+static size_t s_ordered_completion_count;
 
 static void _reset_observation(void)
 {
@@ -73,6 +93,17 @@ static void _reset_observation(void)
     atomic_store(&s_screen_accepting, true);
     atomic_store(&s_callback_owner_query_count, 0U);
     s_callback_app_id = NULL;
+    s_back_target = APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE;
+    s_back_source_app_id = "settings";
+    s_gesture_begin_count = 0U;
+    s_gesture_settled_count = 0U;
+    s_acquire_token_on_settled = false;
+    s_settled_token_acquired = false;
+    atomic_store(&s_block_next_post, false);
+    atomic_store(&s_blocked_post_entered, false);
+    atomic_store(&s_blocked_post_release, false);
+    s_ordered_completion_count = 0U;
+    memset(s_ordered_completions, 0, sizeof(s_ordered_completions));
 }
 
 static size_t _post_count(void)
@@ -132,8 +163,21 @@ static void _completion(esp_err_t result, void *context)
 {
     assert(context == &s_completion_count);
     assert(s_ui_worker);
+    assert(s_gesture_settled_count >= s_gesture_begin_count);
     atomic_store(&s_completion_result, result);
     atomic_fetch_add(&s_completion_count, 1U);
+}
+
+static void _ordered_completion(esp_err_t result, void *context)
+{
+    host_async_call_t *call = context;
+    assert(result == ESP_OK);
+    assert(s_ui_worker);
+    assert(s_gesture_settled_count >= s_gesture_begin_count);
+    assert(s_ordered_completion_count <
+           sizeof(s_ordered_completions) /
+           sizeof(s_ordered_completions[0]));
+    s_ordered_completions[s_ordered_completion_count++] = call->tag;
 }
 
 static void _noop_post(void *context)
@@ -150,6 +194,16 @@ static void *_sync_navigation_thread(void *context)
     return NULL;
 }
 
+static void *_async_navigation_thread(void *context)
+{
+    host_async_call_t *call = context;
+    atomic_store(&call->started, true);
+    call->result = app_manager_navigate_async(
+                       &call->request, _ordered_completion, call);
+    atomic_store(&call->complete, true);
+    return NULL;
+}
+
 bool app_manager_mailbox_is_worker(void)
 {
     return s_ui_worker;
@@ -160,6 +214,15 @@ esp_err_t app_manager_ui_post(void (*callback)(void *), void *context)
     if (callback == NULL)
     {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (atomic_exchange(&s_block_next_post, false))
+    {
+        atomic_store(&s_blocked_post_entered, true);
+        while (!atomic_load(&s_blocked_post_release))
+        {
+            usleep(1000);
+        }
     }
 
     pthread_mutex_lock(&s_post_lock);
@@ -236,6 +299,35 @@ const char *app_manager_lifecycle_callback_app_id(void)
     return s_callback_app_id;
 }
 
+app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
+    const char **source_app_id)
+{
+    assert(s_ui_worker);
+    assert(source_app_id != NULL);
+    *source_app_id = s_back_target !=
+                     APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE ?
+                     s_back_source_app_id : NULL;
+    return s_back_target;
+}
+
+void app_manager_back_gesture_navigation_begin(void)
+{
+    assert(s_ui_worker);
+    s_gesture_begin_count++;
+}
+
+void app_manager_back_gesture_navigation_settled(void)
+{
+    assert(s_ui_worker);
+    s_gesture_settled_count++;
+    if (s_acquire_token_on_settled)
+    {
+        app_manager_navigation_gesture_token_t token = {0};
+        s_settled_token_acquired =
+            app_manager_navigation_gesture_token_acquire(&token);
+    }
+}
+
 bool app_manager_lifecycle_screen_access_begin(void)
 {
     atomic_fetch_add(&s_screen_access_count, 1U);
@@ -292,6 +384,7 @@ static void _reentrant_completion(esp_err_t result, void *context)
     assert(context == &s_completion_count);
     assert(s_ui_worker);
     assert(result == ESP_OK);
+    assert(s_gesture_settled_count >= s_gesture_begin_count);
     const unsigned previous = atomic_fetch_add(&s_completion_count, 1U);
     if (previous == 0U)
     {
@@ -310,6 +403,166 @@ static void _test_ui_worker_rejected(void)
            ESP_ERR_INVALID_STATE);
     s_ui_worker = false;
     assert(_post_count() == 0U);
+}
+
+static void _test_gesture_token_and_conditional_back(void)
+{
+    app_manager_navigation_gesture_token_t token = {0};
+    s_ui_worker = true;
+    assert(app_manager_navigation_gesture_token_acquire(&token));
+    assert(token.epoch != 0U);
+    assert(app_manager_navigation_gesture_token_is_current(&token));
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) == ESP_OK);
+    assert(!app_manager_navigation_gesture_token_is_current(&token));
+    app_manager_navigation_gesture_token_t blocked = {0};
+    assert(!app_manager_navigation_gesture_token_acquire(&blocked));
+    s_ui_worker = false;
+
+    s_acquire_token_on_settled = true;
+    assert(_post_count() == 1U);
+    assert(atomic_load(&s_screen_access_count) == 1U);
+    assert(_run_one_post());
+    assert(s_observed_request.operation == APP_MANAGER_NAV_OP_BACK);
+    assert(strcmp(s_observed_app_id, "settings") == 0);
+    assert(s_observed_page_id[0] == '\0');
+    assert(s_observed_request.transition.effect ==
+           APP_MANAGER_TRANSITION_DEFAULT);
+    assert(s_observed_request.transition.duration_ms == 0U);
+    assert(s_observed_request.transition.reserved == 0U);
+    assert(atomic_load(&s_completion_count) == 1U);
+    assert(s_gesture_begin_count == 1U);
+    assert(s_gesture_settled_count == 1U);
+    assert(s_settled_token_acquired);
+    assert(!app_manager_navigation_gesture_token_is_current(&token));
+
+    app_manager_navigation_gesture_token_t next = {0};
+    assert(app_manager_navigation_gesture_token_acquire(&next));
+    assert(next.epoch != token.epoch);
+}
+
+static void _test_stale_gesture_does_not_back_new_foreground(void)
+{
+    app_manager_navigation_gesture_token_t token = {0};
+    s_ui_worker = true;
+    assert(app_manager_navigation_gesture_token_acquire(&token));
+    s_ui_worker = false;
+
+    const app_manager_nav_request_t request = _request();
+    assert(app_manager_navigate_async(&request, _completion,
+                                      &s_completion_count) == ESP_OK);
+    const size_t posts_before = _post_count();
+    assert(posts_before == 1U);
+    s_ui_worker = true;
+    assert(!app_manager_navigation_gesture_token_is_current(&token));
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) ==
+           ESP_ERR_INVALID_STATE);
+    s_ui_worker = false;
+    assert(_post_count() == posts_before);
+    assert(atomic_load(&s_screen_access_count) == 1U);
+
+    assert(_run_one_post());
+    assert(atomic_load(&s_completion_count) == 1U);
+    assert(s_gesture_begin_count == 1U);
+    assert(s_gesture_settled_count == 1U);
+}
+
+static void _test_gesture_post_failure_preserves_epoch(void)
+{
+    app_manager_navigation_gesture_token_t token = {0};
+    s_ui_worker = true;
+    assert(app_manager_navigation_gesture_token_acquire(&token));
+    s_ui_worker = false;
+
+    for (size_t index = 0; index < HOST_POST_CAPACITY; ++index)
+    {
+        assert(app_manager_ui_post(_noop_post, NULL) == ESP_OK);
+    }
+    s_ui_worker = true;
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) == ESP_ERR_NO_MEM);
+    assert(app_manager_navigation_gesture_token_is_current(&token));
+    s_ui_worker = false;
+    assert(atomic_load(&s_screen_access_count) == 0U);
+    _run_all_posts();
+
+    s_ui_worker = true;
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) == ESP_OK);
+    s_ui_worker = false;
+    assert(_run_one_post());
+    assert(atomic_load(&s_completion_count) == 1U);
+}
+
+static void _test_gesture_requires_back_target_and_ui_worker(void)
+{
+    app_manager_navigation_gesture_token_t token = {0};
+    assert(app_manager_navigation_gesture_token_acquire(&token));
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) ==
+           ESP_ERR_INVALID_STATE);
+    s_back_target = APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE;
+    s_ui_worker = true;
+    assert(app_manager_navigation_submit_gesture_back(
+               &token, _completion, &s_completion_count) ==
+           ESP_ERR_INVALID_STATE);
+    assert(app_manager_navigation_gesture_token_is_current(&token));
+    s_ui_worker = false;
+    assert(_post_count() == 0U);
+    assert(atomic_load(&s_screen_access_count) == 0U);
+    assert(atomic_load(&s_completion_count) == 0U);
+}
+
+static void _test_concurrent_submission_preserves_fifo(void)
+{
+    host_async_call_t first =
+    {
+        .request = _request(),
+        .tag = 1U,
+    };
+    host_async_call_t second =
+    {
+        .request = _request(),
+        .tag = 2U,
+    };
+    first.request.app_id = "first";
+    second.request.app_id = "second";
+    pthread_t first_thread;
+    pthread_t second_thread;
+
+    atomic_store(&s_block_next_post, true);
+    assert(pthread_create(&first_thread, NULL, _async_navigation_thread,
+                          &first) == 0);
+    for (unsigned attempt = 0;
+            attempt < 1000U && !atomic_load(&s_blocked_post_entered);
+            ++attempt)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_blocked_post_entered));
+    assert(pthread_create(&second_thread, NULL, _async_navigation_thread,
+                          &second) == 0);
+    for (unsigned attempt = 0;
+            attempt < 1000U && !atomic_load(&second.started); ++attempt)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&second.started));
+    usleep(5000);
+    assert(_post_count() == 0U);
+
+    atomic_store(&s_blocked_post_release, true);
+    assert(pthread_join(first_thread, NULL) == 0);
+    assert(pthread_join(second_thread, NULL) == 0);
+    assert(first.result == ESP_OK);
+    assert(second.result == ESP_OK);
+    assert(_post_count() == 2U);
+    _run_all_posts();
+    assert(s_ordered_completion_count == 2U);
+    assert(s_ordered_completions[0] == 1U);
+    assert(s_ordered_completions[1] == 2U);
+    assert(atomic_load(&s_screen_access_count) == 0U);
 }
 
 static void _test_deep_copy_and_completion(void)
@@ -349,6 +602,8 @@ static void _test_rejection_completes_once(void)
     assert(_run_one_post());
     assert(atomic_load(&s_completion_count) == 1U);
     assert(atomic_load(&s_completion_result) == ESP_FAIL);
+    assert(s_gesture_begin_count == 1U);
+    assert(s_gesture_settled_count == 1U);
 }
 
 static void _test_completion_reentry_uses_fifo(void)
@@ -456,11 +711,15 @@ static void _test_timeout_before_execution(void)
 {
     app_manager_nav_request_t request = _request();
     const unsigned calls_before = s_lifecycle_call_count;
+    s_acquire_token_on_settled = true;
     assert(app_manager_navigate(&request, 1U) == ESP_ERR_TIMEOUT);
     assert(atomic_load(&s_screen_access_count) == 1U);
     assert(_run_one_post());
     assert(s_lifecycle_call_count == calls_before);
     assert(atomic_load(&s_screen_access_count) == 0U);
+    assert(s_gesture_begin_count == 0U);
+    assert(s_gesture_settled_count == 1U);
+    assert(s_settled_token_acquired);
 
     assert(app_manager_navigate_async(&request, _completion,
                                       &s_completion_count) == ESP_OK);
@@ -538,6 +797,16 @@ int main(void)
     assert(app_manager_navigation_init() == ESP_OK);
     _reset_observation();
     _test_ui_worker_rejected();
+    _reset_observation();
+    _test_gesture_token_and_conditional_back();
+    _reset_observation();
+    _test_stale_gesture_does_not_back_new_foreground();
+    _reset_observation();
+    _test_gesture_post_failure_preserves_epoch();
+    _reset_observation();
+    _test_gesture_requires_back_target_and_ui_worker();
+    _reset_observation();
+    _test_concurrent_submission_preserves_fifo();
     _reset_observation();
     _test_deep_copy_and_completion();
     _reset_observation();
