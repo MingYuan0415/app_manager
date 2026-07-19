@@ -345,6 +345,11 @@ static void _control_poll_pm(void)
                 (now - s_screen_off_us) / 1000 >= s_standby_timeout_ms &&
                 s_standby_ops.request_standby != NULL)
         {
+            if (s_standby_ops.is_standby_allowed != NULL &&
+                    !s_standby_ops.is_standby_allowed())
+            {
+                return;
+            }
             if (app_manager_control_standby_generation_begin() &&
                     s_standby_ops.request_standby() != ESP_OK)
             {

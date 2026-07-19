@@ -30,6 +30,7 @@ static atomic_int s_screen_commit_count;
 static atomic_int s_brightness_restore_count;
 static atomic_int s_standby_request_count;
 static atomic_int s_standby_cancel_count;
+static atomic_bool s_standby_allowed;
 static atomic_int s_ui_post_count;
 static atomic_int s_run_home_count;
 static atomic_bool s_fail_ui_post;
@@ -458,6 +459,11 @@ static esp_err_t _standby_cancel(void)
     return ESP_OK;
 }
 
+static bool _standby_is_allowed(void)
+{
+    return atomic_load(&s_standby_allowed);
+}
+
 static void _set_time_ms(int64_t milliseconds)
 {
     atomic_store(&g_host_time_us, milliseconds * 1000);
@@ -547,6 +553,7 @@ static void _reset_mocks(void)
     atomic_store(&s_brightness_restore_count, 0);
     atomic_store(&s_standby_request_count, 0);
     atomic_store(&s_standby_cancel_count, 0);
+    atomic_store(&s_standby_allowed, true);
     atomic_store(&s_ui_post_count, 0);
     atomic_store(&s_run_home_count, 0);
     atomic_store(&s_screen_suspended, false);
@@ -607,6 +614,7 @@ int main(void)
         .standby_ops = {
             .request_standby = _standby_request,
             .cancel_standby = _standby_cancel,
+            .is_standby_allowed = _standby_is_allowed,
         },
     };
 
@@ -678,7 +686,16 @@ int main(void)
     usleep(120000);
     assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
     assert(atomic_load(&s_standby_request_count) == standby_before);
+    const uint32_t standby_generation_before_gate =
+        app_manager_control_standby_generation_for_test();
+    atomic_store(&s_standby_allowed, false);
     _set_time_ms(65002);
+    usleep(150000);
+    assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
+    assert(atomic_load(&s_standby_request_count) == standby_before);
+    assert(app_manager_control_standby_generation_for_test() ==
+           standby_generation_before_gate);
+    atomic_store(&s_standby_allowed, true);
     wait_for_state(APP_MANAGER_PM_STANDBY_PREPARING);
     assert(app_manager_screen_is_suspended());
     const uint32_t standby_epoch =

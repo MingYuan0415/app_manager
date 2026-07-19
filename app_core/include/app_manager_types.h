@@ -256,6 +256,15 @@ typedef struct app_manager_standby_ops
     esp_err_t (*request_standby)(void);
     /** Queue cancellation of a pending standby transaction. */
     esp_err_t (*cancel_standby)(void);
+    /**
+     * Return whether a new standby transaction may be started.
+     *
+     * This callback is optional; a NULL callback permits standby. It is
+     * evaluated before the application-control generation is advanced, so a
+     * temporary development/debug policy can keep the screen off without
+     * creating a system-PM request.
+     */
+    bool (*is_standby_allowed)(void);
 } app_manager_standby_ops_t;
 
 /* ── UI dispatcher 函数指针类型（mailbox 满时返回 ESP_ERR_NO_MEM） ── */
