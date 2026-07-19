@@ -7,6 +7,23 @@
 #include <stddef.h>
 #include "esp_err.h"
 
+/** @brief Internal completion invoked when one navigation reaches a stable state. */
+typedef void (*app_manager_lifecycle_nav_complete_t)(esp_err_t result,
+        void *context);
+
+/**
+ * @brief Configure resident policy and resolved navigation defaults.
+ * @note Call before app_manager_lifecycle_init(). Zero resident capacity
+ *       selects the physical maximum; NULL transitions select built-in defaults.
+ */
+esp_err_t app_manager_lifecycle_configure(
+    size_t max_resident_apps,
+    app_manager_resident_policy_t resident_policy,
+    const app_manager_transition_t *app_forward,
+    const app_manager_transition_t *app_back,
+    const app_manager_transition_t *page_forward,
+    const app_manager_transition_t *page_back);
+
 /**
  * @brief Initialize fixed lifecycle pools and the page-memory arena.
  * @param arena_bytes is the total private page-memory budget, or zero for the default.
@@ -24,6 +41,24 @@ esp_err_t app_manager_lifecycle_deinit(void);
  * @note Page handlers are not invoked by this emergency path.
  */
 void app_manager_lifecycle_force_deinit(void);
+
+/**
+ * @brief Start one serialized navigation transition on the UI worker.
+ * @param request is a fully value-owned navigation request.
+ * @param completion receives the final stable result.
+ * @param context is forwarded to completion.
+ * @return ESP_OK when the request completed or started, otherwise an error
+ *         reported before completion ownership was accepted.
+ */
+esp_err_t app_manager_lifecycle_navigate(
+    const app_manager_nav_request_t *request,
+    app_manager_lifecycle_nav_complete_t completion, void *context);
+
+/**
+ * @brief Return the application owning the current lifecycle callback.
+ * @return Stable descriptor ID while inside a callback, otherwise NULL.
+ */
+const char *app_manager_lifecycle_callback_app_id(void);
 
 /**
  * @brief Pause the active page for display sleep on the mailbox worker.

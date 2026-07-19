@@ -24,6 +24,18 @@ esp_err_t app_manager_display_sleep_recover(void);
 esp_err_t app_manager_display_refresh_and_enable_touch(void);
 
 /**
+ * @brief Enable LVGL touch after the initial visible frame has committed.
+ * @return ESP_OK when enabled, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_display_enable_startup_touch(void);
+
+/**
+ * @brief Disable LVGL touch after a startup-admission rollback.
+ * @return ESP_OK when disabled, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_display_disable_startup_touch(void);
+
+/**
  * @brief Report whether the LVGL worker is paused for display sleep.
  * @return true while the display is sleeping; false otherwise.
  */

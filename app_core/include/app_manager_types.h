@@ -17,26 +17,70 @@
 extern "C" {
 #endif
 
-/* ── 生命周期消息枚举 ── */
+/** Maximum bytes, including the terminator, in an application or page ID. */
+#define APP_MANAGER_ID_BYTES                         32U
+/** Total size of one copied navigation argument blob. */
+#define APP_MANAGER_TYPED_BLOB_BYTES                 96U
+/** Size of the versioned typed-blob header. */
+#define APP_MANAGER_TYPED_BLOB_HEADER_BYTES          8U
+/** Maximum typed-blob payload size. */
+#define APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES         \
+    (APP_MANAGER_TYPED_BLOB_BYTES - APP_MANAGER_TYPED_BLOB_HEADER_BYTES)
+/** Current typed-blob envelope version. */
+#define APP_MANAGER_TYPED_BLOB_VERSION               1U
+/** Fixed navigation-command pool capacity. */
+#define APP_MANAGER_NAV_COMMAND_CAPACITY              24U
+/** Maximum supported transition duration. */
+#define APP_MANAGER_TRANSITION_MAX_DURATION_MS        2000U
+/** Built-in duration used when a configured duration is zero. */
+#define APP_MANAGER_TRANSITION_DEFAULT_DURATION_MS    220U
+/** Physical running-application capacity. */
+#define APP_MANAGER_MAX_RESIDENT_APPS                 8U
+/** Physical retained-page capacity. */
+#define APP_MANAGER_MAX_PAGE_INSTANCES                12U
+
+/** @brief Versioned, value-owned navigation arguments. */
+typedef struct app_manager_typed_blob
+{
+    uint16_t version; /**< Envelope version; use APP_MANAGER_TYPED_BLOB_VERSION. */
+    uint16_t type;    /**< Application-defined payload type. */
+    uint16_t size;    /**< Valid bytes in payload. */
+    uint16_t reserved; /**< Must be zero. */
+    uint8_t payload[APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES]; /**< Copied payload. */
+} app_manager_typed_blob_t;
+
+#ifdef __cplusplus
+static_assert(sizeof(app_manager_typed_blob_t) == APP_MANAGER_TYPED_BLOB_BYTES,
+              "app_manager_typed_blob_t must remain 96 bytes");
+#else
+_Static_assert(sizeof(app_manager_typed_blob_t) == APP_MANAGER_TYPED_BLOB_BYTES,
+               "app_manager_typed_blob_t must remain 96 bytes");
+#endif
+
+/* ── Lifecycle and registry contracts ── */
 
 /** @brief Lifecycle messages delivered to application page handlers. */
 typedef enum
 {
     APP_MANAGER_MSG_ONSTART = 0, /**< Initialize retained nonvisual state. */
-    APP_MANAGER_MSG_ONRESUME,   /**< Create visible UI and foreground resources. */
-    APP_MANAGER_MSG_ONPAUSE,    /**< Release visible UI and foreground resources. */
+    APP_MANAGER_MSG_ONMOUNT,    /**< Create UI under the page-owned screen. */
+    APP_MANAGER_MSG_ONRESUME,   /**< Start foreground sessions and input. */
+    APP_MANAGER_MSG_ONPAUSE,    /**< Stop foreground sessions and input. */
+    APP_MANAGER_MSG_ONUNMOUNT,  /**< Destroy UI owned by the page screen. */
     APP_MANAGER_MSG_ONSTOP,     /**< Release the remaining retained page state. */
+    APP_MANAGER_MSG_ONNEWINTENT, /**< Receive updated navigation arguments. */
     APP_MANAGER_MSG_USER_END,   /**< First application-defined message value. */
 } app_manager_msg_type_t;
 
 /**
  * @brief Receive one lifecycle message for an application page.
  * @param msg identifies the lifecycle transition.
- * @param param is the lifecycle-owned page context.
+ * @param param is descriptor-owned page user data.
+ *
+ * @note Navigation arguments are exposed through the current-page accessors;
+ *       param retains the same meaning for every lifecycle message.
  */
 typedef void (*app_page_msg_cb_t)(app_manager_msg_type_t msg, void *param);
-
-/* ── 内置应用描述符 ── */
 
 /** @brief Supported application registration classes. */
 typedef enum
@@ -45,15 +89,102 @@ typedef enum
     APP_MANAGER_APP_DYNAMIC,     /**< Runtime-managed application. */
 } app_manager_app_type_t;
 
-/** @brief Linker-discoverable builtin application descriptor. */
-typedef struct app_builtin_app_desc
+/** @brief Flags attached to an application descriptor. */
+typedef enum
 {
-    const char *name;            /**< Human-readable application name. */
-    const void *icon;            /**< Optional application icon resource. */
-    const char *id;              /**< Stable application identifier. */
-    esp_err_t (*entry)(void);    /**< Entry point that registers the root page. */
-    app_manager_app_type_t type; /**< Registration and ownership class. */
-} app_builtin_app_desc_t;
+    APP_MANAGER_APP_FLAG_NONE = 0,       /**< No special policy. */
+    APP_MANAGER_APP_FLAG_PINNED = 1U << 0, /**< Never evict automatically. */
+    APP_MANAGER_APP_FLAG_HIDDEN = 1U << 1, /**< Omit from normal launchers. */
+} app_manager_app_flag_t;
+
+/** @brief Linker-discoverable application descriptor. */
+typedef struct app_manager_app_desc
+{
+    const char *name;             /**< Human-readable application name. */
+    const void *icon;             /**< Optional application icon resource. */
+    const char *id;               /**< Stable application identifier. */
+    const char *root_page_id;     /**< ID of the statically described root page. */
+    uint32_t flags;               /**< Bitwise app_manager_app_flag_t values. */
+    app_manager_app_type_t type;  /**< Provider and ownership class. */
+} app_manager_app_desc_t;
+
+/** @brief Linker-discoverable static page descriptor. */
+typedef struct app_manager_page_desc
+{
+    const char *app_id;           /**< Owning application identifier. */
+    const char *page_id;          /**< Stable page identifier within the app. */
+    app_page_msg_cb_t handler;    /**< Lifecycle handler. */
+    void *user_data;              /**< Stable handler user data, or NULL. */
+    uint32_t memory_size;         /**< Zeroed private bytes required by the page. */
+} app_manager_page_desc_t;
+
+/** @brief Native screen-transition effects. */
+typedef enum
+{
+    APP_MANAGER_TRANSITION_DEFAULT = 0, /**< Use the configured effect. */
+    APP_MANAGER_TRANSITION_NONE,        /**< Switch immediately. */
+    APP_MANAGER_TRANSITION_FADE,        /**< Cross-fade screens. */
+    APP_MANAGER_TRANSITION_COVER_LEFT,  /**< New screen covers toward the left. */
+    APP_MANAGER_TRANSITION_COVER_RIGHT, /**< New screen covers toward the right. */
+    APP_MANAGER_TRANSITION_COVER_UP,    /**< New screen covers upward. */
+    APP_MANAGER_TRANSITION_COVER_DOWN,  /**< New screen covers downward. */
+    APP_MANAGER_TRANSITION_PUSH_LEFT,   /**< Push both screens toward the left. */
+    APP_MANAGER_TRANSITION_PUSH_RIGHT,  /**< Push both screens toward the right. */
+    APP_MANAGER_TRANSITION_PUSH_UP,     /**< Push both screens upward. */
+    APP_MANAGER_TRANSITION_PUSH_DOWN,   /**< Push both screens downward. */
+    APP_MANAGER_TRANSITION_REVEAL_LEFT, /**< Old screen reveals toward the left. */
+    APP_MANAGER_TRANSITION_REVEAL_RIGHT, /**< Old screen reveals toward the right. */
+    APP_MANAGER_TRANSITION_REVEAL_UP,   /**< Old screen reveals upward. */
+    APP_MANAGER_TRANSITION_REVEAL_DOWN, /**< Old screen reveals downward. */
+    APP_MANAGER_TRANSITION_END,         /**< Internal range sentinel. */
+} app_manager_transition_effect_t;
+
+/** @brief Effect and duration used by one navigation transition. */
+typedef struct app_manager_transition
+{
+    app_manager_transition_effect_t effect; /**< Effect or DEFAULT. */
+    uint16_t duration_ms; /**< Zero selects the configured duration. */
+    uint16_t reserved;    /**< Must be zero. */
+} app_manager_transition_t;
+
+/** @brief Unified navigation operations. */
+typedef enum
+{
+    APP_MANAGER_NAV_OP_RUN = 0,        /**< Start or foreground an application. */
+    APP_MANAGER_NAV_OP_EXIT,           /**< Stop a named application. */
+    APP_MANAGER_NAV_OP_EXIT_SELF,      /**< Stop the lifecycle-callback owner. */
+    APP_MANAGER_NAV_OP_OPEN_PAGE,      /**< Start, foreground, or open a static page. */
+    APP_MANAGER_NAV_OP_BACK,           /**< Navigate back one page or application. */
+    APP_MANAGER_NAV_OP_BACK_TO,        /**< Navigate back to a retained page. */
+    APP_MANAGER_NAV_OP_REMOVE_PAGE,    /**< Remove a retained page. */
+    APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND, /**< Stop eligible background apps. */
+    APP_MANAGER_NAV_OP_END,            /**< Internal range sentinel. */
+} app_manager_nav_operation_t;
+
+/** @brief Value copied into one synchronous or asynchronous navigation command. */
+typedef struct app_manager_nav_request
+{
+    app_manager_nav_operation_t operation; /**< Requested navigation operation. */
+    const char *app_id;                    /**< Target app ID; NULL for EXIT_SELF input. */
+    const char *page_id;                   /**< Optional target static page ID. */
+    bool has_arguments;                    /**< arguments contains a typed value. */
+    app_manager_typed_blob_t arguments;    /**< Fully copied launch arguments. */
+    app_manager_transition_t transition;   /**< Per-request transition override. */
+} app_manager_nav_request_t;
+
+/**
+ * @brief Receive the final result of an asynchronous navigation request.
+ * @param result is the completed lifecycle and presentation result.
+ * @param context is the caller-provided completion context.
+ */
+typedef void (*app_manager_nav_completion_cb_t)(esp_err_t result, void *context);
+
+/** @brief Policy applied when the resident-application limit is reached. */
+typedef enum
+{
+    APP_MANAGER_RESIDENT_REJECT = 0, /**< Reject the new application. */
+    APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND, /**< Evict oldest eligible app. */
+} app_manager_resident_policy_t;
 
 /** @brief Logical keys accepted by the application manager. */
 typedef enum

@@ -129,6 +129,7 @@ extern atomic_bool s_home_inflight;
 extern atomic_uint s_brightness_temp_value;
 extern atomic_uint s_brightness_temp_generation;
 extern atomic_bool s_brightness_temp_pending;
+extern atomic_bool s_control_admitted;
 extern bool s_power_wake_click_pending;
 extern bool s_power_long_press_seen;
 
@@ -150,6 +151,17 @@ bool IRAM_ATTR app_manager_control_access_begin(void);
 
 /** @brief Release one producer admission acquired by access_begin(). */
 void IRAM_ATTR app_manager_control_access_end(void);
+
+/**
+ * @brief Apply a brightness value on the LVGL worker.
+ *
+ * @param brightness is the hardware brightness value.
+ * @param persistent selects the persistent or temporary BSP operation.
+ *
+ * @return ESP_OK when applied, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_control_apply_brightness(uint8_t brightness,
+        bool persistent);
 
 /**
  * @brief Check and bind one system-standby commit generation.

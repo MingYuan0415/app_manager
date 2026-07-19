@@ -55,12 +55,35 @@ add_executable(test_mailbox
 configure_host_test(test_mailbox)
 add_host_test(mailbox test_mailbox)
 
+add_executable(test_navigation
+    test_navigation.c
+    "${APP_CORE_DIR}/src/app_manager_navigation.c"
+)
+configure_host_test(test_navigation)
+add_host_test(navigation test_navigation)
+
+add_executable(test_registry
+    test_registry.c
+    "${APP_CORE_DIR}/src/app_manager_builtin.c"
+)
+configure_host_test(test_registry)
+add_host_test(registry test_registry)
+
+add_executable(test_nav_model
+    test_nav_model.c
+    "${APP_CORE_DIR}/src/app_manager_nav_model.c"
+)
+configure_host_test(test_nav_model)
+add_host_test(nav_model test_nav_model)
+
 add_executable(test_lifecycle
     test_lifecycle.c
     "${APP_CORE_DIR}/src/app_manager_mailbox.c"
     "${APP_CORE_DIR}/src/app_manager_builtin.c"
     "${APP_CORE_DIR}/src/app_manager_lifecycle.c"
     "${APP_CORE_DIR}/src/app_manager_lifecycle_api.c"
+    "${APP_CORE_DIR}/src/app_manager_nav_model.c"
+    "${APP_CORE_DIR}/src/app_manager_navigation.c"
 )
 configure_host_test(test_lifecycle)
 add_host_test(lifecycle test_lifecycle)
@@ -75,6 +98,7 @@ add_executable(test_control
 )
 configure_host_test(test_control)
 add_host_test(control test_control)
+set_tests_properties(control PROPERTIES TIMEOUT 30)
 
 add_executable(test_adapter
     test_adapter.c

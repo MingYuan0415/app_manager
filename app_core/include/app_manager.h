@@ -36,19 +36,34 @@ esp_err_t app_manager_deinit(void);
 bool      app_manager_is_initialized(void);
 
 /**
- * @brief Start or resume the application identified by app_id.
- * @param app_id identifies a registered application.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
+ * @brief Execute one navigation request and wait for a stable presentation.
+ *
+ * @note This API rejects calls from the UI worker. A queued request is
+ *       cancelled when timeout expires before execution. Once execution has
+ *       started, it reaches a stable state before returning ESP_ERR_TIMEOUT.
+ *
+ * @param request is copied into the fixed command pool.
+ * @param timeout_ms is the wait limit, or UINT32_MAX for no limit.
+ * @return Final navigation result, timeout, or an admission error.
  */
-esp_err_t app_manager_run(const char *app_id);
+esp_err_t app_manager_navigate(const app_manager_nav_request_t *request,
+                               uint32_t timeout_ms);
+
 /**
- * @brief Stop the application identified by app_id.
- * @param app_id identifies a running application.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
+ * @brief Queue one navigation request without blocking the caller.
+ *
+ * @note completion runs exactly once on the UI worker after admission succeeds.
+ *       EXIT_SELF is accepted only inside a lifecycle callback; its owner ID
+ *       is captured before the callback returns.
+ *
+ * @param request is copied into the fixed command pool.
+ * @param completion receives the final result, or NULL to ignore it.
+ * @param context is passed unchanged to completion.
+ * @return ESP_OK when admitted, otherwise an admission error.
  */
-esp_err_t app_manager_exit(const char *app_id);
-/** @brief Request exit of the application owning the current callback. */
-void     app_manager_self_exit(void);
+esp_err_t app_manager_navigate_async(const app_manager_nav_request_t *request,
+                                     app_manager_nav_completion_cb_t completion,
+                                     void *context);
 
 /* ── 查询 ── */
 
@@ -92,85 +107,11 @@ bool        app_manager_is_all_closed(void);
  *         retained count captured after ONPAUSE; returns 0 during teardown.
  */
 uint32_t    app_manager_get_running_apps(void);
-
-/* ── 页面注册与创建 ── */
-
 /**
- * @brief Register the root-page handler for the current application.
- * @param id identifies the root page.
- * @param handler receives lifecycle messages.
- * @param usr_data is retained as page user data.
- * @param mem_size requests zeroed page-private bytes.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
+ * @brief Report whether a screen transition is currently in progress.
+ * @return true while topology queries intentionally expose conservative state.
  */
-esp_err_t app_manager_regist_msg_handler_ext(const char *id, app_page_msg_cb_t handler,
-        void *usr_data, uint32_t mem_size);
-/**
- * @brief Register a root-page handler without private memory.
- * @param id identifies the root page.
- * @param handler receives lifecycle messages.
- */
-#define   app_manager_regist_msg_handler(id, handler) \
-          app_manager_regist_msg_handler_ext((id), (handler), NULL, 0)
-
-/**
- * @brief Create a page for the current application.
- * @param pg_id identifies the new page.
- * @param handler receives lifecycle messages.
- * @param usr_data is retained as page user data.
- * @param mem_size requests zeroed page-private bytes.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_create_page_ext(const char *pg_id, app_page_msg_cb_t handler,
-                                      void *usr_data, uint32_t mem_size);
-/**
- * @brief Create a page without private memory.
- * @param pg_id identifies the new page.
- * @param handler receives lifecycle messages.
- */
-#define   app_manager_create_page(pg_id, handler) \
-          app_manager_create_page_ext((pg_id), (handler), NULL, 0)
-
-/**
- * @brief Create a page for an explicitly identified application.
- * @param app_id identifies the target application.
- * @param pg_id identifies the new page.
- * @param handler receives lifecycle messages.
- * @param user_data is retained as page user data.
- * @param mem_size requests zeroed page-private bytes.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_create_page_for_app_ext(const char *app_id, const char *pg_id,
-        app_page_msg_cb_t handler,
-        void *user_data, uint32_t mem_size);
-/**
- * @brief Create an application page without private memory.
- * @param app_id identifies the target application.
- * @param pg_id identifies the new page.
- * @param handler receives lifecycle messages.
- */
-#define   app_manager_create_page_for_app(app_id, pg_id, handler) \
-          app_manager_create_page_for_app_ext((app_id), (pg_id), (handler), NULL, 0)
-
-/* ── 页面导航 ── */
-
-/**
- * @brief Navigate back to a named page in the active application.
- * @param pg_id identifies a page already on the active stack.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_goback_to_page(const char *pg_id);
-/**
- * @brief Navigate back one page in the active application.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_goback(void);
-/**
- * @brief Remove a page from the active application.
- * @param pg_id identifies the page to remove.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_remove_page(const char *pg_id);
+bool        app_manager_is_transitioning(void);
 
 /* ── 页面私有内存（handler 内使用） ── */
 
@@ -185,6 +126,16 @@ void     *app_manager_this_page_memory(void);
  */
 void     *app_manager_this_page_userdata(void);
 /**
+ * @brief Return the LVGL screen owned by the callback page.
+ * @return Page screen while mounted, or NULL outside a mounted lifecycle.
+ */
+lv_obj_t *app_manager_this_page_screen(void);
+/**
+ * @brief Return the latest copied navigation arguments for the callback page.
+ * @return Immutable typed blob, or NULL when no arguments were supplied.
+ */
+const app_manager_typed_blob_t *app_manager_this_page_arguments(void);
+/**
  * @brief Report a retryable resource-release error from page teardown.
  *
  * @note Call this only from APP_MANAGER_MSG_ONPAUSE or
@@ -194,20 +145,6 @@ void     *app_manager_this_page_userdata(void);
  * @param error is the non-ESP_OK teardown error to preserve.
  */
 void      app_manager_this_page_report_cleanup_error(esp_err_t error);
-/**
- * @brief Return user data for a named page.
- * @param pg_id identifies the page in the active application.
- * @return Page user data, or NULL when unavailable or topology queries are
- *         paused.
- */
-void     *app_manager_get_page_userdata(const char *pg_id);
-/**
- * @brief Replace user data for a named page.
- * @param pg_id identifies the page in the active application.
- * @param usr_data is the new retained user data.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_set_page_userdata(const char *pg_id, void *usr_data);
 
 /* ── Screen ctrl ops ── */
 
@@ -227,10 +164,17 @@ esp_err_t app_manager_screen_resume(void);
  */
 bool     app_manager_screen_is_suspended(void);
 /**
- * @brief Flush the initial active screen while the panel is still hidden.
- * @return ESP_OK when the fenced refresh completes, otherwise an ESP-IDF error.
+ * @brief Fence the initial active screen, then enable the panel and touch IRQ.
+ * @return ESP_OK when the first visible frame commits, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_commit_initial(void);
+/**
+ * @brief Admit physical input and start inactivity timing after first display.
+ * @note Call only after the initial frame and panel-enable transactions commit.
+ * @return ESP_OK when admitted, otherwise an ESP-IDF error.
+ * @warning Call from the startup task, not the UI worker.
+ */
+esp_err_t app_manager_startup_commit(void);
 /**
  * @brief Queue a hardware update followed by persistence on app-control.
  * @param brightness is the normal display brightness.
@@ -330,32 +274,25 @@ int32_t  app_manager_pm_get_standby_delay_ms(void);
  */
 esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms);
 
-/* ── Builtin app 发现 ── */
+/* ── Builtin registry discovery ── */
 
 /**
- * @brief Discover descriptors exported through the builtin linker section.
- * @return Number of valid builtin descriptors.
+ * @brief Discover application descriptors exported through the linker section.
+ * @return Number of discovered application descriptors, or zero when invalid.
  */
 int      app_manager_builtin_discover(void);
-/**
- * @brief Register a fallback builtin descriptor array.
- * @param descs points to descriptors valid for the manager lifetime.
- * @param count is the descriptor count.
- * @return ESP_OK on success, otherwise an ESP-IDF error.
- */
-esp_err_t app_manager_register_builtin_apps(const app_builtin_app_desc_t *descs,
-        size_t count);
 /**
  * @brief Open builtin descriptor iteration.
  * @return First descriptor, or NULL when none exists.
  */
-const app_builtin_app_desc_t *app_manager_builtin_list_open(void);
+const app_manager_app_desc_t *app_manager_builtin_list_open(void);
 /**
  * @brief Return the descriptor after prev.
  * @param prev is the previously returned descriptor.
  * @return Next descriptor, or NULL at the end or for an invalid iterator.
  */
-const app_builtin_app_desc_t *app_manager_builtin_list_get_next(const app_builtin_app_desc_t *prev);
+const app_manager_app_desc_t *app_manager_builtin_list_get_next(
+    const app_manager_app_desc_t *prev);
 
 /* ── UI dispatcher（ui_dispatch_fn 定义在 app_manager_types.h） ── */
 
@@ -396,24 +333,46 @@ esp_err_t app_manager_get_ui_dispatch_fn(app_manager_ui_dispatch_fn *out_fn);
  */
 const lv_font_t *app_manager_get_font(app_theme_font_id_t id);
 
-/* ── Builtin app 自注册宏 ── */
+/* ── Static registry export macros ── */
 
 /**
- * @brief Export one builtin descriptor through the linker section.
+ * @brief Export one builtin application descriptor.
  * @param n is the descriptor symbol suffix and display name.
  * @param icn is the optional icon pointer.
  * @param aid is the stable application identifier.
- * @param ent is the application entry function.
+ * @param root_id identifies the application's static root page.
+ * @param app_flags is a bitwise app_manager_app_flag_t value.
  */
-#define BUILTIN_APP_EXPORT(n, icn, aid, ent) \
-    __attribute__((section(".app_builtin_apps"), used)) \
-    static const app_builtin_app_desc_t _builtin_##n = \
+#define APP_MANAGER_APP_EXPORT(n, icn, aid, root_id, app_flags) \
+    __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
+    static const app_manager_app_desc_t _app_manager_app_##n = \
     { \
         .name = #n, \
         .icon = (const void *)(icn), \
         .id = (aid), \
-        .entry = (ent), \
+        .root_page_id = (root_id), \
+        .flags = (app_flags), \
         .type = APP_MANAGER_APP_BUILTIN, \
+    }
+
+/**
+ * @brief Export one static page descriptor.
+ * @param n is a unique descriptor symbol suffix.
+ * @param aid identifies the owning application.
+ * @param pid identifies the page within its application.
+ * @param cb receives page lifecycle messages.
+ * @param data is stable handler user data, or NULL.
+ * @param bytes is the required private-memory size.
+ */
+#define APP_MANAGER_PAGE_EXPORT(n, aid, pid, cb, data, bytes) \
+    __attribute__((section(".app_manager_pages"), used, aligned(sizeof(void *)))) \
+    static const app_manager_page_desc_t _app_manager_page_##n = \
+    { \
+        .app_id = (aid), \
+        .page_id = (pid), \
+        .handler = (cb), \
+        .user_data = (data), \
+        .memory_size = (bytes), \
     }
 
 #ifdef __cplusplus

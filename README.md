@@ -1,54 +1,679 @@
-# MicroTech App Manager
+# MicroTech App Manager 0.2.0
 
-本仓库提供 MicroTech 的应用运行时，由 `app_core` 与 `app_theme` 两个 ESP-IDF 组件组成。它负责在 LVGL 工作线程上管理应用页面，并协调显示、输入和系统待机；具体应用界面不属于本仓库。
+`layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
+导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
+`layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-## 目录结构
+0.2.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+使用静态 descriptor；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
+同一个固定容量 command gateway。
 
-- `app_core/include/`：应用生命周期、页面导航、UI 调度、电源管理和初始化配置等公共 API。
-- `app_core/src/`：页面栈、内置应用发现、UI mailbox、LVGL 适配及应用级电源状态机。
-- `app_core/linker.lf`：保留并界定 `.app_builtin_apps` 内置应用描述符段。
-- `app_core/tests/host/`：使用 FreeRTOS、LVGL 和硬件 shim 编译生产源文件的宿主测试。
-- `app_theme/`：六档主题字体角色及其注册、查询接口。
+## 1. 设计不变量
 
-## 主要能力
+以下约束属于公共行为，不应在局部重构中改变：
 
-- 通过 `BUILTIN_APP_EXPORT` 发现静态应用，管理根页面、子页面、私有内存及 `ONSTART` 到 `ONSTOP` 生命周期。
-- 通过 `app_manager_ui_post()` 和 `app_manager_ui_call()` 将 UI 操作串行化到 LVGL 工作线程。
-- 初始化显示、触摸、资源文件系统和字体，并处理刷新栅栏、熄屏及恢复顺序。
-- 通过上层注入的 screen、input、standby 操作协调亮度、空闲熄屏、按键/触摸唤醒和待机提交。
+1. UI worker 是 nav model、页面生命周期和 LVGL 对象的唯一写入者。
+2. 物理上最多驻留 8 个 App、保留 12 个 Page，页面私有内存来自固定 arena。
+3. 稳定前台只挂载一个 Page Screen；动画期间临时同时保留 source 和 target。
+4. 后台 App 保留导航和私有状态，但不保留 Screen、timer、订阅、输入或活动会话。
+5. `ONPAUSE` 或 `ONSTOP` 清理失败时保留实例、句柄和 cleanup ownership，以便重试。
+6. provider descriptor 只能在有效 lease 下被导航核心持有。
+7. 动画、生命周期和必要清理完成后，导航命令才完成。
+8. 屏幕休眠和 deinit 会先快进当前动画，再进入稳定页面状态并关闭新准入。
+9. PM generation/commit、mailbox 超时和显示 DMA fence 语义保持独立有效。
+10. 冷启动期间物理按键和 inactivity PM 保持关闭；首帧、面板和依赖服务提交后才开放。
 
-页面生命周期按资源所有权分工：`ONSTART` 只初始化长期保留的非可视状态，不创建 LVGL 对象、主动刷新或启动前台定时器/订阅；`ONRESUME` 创建可见 UI 并挂接前台资源；`ONPAUSE` 销毁 UI、停止定时器、退订事件并关闭活动会话；`ONSTOP` 释放页面实例剩余资源。未完成的清理必须保留未释放句柄，并通过 `app_manager_this_page_report_cleanup_error()` 上报，以便下次转换重试。
+## 2. 模块职责
 
-熄屏只暂停当前前台页面，唤醒后恢复同一页面，应用栈和页面私有内存保持不变。`PAUSING/PAUSED` 期间 mailbox 不提供页面级拓扑查询：页面 userdata 返回 `NULL`，页面存在性返回 `false`，这些默认值不表示实例已销毁。成功进入 `PAUSED` 时会保存运行应用数，`app_manager_get_running_apps()` 与 `app_manager_is_all_closed()` 使用该快照；关闭过程中则返回保守默认值，实际页面拓扑需在唤醒后查询。
+| 路径 | 职责 |
+| --- | --- |
+| `app_core/include/app_manager_types.h` | descriptor、Typed Blob、导航、动画、生命周期和硬件端口类型 |
+| `app_core/include/app_manager.h` | 应用、导航、查询、UI dispatcher、显示和 PM 公共 API |
+| `app_core/include/app_manager_config.h` | 装配层使用的 BSP、资源、驻留策略和默认动画配置 |
+| `app_core/src/app_manager_builtin.c` | 静态 registry 和 builtin provider lease |
+| `app_core/src/app_manager_nav_model.c` | App/Page 固定槽、双向链表、arena 和模型不变量 |
+| `app_core/src/app_manager_navigation.c` | 24 槽 sync/async command gateway 和超时语义 |
+| `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
+| `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、LVGL 原生动画和触摸屏障 |
+| `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
+| `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
+| `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
+| `app_core/linker.lf` | 保留 App/Page 两个 descriptor 链接段 |
+| `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
+| `app_theme/` | 六档语义字体角色 |
 
-公共应用代码通常只包含 `app_manager.h`；创建运行时的装配层还需包含 `app_manager_config.h`，填充有效的 panel、panel IO、touch 以及三组操作接口后调用 `app_manager_init()`。
+主要依赖关系如下：
 
-## ESP-IDF 集成
-
-在项目根 `CMakeLists.txt` 的 `project()` 之前加入仓库目录：
-
-```cmake
-set(EXTRA_COMPONENT_DIRS
-    "${CMAKE_CURRENT_LIST_DIR}/components/app_manager"
-)
+```text
+ordinary task / UI callback / lifecycle callback
+                    |
+                    v
+        navigation command gateway (24)
+                    |
+                    v
+             UI worker mailbox
+                    |
+        +-----------+-------------+
+        |           |             |
+        v           v             v
+    lifecycle    nav model    presentation
+        |                         |
+        v                         v
+ builtin lease             LVGL Page Screens
 ```
 
-使用方组件声明 `PRIV_REQUIRES app_core app_theme`。`app_core` 要求 ESP-IDF 5.0 或更高版本，并由组件管理器解析 `espressif/esp_lvgl_adapter`；上层工程还必须提供其 `CMakeLists.txt` 中列出的 `bsp`、`mt_log`、`nv_storage` 和 LVGL 等组件。启用 adapter 文件系统和 FreeType 时，需提供标签为 `res` 的资源分区、配置盘符，并在分区中打包 `font.ttf`。
+`app-control` 是显示、亮度、输入和 standby 策略的独立串行域。它通过 mailbox 请求
+UI pause/resume，不直接修改 nav model 或页面对象。
 
-## 宿主测试
+## 3. 固定容量与运行模型
+
+| 资源 | 上限 | 满时行为 |
+| --- | ---: | --- |
+| 物理 App 槽 | 8 | 按驻留策略拒绝或淘汰 |
+| 物理 Page 槽 | 12 | `ESP_ERR_NO_MEM` |
+| 导航命令槽 | 24 | `ESP_ERR_NO_MEM` |
+| App/Page ID | 最多 31 字节加 `\0` | `ESP_ERR_INVALID_ARG` |
+| Typed Blob | 96 字节，其中 payload 88 字节 | `ESP_ERR_INVALID_ARG` |
+| 动画时长 | 1..2000 ms，0 表示使用默认值 | `ESP_ERR_INVALID_ARG` |
+
+每个 App 节点拥有独立 Page 栈，App 节点本身组成前台历史：
+
+```text
+App history:  home <-> settings <-> setup
+                                      ^ active_app
+
+settings:     root <-> power <-> about
+                                  ^ current_page
+```
+
+页面 arena 在初始化时分成 12 个等大的 8 字节对齐槽。descriptor 的
+`memory_size` 必须不大于单槽大小；页面分配和释放时只清零该页面声明的范围。
+`app_manager_this_page_memory()` 只在当前 handler 调用期间有效，页面成功释放后
+不得继续保存该指针。
+
+`app_manager_config_t.max_resident_apps` 为 0 时使用物理上限 8。驻留策略为：
+
+- `APP_MANAGER_RESIDENT_REJECT`：达到上限后拒绝新 App。
+- `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
+
+`APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
+HOME 操作默认只把已有 HOME 实例提到前台。需要释放其他后台 App 时提交
+`APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
+
+## 4. 静态 Registry 与 Provider Lease
+
+App 和 Page 由两个静态 descriptor 链接段提供，根页也必须静态描述：
+
+```c
+APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
+                       APP_MANAGER_APP_FLAG_NONE);
+
+APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
+                        _example_page_handler, NULL,
+                        sizeof(example_page_state_t));
+```
+
+`APP_MANAGER_APP_EXPORT` 写入 `.app_manager_apps`，`APP_MANAGER_PAGE_EXPORT` 写入
+`.app_manager_pages`。`app_core/linker.lf` 对两个段执行 `KEEP()` 并生成首尾符号。
+宿主测试没有 ESP-IDF linker fragment，因此内部 fixture 可通过
+`app_manager_builtin.h` 中的 `app_manager_register_builtin_descriptors()` 安装生命周期内
+有效的 fallback 数组；该函数不是公共 provider 注册 ABI。
+
+初始化会一次性校验：
+
+- App ID、Page ID 非空且长度合法；
+- App ID 不重复，同一 App 内 Page ID 不重复；
+- App 类型、flags 合法；
+- 每个 App 都存在声明的根页面；
+- 每个 Page 都属于已知 App，handler 非空；
+- `memory_size` 不超过配置后的单页 arena 槽。
+
+builtin provider 实现 `find`、`enumerate`、`acquire` 和 `release`。运行实例持有
+value-owned lease，生命周期核心通过 lease 访问 App/Page descriptor，释放 App 时才
+归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.2.0 不提供公共 provider 注册、
+动态模块 ABI 或脚本应用。
+
+## 5. Typed Blob 与 New Intent
+
+导航参数使用固定 96 字节的版本化值：
+
+```c
+typedef struct app_manager_typed_blob
+{
+    uint16_t version;
+    uint16_t type;
+    uint16_t size;
+    uint16_t reserved;
+    uint8_t payload[88];
+} app_manager_typed_blob_t;
+```
+
+提交命令时 request、ID 字符串和整个 blob 都复制到 command slot；调用返回后，调用方
+可立即释放 request 和 ID 存储。异步 completion 的 `context` 不复制，调用方必须保证它
+持续有效直到 completion 执行。
+
+有效 blob 必须满足：
+
+- `version == APP_MANAGER_TYPED_BLOB_VERSION`；
+- `size <= APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES`；
+- `reserved == 0`。
+
+首次创建 App/Page 时，参数在 `ONSTART` 前已经可通过
+`app_manager_this_page_arguments()` 读取。重复 RUN 已有 App 或 OPEN 已有 Page 会完整
+替换原参数并发送 `ONNEWINTENT`。后台目标的 `ONNEWINTENT` 发生在其
+`ONMOUNT/ONRESUME` 之前；若目标正在前台，Screen 仍然可用，但 UI 只能在
+`ONMOUNT` 中创建。
+
+## 6. 页面生命周期
+
+一个正常页面实例遵循：
+
+```text
+ONSTART -> ONMOUNT -> ONRESUME -> ONPAUSE -> ONUNMOUNT -> ONSTOP
+```
+
+`ONNEWINTENT` 是已有实例接收新参数的旁路消息，不替代上述阶段。普通导航中，source
+成功 `ONPAUSE` 后，target 会在 presentation start 和目标首帧之前收到 `ONRESUME`。
+此时 target 已拥有前台活动资源，但 nav model 尚未提交；动画成功结束、source 清理完成
+后才成为稳定前台。若提交前失败，已经 RESUME 的 target 会收到补偿性 `ONPAUSE`，因此
+页面必须允许一次 `ONRESUME -> ONPAUSE` 配对发生在从未稳定可见的导航尝试中。
+
+| 消息 | 所有权边界 | 应执行的操作 |
+| --- | --- | --- |
+| `ONSTART` | Page 实例和私有内存开始存在 | 初始化非视觉状态和长期句柄的无效值 |
+| `ONMOUNT` | 框架已创建该 Page 的 Screen | 只在 `app_manager_this_page_screen()` 下创建 UI |
+| `ONRESUME` | source 已暂停，Page 即将参与目标首帧；nav 尚未提交 | 启动 timer、订阅、输入和活动会话 |
+| `ONPAUSE` | Page 离开前台，或未提交导航正在补偿回滚 | 停止 timer、退订、关闭输入和活动会话 |
+| `ONUNMOUNT` | Screen 仍可访问 | 删除页面 UI 并清空所有 LVGL 对象指针 |
+| `ONSTOP` | Page 实例即将释放 | 释放剩余非视觉资源；此时没有可用 Screen |
+| `ONNEWINTENT` | 已有实例参数已更新 | 读取并消费最新 Typed Blob |
+
+资源放置规则：
+
+- `ONMOUNT/ONUNMOUNT` 只管理 LVGL UI。
+- `ONRESUME/ONPAUSE` 只管理前台活动资源。
+- `ONSTART/ONSTOP` 管理页面实例级非视觉状态。
+- `ONRESUME` 启动的 timer、订阅、输入和活动会话可在动画期间产生副作用；回调只能操作
+  target 自己的已挂载 Screen，不得把动画完成或 nav model 提交作为隐含前提。
+- `ONRESUME/ONPAUSE` 必须成对可补偿。`ONPAUSE` 清理失败时保留有效 handle 并报告错误，
+  不得提前销毁 UI 或假定 source 已恢复。
+- 不得用 `lv_screen_active()` 作为页面根节点；它在动画期间并不表示当前 handler 的
+  所有者。
+- handler、`this_page_*` 返回值和 descriptor `user_data` 不提供跨任务 UI 所有权。
+- 清理错误只允许从 `ONPAUSE` 或 `ONSTOP` 报告。
+
+## 7. 独立 Screen 与转换引擎
+
+presentation 初始化一个永久 neutral Screen。Page 在 MOUNT 前由框架创建独立
+LVGL Screen，在 UNMOUNT 后删除。稳定前台只有一个 Page Screen；后台页面没有
+LVGL 对象。所有 `lv_screen_load_anim()` 调用都使用 `auto_del=false`，Screen 的最终
+删除仍由 lifecycle 决定。
+
+支持 14 种实际效果和一个配置占位值：
+
+| 类别 | 枚举 |
+| --- | --- |
+| 配置占位 | `DEFAULT` |
+| 立即切换 | `NONE` |
+| 淡入 | `FADE` |
+| 覆盖 | `COVER_LEFT`、`COVER_RIGHT`、`COVER_UP`、`COVER_DOWN` |
+| 推动 | `PUSH_LEFT`、`PUSH_RIGHT`、`PUSH_UP`、`PUSH_DOWN` |
+| 揭示 | `REVEAL_LEFT`、`REVEAL_RIGHT`、`REVEAL_UP`、`REVEAL_DOWN` |
+
+四类默认转换保存在 `app_manager_config_t`：
+
+| 场景 | 默认值 |
+| --- | --- |
+| App 前进 | `FADE`, 220 ms |
+| App 返回 | `FADE`, 220 ms |
+| Page 前进 | `PUSH_LEFT`, 220 ms |
+| Page 返回 | `PUSH_RIGHT`, 220 ms |
+
+每个 `app_manager_nav_request_t` 可覆盖 effect 和 duration。`DEFAULT` 使用场景默认
+effect；duration 为 0 使用场景默认时长；`NONE` 始终禁用动画并忽略时长。
+
+### 7.1 提交顺序
+
+App/Page 前进：
+
+```text
+target START 或 NEW_INTENT
+target MOUNT
+source PAUSE
+target RESUME
+presentation start，提交目标首帧并播放 source -> target
+source UNMOUNT
+提交 nav model
+完成命令
+```
+
+Page 返回或 App 退出：
+
+```text
+target MOUNT（没有目标时使用 neutral）
+source PAUSE
+target RESUME（没有目标时跳过）
+presentation start，提交目标首帧并播放 source -> target/neutral
+source UNMOUNT -> STOP
+提交 nav model
+完成命令
+```
+
+target `ONRESUME` 先于 presentation start，因此它的 timer、订阅、输入和活动会话在整段
+动画期间已经运行；透明屏障只阻止 LVGL 触摸，不撤销这些资源产生的服务请求、事件回调
+或其他外部副作用。target handler 此时可以更新自己的 Screen，但不得依据 active/present
+查询判断导航已经提交。
+
+presentation 无法启动时，若能立即加载 target，则降级为 `NONE` 并继续执行动画后的清理
+和提交；否则框架先向 target 发送补偿性 `ONPAUSE`，再 UNMOUNT target，随后加载并
+RESUME source。动画结束后的 source `STOP` 失败也使用相同补偿顺序，最终以原错误完成
+命令。target 补偿 PAUSE 失败时不得 UNMOUNT target 或 RESUME source；框架保留 target
+的 Screen 和活动资源并提交为前台，以原始错误完成命令。source 根据转换类型保留为
+`UNMOUNT_ONLY`、`DESTROY_PAGE` 或 `DESTROY_APP` cleanup owner；后续导航先重试该动作，
+避免两个页面同时持有前台会话。`UNMOUNT_ONLY` 不会 STOP 后台驻留 Page，
+`DESTROY_APP` 在 provider release 成功前始终保留 lease。
+
+`BACK_TO` 只在起点和最终目标之间播放一次动画；中间页面按栈顶到栈底执行 STOP/free，
+清理失败前已经成功移除的页面属于允许的部分提交。
+
+动画期间 presentation 在 top layer 放置透明触摸屏障。它只阻止 LVGL 触摸，不阻止
+HOME、POWER 或 app-control。新导航到达时先把当前动画推进到完成回调和稳定 target，
+再执行 FIFO 中的下一条命令。Screen 创建或动画启动失败遵循上述降级或补偿回滚规则，
+任何失败都不能绕过 target PAUSE、遗失 cleanup ownership 或形成双 active 会话。
+
+`app_manager_is_transitioning()` 可区分动画临时状态。动画期间 active/present/userdata
+等拓扑查询返回与 Screen 暂停相同的保守值，不能把 `false` 或 `NULL` 解释为实例已被
+销毁。
+
+## 8. 统一导航 Gateway
+
+所有导航使用 `app_manager_nav_request_t`：
+
+| operation | 语义 |
+| --- | --- |
+| `RUN` | 创建 App，或把已有 App 提到前台 |
+| `EXIT` | 退出指定 App |
+| `EXIT_SELF` | 退出发起生命周期回调所属的 App |
+| `OPEN_PAGE` | 打开静态 Page；必要时启动或前置目标 App |
+| `BACK` | 返回一页；根页返回等价于退出当前 App |
+| `BACK_TO` | 返回到当前 App 栈中已有的指定 Page |
+| `REMOVE_PAGE` | 删除指定 Page；删除当前页按 BACK 处理 |
+| `CLEANUP_BACKGROUND` | 重试清理所有非 pinned 后台 App |
+
+`EXIT_SELF` 只在 lifecycle callback 内接受，request 的 `app_id` 必须为 `NULL`；gateway
+会在 callback 返回前复制 owner ID。普通 task 或一般 LVGL event 应使用 `EXIT`、`BACK`
+或其他显式导航操作。
+
+`OPEN_PAGE` 只接受 registry 中的静态 Page ID：
+
+- App 不存在时创建 App、根页以及目标页；
+- App 在后台时把它提到前台；
+- Page 已存在时更新 intent，并执行一次 back-to；
+- Page 不存在时创建并压入目标 App 的页面栈。
+
+### 8.1 同步 API
+
+```c
+app_manager_nav_request_t request =
+{
+    .operation = APP_MANAGER_NAV_OP_RUN,
+    .app_id = "settings",
+    .transition = {.effect = APP_MANAGER_TRANSITION_DEFAULT},
+};
+
+esp_err_t result = app_manager_navigate(&request, UINT32_MAX);
+```
+
+`app_manager_navigate()` 只能由非 UI task 调用。它等待动画、生命周期和必要清理达到
+稳定结果；在 UI worker 上调用返回 `ESP_ERR_INVALID_STATE`。
+
+同步超时沿用 mailbox 安全语义：
+
+- 命令尚未开始时取消，回调不会执行；
+- 命令已经开始时继续等待稳定完成，但最终向调用者返回 `ESP_ERR_TIMEOUT`。
+
+因此同步 API 返回后，栈上 request 可以安全销毁，即使实际等待超过指定 timeout。
+
+### 8.2 异步 API
+
+```c
+static void _navigation_complete(esp_err_t result, void *context)
+{
+    /* 在 UI worker 上运行。 */
+}
+
+app_manager_nav_request_t request =
+{
+    .operation = APP_MANAGER_NAV_OP_OPEN_PAGE,
+    .app_id = "settings",
+    .page_id = "power",
+};
+
+esp_err_t admitted = app_manager_navigate_async(
+                         &request, _navigation_complete, context);
+```
+
+`app_manager_navigate_async()` 可从普通 task、LVGL event、navigation completion 或
+lifecycle handler 调用。返回值只表示 command slot 和 mailbox 准入；准入成功后的最终
+结果由 UI worker 上的 completion 给出。生命周期回调内的重入请求进入同一 FIFO，不会
+递归修改当前 nav model。
+
+固定 command pool 有 24 槽。池满或 mailbox 拒绝时立即返回 `ESP_ERR_NO_MEM`，此时
+completion 不会执行。
+
+## 9. 清理失败与失败回滚
+
+handler 是 `void`。`ONPAUSE` 或 `ONSTOP` 释放资源失败时必须报告：
+
+```c
+esp_err_t result = event_bus_unsubscribe(state->subscription);
+if (result != ESP_OK)
+{
+    app_manager_this_page_report_cleanup_error(result);
+    return; /* 保留有效 handle，后续重试。 */
+}
+state->subscription = EVENT_BUS_SUB_HANDLE_INVALID;
+```
+
+框架只记录当前回调报告的第一个非 `ESP_OK` 错误：
+
+- PAUSE 失败时页面仍保持 active，不继续 UNMOUNT/STOP；
+- STOP 失败时实例、私有内存、provider lease 和未释放句柄继续归原 owner；
+- 未提交 target 已经 RESUME 时，回滚必须先执行 target PAUSE，再 UNMOUNT target 和
+  RESUME source；应用应把它视为正常的补偿性生命周期配对；
+- target 的补偿 PAUSE 失败时保留 target 的 Screen、活动资源和 recovery ownership，
+  不得继续 UNMOUNT target 或 RESUME source；
+- 返回/退出的 STOP 失败会在 target 补偿成功后恢复 source Page，而不是提交半个前台；
+- STOP 已成功但 provider release 失败时，source 以新的 START epoch 恢复，框架会先清零
+  该 Page 声明的私有内存；
+- 后台清理、驻留淘汰和 deinit 可再次执行同一清理；
+- 释放失败后不得提前清空 handle，否则框架无法替业务代码恢复所有权证据。
+
+`ONMOUNT/ONUNMOUNT` 不提供 cleanup error 通道。LVGL Screen 创建、删除或动画启动失败
+由 presentation/lifecycle 自身回滚。任何失败路径都不得丢失 Page slot、Screen、lease
+或 cleanup ownership。
+
+## 10. Screen Suspend、Resume 与 Deinit
+
+Screen suspend 不播放动画：
+
+```text
+快进当前动画并提交稳定 target
+current PAUSE
+load neutral
+current UNMOUNT，删除 Page Screen
+保存运行 App 数快照
+关闭 Screen 访问准入并排空在途访问
+pause LVGL adapter
+等待 panel IO / DMA fence
+提交硬件 suspend
+```
+
+Screen resume 同样不播放动画：
+
+```text
+硬件 resume_prepare（面板仍隐藏）
+resume LVGL adapter
+current MOUNT
+load current Screen
+current RESUME
+刷新并等待 fence
+恢复 indev、亮度和 resume_commit
+```
+
+PAUSING、PAUSED 和动画期间的拓扑查询是保守值。成功进入 PAUSED 后，
+`app_manager_get_running_apps()` 和 `app_manager_is_all_closed()` 使用暂停时保存的
+running-count 快照；其余 active/present 查询返回 `false` 或 `NULL`。
+
+`app_manager_deinit()` 不能从 UI worker 调用。正常顺序为：
+
+1. app-control 停止生产者，注销输入并取消 standby；
+2. navigation 停止准入，排空命令并快进最后动画；
+3. lifecycle 置 CLOSED，等待已准入访问退出；
+4. UI worker 执行 PAUSE/UNMOUNT/STOP、删除 Screen 并释放 lease；
+5. presentation 删除 neutral Screen、屏障和 completion timer；
+6. 关闭 mailbox，pause/fence/deinit LVGL adapter；
+7. 释放字体、主题和资源映射。
+
+任一步清理失败都保留对应 ready/ownership 状态；再次调用 `app_manager_deinit()` 继续
+重试。冷启动、Screen resume 和 deinit 不播放页面动画。
+
+## 11. 显示与 PM 协作
+
+app-control task 串行管理显示和 standby：
+
+```text
+ACTIVE -> DIM -> SCREEN_OFF -> STANDBY_PREPARING -> STANDBY
+   ^        |          |                 |              |
+   +--------+----------+-----------------+--------------+
+                    user activity / wake
+```
+
+POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。standby guard 在
+系统提交点重新检查本地 epoch、显示规范休眠状态和 wake intent；commit callback 只做
+无阻塞原子记录，最终状态仍由 app-control 核对后发布。
+
+亮度寄存器和 LVGL color flush 共用 panel IO。所有正常亮度、临时亮度、DIM 和恢复亮度
+都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动
+的 input/PM admission 在 `app_manager_init()` 后仍保持关闭；`app_manager_startup_commit()`
+注册物理输入并从首屏真正可操作的时刻重置 inactivity epoch。
+
+显示恢复遵循 `resume_prepare -> adapter resume -> Page MOUNT/RESUME -> refresh/fence ->
+resume_commit`。面板显示和物理触摸只在完整恢复帧提交后启用，避免旧帧、触摸穿透和
+DMA 未完成。
+
+## 12. 应用模板
+
+```c
+#include "app_manager.h"
+
+typedef struct example_page_state
+{
+    lv_obj_t *root;
+    lv_timer_t *timer;
+    void *subscription;
+} example_page_state_t;
+
+static void _example_page_handler(app_manager_msg_type_t message, void *param)
+{
+    (void)param;
+    example_page_state_t *state = app_manager_this_page_memory();
+
+    switch (message)
+    {
+    case APP_MANAGER_MSG_ONSTART:
+        memset(state, 0, sizeof(*state));
+        break;
+
+    case APP_MANAGER_MSG_ONMOUNT:
+    {
+        lv_obj_t *screen = app_manager_this_page_screen();
+        state->root = lv_obj_create(screen);
+        lv_obj_set_size(state->root, LV_PCT(100), LV_PCT(100));
+        break;
+    }
+
+    case APP_MANAGER_MSG_ONRESUME:
+        state->timer = lv_timer_create(_example_timer_cb, 1000, state);
+        state->subscription = _example_subscribe();
+        break;
+
+    case APP_MANAGER_MSG_ONPAUSE:
+        if (state->subscription != NULL)
+        {
+            esp_err_t result = _example_unsubscribe(state->subscription);
+            if (result != ESP_OK)
+            {
+                app_manager_this_page_report_cleanup_error(result);
+                break;
+            }
+            state->subscription = NULL;
+        }
+        if (state->timer != NULL)
+        {
+            lv_timer_delete(state->timer);
+            state->timer = NULL;
+        }
+        break;
+
+    case APP_MANAGER_MSG_ONUNMOUNT:
+        if (state->root != NULL)
+        {
+            lv_obj_delete(state->root);
+            state->root = NULL;
+        }
+        break;
+
+    case APP_MANAGER_MSG_ONSTOP:
+        break;
+
+    case APP_MANAGER_MSG_ONNEWINTENT:
+        (void)app_manager_this_page_arguments();
+        break;
+
+    default:
+        break;
+    }
+}
+
+APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
+                       APP_MANAGER_APP_FLAG_NONE);
+APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
+                        _example_page_handler, NULL,
+                        sizeof(example_page_state_t));
+```
+
+实际实现可参考：
+
+- `layers/apps/home_app/src/home_app.c`：pinned HOME、订阅和 timer；
+- `layers/apps/menu_app/src/menu_app.c`：registry 枚举和异步 App 导航；
+- `layers/apps/settings_app/src/settings_app.c`：多级静态 Page；
+- `layers/apps/setup_app/src/setup_app.c`：活动 Wi-Fi 会话和清理失败重试；
+- `layers/apps/common/src/app_ui.c`：LVGL event 到统一 async gateway。
+
+## 13. 初始化配置
+
+`app_manager_config_t` 中与 0.2.0 导航直接相关的字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `page_memory_bytes` | 12 个 Page 共享的 arena；0 使用 32 KiB |
+| `max_resident_apps` | 驻留上限；0 使用物理上限 8 |
+| `resident_policy` | 满容量拒绝或淘汰最旧后台 App |
+| `app_forward_transition` | App 前进默认动画 |
+| `app_back_transition` | App 返回默认动画 |
+| `page_forward_transition` | Page 前进默认动画 |
+| `page_back_transition` | Page 返回默认动画 |
+
+其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
+`standby_ops`。配置结构由初始化路径读取，硬件操作表会复制到内部 owner。
+
+推荐启动顺序：
+
+```text
+BSP / system PM ready
+app_manager_init（input/PM admission closed）
+register UI dispatcher with event bus
+start power service
+navigate RUN HOME
+app_manager_display_commit_initial（show panel, keep indev closed）
+start connectivity services
+app_manager_startup_commit（open touch, key, and PM admission）
+```
+
+`main/app_runtime.c` 先显示 Home，再初始化连接服务，因此 Wi-Fi/BLE 启动耗时不会延长
+黑屏；但物理 HOME/POWER 在连接层完成前仍不会进入导航或 PM 状态机。任何 Page 的
+`ONRESUME` 都发生在 UI dispatcher 和 power service 安装之后。
+
+## 14. 测试与验证
+
+app-core 宿主套件：
 
 ```sh
-cmake -S app_core/tests/host -B /tmp/mt-app-manager-host -G Ninja
-cmake --build /tmp/mt-app-manager-host
-ctest --test-dir /tmp/mt-app-manager-host --output-on-failure
+cmake -S layers/app_manager/app_core/tests/host \
+      -B /tmp/mt-app-core -G Ninja
+cmake --build /tmp/mt-app-core
+ctest --test-dir /tmp/mt-app-core --output-on-failure
 ```
 
-设置 `-DAPP_MANAGER_SANITIZER=address` 可运行 ASan/UBSan，设置为 `thread` 可运行 TSan。测试覆盖 mailbox、生命周期、应用控制和 adapter 的失败回滚/重试；显示、电源与触摸改动仍须在 ESP32-S3 上验证。
+该套件包括 `mailbox`、`navigation`、`registry`、`nav_model`、`lifecycle`、`control`
+和 `adapter`。ASan/UBSan 与 TSan 分别使用：
 
-## 设计与修改边界
+```sh
+cmake -S layers/app_manager/app_core/tests/host \
+      -B /tmp/mt-app-core-asan -G Ninja \
+      -DAPP_MANAGER_SANITIZER=address
+cmake --build /tmp/mt-app-core-asan
+ctest --test-dir /tmp/mt-app-core-asan --output-on-failure
 
-LVGL 对象只能在 UI 工作线程中访问，硬件回调不得绕过注入接口直接耦合具体 BSP。资源释放失败应保留所有权并允许重试，页面 handler 可用 `app_manager_this_page_report_cleanup_error()` 上报。遵循主工程 `doc/code-style.md`，保持单一出口和逆序清理；不要修改 ESP-IDF 或 `managed_components/`，依赖问题优先通过版本升级或本仓库适配解决。
+cmake -S layers/app_manager/app_core/tests/host \
+      -B /tmp/mt-app-core-tsan -G Ninja \
+      -DAPP_MANAGER_SANITIZER=thread
+cmake --build /tmp/mt-app-core-tsan
+ctest --test-dir /tmp/mt-app-core-tsan --output-on-failure
+```
 
-## 许可证
+应用、main 和跨层套件：
 
-本项目采用 [MIT License](LICENSE)。
+```sh
+cmake -S layers/apps/tests/host -B /tmp/mt-apps -G Ninja
+cmake --build /tmp/mt-apps
+ctest --test-dir /tmp/mt-apps --output-on-failure
+
+cmake -S main/tests/host -B /tmp/mt-main -G Ninja
+cmake --build /tmp/mt-main
+ctest --test-dir /tmp/mt-main --output-on-failure
+
+cmake -S tests/integration -B /tmp/mt-integration -G Ninja
+cmake --build /tmp/mt-integration
+ctest --test-dir /tmp/mt-integration --output-on-failure
+```
+
+对应 sanitizer cache 变量为 `APPS_SANITIZER`、`MAIN_HOST_SANITIZER` 和
+`CROSS_LAYER_SANITIZER`，取值同样是 `address` 或 `thread`。跨层 `presentation` 测试
+覆盖 14 种效果、立即完成、正常完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
+App/Page 前进返回、Screen pause/resume 和清理回滚。
+
+提交前还应执行：
+
+```sh
+git diff --check
+idf.py set-target esp32s3
+idf.py build
+idf.py size
+```
+
+C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
+
+- App/Page 双向切换至少 100 次，无空白帧和触摸穿透；
+- 动画平均帧率不低于 25 FPS；
+- Screen、LVGL object、timer、订阅和活动会话无增长；
+- 无 panel IO、DMA 或 fence 错误；
+- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量。
+
+## 15. 明确边界
+
+0.2.0 不包含：
+
+- 动态模块加载、公共 provider 插件 ABI 或脚本应用；
+- 手势跟手返回、自定义 ZOOM 或全屏快照；
+- popup/overlay manager；
+- 多个 app-manager 实例；
+- 对 ESP-IDF、LVGL 或 `managed_components/` 的本地修改。
+
+## 16. 推荐阅读顺序
+
+1. `app_core/include/app_manager_types.h`
+2. `app_core/include/app_manager.h`
+3. `app_core/src/app_manager_navigation.c`
+4. `app_core/src/app_manager_nav_model.c`
+5. `app_core/src/app_manager_lifecycle.c`
+6. `app_core/src/app_manager_presentation.c`
+7. `app_core/src/app_manager_builtin.c`
+8. `app_core/src/app_manager_lvgl_adapter.c`
+9. `app_core/tests/host/`
+10. `tests/integration/test_cross_layer.c`
+
+## 17. License
+
+本模块采用 [MIT License](LICENSE)。

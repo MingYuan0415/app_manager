@@ -26,6 +26,12 @@ typedef struct app_manager_config
     app_manager_input_ops_t       input_ops;  /**< Required typed input bridge. */
     app_manager_standby_ops_t     standby_ops; /**< Required non-blocking system-PM bridge. */
     size_t                    page_memory_bytes; /**< 0 selects the 32 KiB default */
+    size_t                    max_resident_apps; /**< 0 selects the physical maximum. */
+    app_manager_resident_policy_t resident_policy; /**< Full-capacity behavior. */
+    app_manager_transition_t  app_forward_transition; /**< Zero selects FADE, 220 ms. */
+    app_manager_transition_t  app_back_transition; /**< Zero selects FADE, 220 ms. */
+    app_manager_transition_t  page_forward_transition; /**< Zero selects PUSH_LEFT, 220 ms. */
+    app_manager_transition_t  page_back_transition; /**< Zero selects PUSH_RIGHT, 220 ms. */
 } app_manager_config_t;
 
 #ifdef __cplusplus

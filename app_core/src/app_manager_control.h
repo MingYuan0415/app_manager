@@ -10,6 +10,16 @@
  */
 esp_err_t app_manager_control_init(const app_manager_config_t *config);
 /**
+ * @brief Commit the initially fenced display from the UI worker.
+ * @return ESP_OK when the panel and physical touch are enabled.
+ */
+esp_err_t app_manager_control_commit_display(void);
+/**
+ * @brief Open input and inactivity admission after the first frame is visible.
+ * @return ESP_OK when admitted, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_control_open_admission(void);
+/**
  * @brief Stop application control and release all owned resources.
  * @return ESP_OK when stopped, otherwise a retryable cleanup error.
  */

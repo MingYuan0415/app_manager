@@ -11,6 +11,7 @@
 
 #include "app_manager.h"
 #include "app_manager_control.h"
+#include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
 #ifndef HOST_TEST
     #include "esp_timer.h"
@@ -68,10 +69,19 @@ atomic_bool s_home_inflight;
 atomic_uint s_brightness_temp_value;
 atomic_uint s_brightness_temp_generation;
 atomic_bool s_brightness_temp_pending;
+atomic_bool s_control_admitted;
 static bool s_input_registered;
+static atomic_flag s_deinit_busy = ATOMIC_FLAG_INIT;
 bool s_power_wake_click_pending;
 bool s_power_long_press_seen;
-bool app_manager_control_access_begin(void)
+
+typedef struct control_brightness_request
+{
+    uint8_t brightness;
+    bool persistent;
+} control_brightness_request_t;
+
+static bool _control_ready_access_begin(void)
 {
     bool admitted = atomic_load(&s_lifecycle_state) == CONTROL_READY;
     if (admitted)
@@ -81,6 +91,84 @@ bool app_manager_control_access_begin(void)
         if (!admitted)
         {
             atomic_fetch_sub(&s_active_accesses, 1U);
+        }
+    }
+    return admitted;
+}
+
+static esp_err_t _control_apply_brightness_on_ui(void *argument)
+{
+    const control_brightness_request_t *request = argument;
+    return request->persistent ?
+           s_screen_ops.set_brightness(request->brightness) :
+           s_screen_ops.set_brightness_temp(request->brightness);
+}
+
+static esp_err_t _control_commit_display_on_ui(void *argument)
+{
+    (void)argument;
+    return s_screen_ops.resume_commit();
+}
+
+esp_err_t app_manager_control_apply_brightness(uint8_t brightness,
+        bool persistent)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    const bool access_owned = _control_ready_access_begin();
+    if (!access_owned || app_manager_display_is_sleeping())
+    {
+        goto exit;
+    }
+    const control_brightness_request_t request =
+    {
+        .brightness = brightness,
+        .persistent = persistent,
+    };
+    result = app_manager_ui_call(_control_apply_brightness_on_ui,
+                                 (void *)&request, UINT32_MAX);
+
+exit:
+    if (access_owned)
+    {
+        app_manager_control_access_end();
+    }
+    return result;
+}
+
+esp_err_t app_manager_control_commit_display(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    const bool access_owned = _control_ready_access_begin();
+    if (!access_owned || app_manager_display_is_sleeping())
+    {
+        goto exit;
+    }
+    result = app_manager_ui_call(_control_commit_display_on_ui,
+                                 NULL, UINT32_MAX);
+
+exit:
+    if (access_owned)
+    {
+        app_manager_control_access_end();
+    }
+    return result;
+}
+
+bool app_manager_control_access_begin(void)
+{
+    bool admitted = atomic_load_explicit(&s_control_admitted,
+                                         memory_order_acquire);
+    if (admitted)
+    {
+        admitted = _control_ready_access_begin();
+    }
+    if (admitted)
+    {
+        admitted = atomic_load_explicit(&s_control_admitted,
+                                        memory_order_acquire);
+        if (!admitted)
+        {
+            app_manager_control_access_end();
         }
     }
     return admitted;
@@ -205,6 +293,7 @@ static void _control_reset_runtime_state(void)
     atomic_store(&s_brightness_temp_value, UINT8_MAX);
     atomic_store(&s_brightness_temp_generation, 0U);
     atomic_store(&s_brightness_temp_pending, false);
+    atomic_store(&s_control_admitted, false);
     s_input_registered = false;
     s_power_wake_click_pending = false;
     s_power_long_press_seen = false;
@@ -273,20 +362,65 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
         goto exit;
     }
     atomic_store(&s_lifecycle_state, CONTROL_READY);
-    result = s_input_ops.register_handler(_control_input_callback, NULL);
-    if (result != ESP_OK)
-    {
-        (void)app_manager_control_deinit();
-        goto exit;
-    }
-    s_input_registered = true;
-    result = s_screen_ops.set_brightness_temp(s_brightness);
+    result = app_manager_control_apply_brightness(s_brightness, true);
     if (result != ESP_OK)
     {
         (void)app_manager_control_deinit();
     }
 
 exit:
+    return result;
+}
+
+esp_err_t app_manager_control_open_admission(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    bool lock_owned = false;
+    bool access_owned = _control_ready_access_begin();
+    if (!access_owned)
+    {
+        goto exit;
+    }
+    xSemaphoreTake(s_call_lock, portMAX_DELAY);
+    lock_owned = true;
+    if (atomic_load(&s_lifecycle_state) != CONTROL_READY)
+    {
+        goto exit;
+    }
+    if (atomic_load_explicit(&s_control_admitted, memory_order_acquire))
+    {
+        result = ESP_OK;
+        goto exit;
+    }
+
+    s_last_activity_us = esp_timer_get_time();
+    result = s_input_ops.register_handler(_control_input_callback, NULL);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    s_input_registered = true;
+    if (atomic_load(&s_lifecycle_state) != CONTROL_READY)
+    {
+        result = s_input_ops.unregister_handler();
+        if (result == ESP_OK)
+        {
+            s_input_registered = false;
+            result = ESP_ERR_INVALID_STATE;
+        }
+        goto exit;
+    }
+    atomic_store_explicit(&s_control_admitted, true, memory_order_release);
+
+exit:
+    if (lock_owned)
+    {
+        xSemaphoreGive(s_call_lock);
+    }
+    if (access_owned)
+    {
+        app_manager_control_access_end();
+    }
     return result;
 }
 
@@ -382,6 +516,7 @@ static void _control_clear_runtime(void)
     atomic_store(&s_standby_abort_pending, false);
     atomic_store(&s_touch_pending, false);
     atomic_store(&s_touch_activity_enabled, false);
+    atomic_store(&s_control_admitted, false);
     atomic_fetch_add(&s_touch_generation, 1U);
     _app_manager_control_clear_brightness_preview();
     s_power_wake_click_pending = false;
@@ -391,7 +526,14 @@ static void _control_clear_runtime(void)
 
 esp_err_t app_manager_control_deinit(void)
 {
-    esp_err_t result = ESP_OK;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    const bool cleanup_owned = !atomic_flag_test_and_set_explicit(
+                                   &s_deinit_busy, memory_order_acquire);
+    if (!cleanup_owned)
+    {
+        goto exit;
+    }
+    result = ESP_OK;
     int state = atomic_load(&s_lifecycle_state);
     if (state == CONTROL_UNINITIALIZED)
     {
@@ -413,6 +555,8 @@ esp_err_t app_manager_control_deinit(void)
         }
     }
 
+    atomic_store_explicit(&s_control_admitted, false, memory_order_release);
+
     _control_wait_for_accesses();
     result = _control_stop_task();
     if (result != ESP_OK)
@@ -423,5 +567,9 @@ esp_err_t app_manager_control_deinit(void)
     _control_clear_runtime();
 
 exit:
+    if (cleanup_owned)
+    {
+        atomic_flag_clear_explicit(&s_deinit_busy, memory_order_release);
+    }
     return result;
 }

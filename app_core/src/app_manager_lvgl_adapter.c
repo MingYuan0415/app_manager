@@ -3,17 +3,22 @@
 #include "mt_log.h"
 
 #include "app_manager.h"
+#include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
 #include "app_manager_display.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
+#include "app_manager_navigation.h"
+#include "app_manager_presentation.h"
 #include "app_theme.h"
 #include "esp_attr.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lv_adapter.h"
 #include <stdatomic.h>
+
+#define APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES (32U * 1024U)
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE && !CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     #error "App manager FreeType integration requires the LVGL adapter filesystem"
@@ -42,7 +47,10 @@ static atomic_flag s_cleanup_busy = ATOMIC_FLAG_INIT;
 static bool s_theme_ready;
 static bool s_adapter_ready;
 static bool s_mailbox_ready;
+static bool s_registry_ready;
+static bool s_presentation_ready;
 static bool s_lifecycle_ready;
+static bool s_navigation_ready;
 static bool s_control_ready;
 static bsp_display_port_t s_display_port_storage;
 static const bsp_display_port_t *s_display_port;
@@ -50,6 +58,7 @@ static lv_display_t *s_display;
 static lv_indev_t *s_touch;
 static atomic_bool s_display_sleeping;
 static atomic_bool s_display_fenced;
+static atomic_bool s_initial_display_committed;
 /* The completion ISR only reports flush-ready. Keep the first synchronous
  * submission error in the UI worker so a failed refresh is not made visible. */
 static atomic_bool s_refresh_capture_active;
@@ -100,6 +109,39 @@ static void IRAM_ATTR _app_adapter_touch_interrupt(esp_lcd_touch_handle_t touch,
 }
 
 static esp_err_t _app_adapter_refresh_on_ui(void *arg);
+
+static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
+{
+    (void)arg;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (s_touch == NULL || !app_manager_mailbox_is_worker())
+    {
+        goto exit;
+    }
+    lv_indev_reset(s_touch, NULL);
+    (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
+    lv_indev_enable(s_touch, true);
+    result = ESP_OK;
+
+exit:
+    return result;
+}
+
+static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
+{
+    (void)arg;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (s_touch == NULL || !app_manager_mailbox_is_worker())
+    {
+        goto exit;
+    }
+    lv_indev_enable(s_touch, false);
+    lv_indev_reset(s_touch, NULL);
+    result = ESP_OK;
+
+exit:
+    return result;
+}
 
 static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
 {
@@ -179,7 +221,7 @@ exit:
 
 static esp_err_t _app_adapter_refresh_on_ui(void *arg)
 {
-    (void)arg;
+    const bool enable_touch = arg == NULL || *(const bool *)arg;
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_display == NULL || s_touch == NULL || s_display_port == NULL ||
             !app_manager_mailbox_is_worker())
@@ -223,9 +265,13 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
         goto exit;
     }
 
+    if (enable_touch)
+    {
+        result = _app_adapter_enable_touch_on_ui(NULL);
+        goto exit;
+    }
     lv_indev_reset(s_touch, NULL);
-    (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
-    lv_indev_enable(s_touch, true);
+    lv_indev_enable(s_touch, false);
 
 exit:
     return result;
@@ -317,10 +363,43 @@ esp_err_t app_manager_display_commit_initial(void)
     {
         goto exit;
     }
-    result = app_manager_ui_call(_app_adapter_refresh_on_ui, NULL, UINT32_MAX);
+    const bool enable_touch = false;
+    result = app_manager_ui_call(_app_adapter_refresh_on_ui,
+                                 (void *)&enable_touch, UINT32_MAX);
+    if (result == ESP_OK)
+    {
+        result = app_manager_control_commit_display();
+    }
+    if (result == ESP_OK)
+    {
+        atomic_store_explicit(&s_initial_display_committed, true,
+                              memory_order_release);
+    }
 
 exit:
     return result;
+}
+
+esp_err_t app_manager_display_enable_startup_touch(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (!atomic_load_explicit(&s_initial_display_committed,
+                              memory_order_acquire) ||
+            atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
+    {
+        goto exit;
+    }
+    result = app_manager_ui_call(_app_adapter_enable_touch_on_ui,
+                                 NULL, UINT32_MAX);
+
+exit:
+    return result;
+}
+
+esp_err_t app_manager_display_disable_startup_touch(void)
+{
+    return app_manager_ui_call(_app_adapter_disable_touch_on_ui,
+                               NULL, UINT32_MAX);
 }
 
 bool app_manager_display_is_sleeping(void)
@@ -445,10 +524,38 @@ exit:
 }
 #endif
 
-static esp_err_t _app_adapter_lifecycle_deinit_on_ui(void *arg)
+static esp_err_t _app_adapter_presentation_init_on_ui(void *arg)
 {
     (void)arg;
-    return app_manager_lifecycle_deinit();
+    return app_manager_presentation_init();
+}
+
+static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
+{
+    (void)arg;
+    esp_err_t result = ESP_OK;
+
+    if (s_lifecycle_ready)
+    {
+        result = app_manager_lifecycle_deinit();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+        s_lifecycle_ready = false;
+    }
+    if (s_presentation_ready)
+    {
+        result = app_manager_presentation_deinit();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+        s_presentation_ready = false;
+    }
+
+exit:
+    return result;
 }
 
 static esp_err_t _app_adapter_cleanup_services(void)
@@ -465,6 +572,15 @@ static esp_err_t _app_adapter_cleanup_services(void)
         }
         s_control_ready = false;
     }
+    if (s_navigation_ready)
+    {
+        result = app_manager_navigation_deinit();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+        s_navigation_ready = false;
+    }
     if (s_lifecycle_ready && s_mailbox_ready)
     {
         result = app_manager_lifecycle_shutdown_begin_and_wait();
@@ -473,12 +589,11 @@ static esp_err_t _app_adapter_cleanup_services(void)
             goto exit;
         }
         result = app_manager_mailbox_shutdown_call(
-                     _app_adapter_lifecycle_deinit_on_ui, NULL);
+                     _app_adapter_runtime_deinit_on_ui, NULL);
         if (result != ESP_OK)
         {
             goto exit;
         }
-        s_lifecycle_ready = false;
     }
     else if (s_lifecycle_ready)
     {
@@ -487,12 +602,31 @@ static esp_err_t _app_adapter_cleanup_services(void)
         {
             goto exit;
         }
-        result = app_manager_lifecycle_deinit();
+        app_manager_lifecycle_force_deinit();
+        s_lifecycle_ready = false;
+    }
+    if (s_presentation_ready && s_mailbox_ready)
+    {
+        result = app_manager_ui_call(_app_adapter_runtime_deinit_on_ui,
+                                     NULL, UINT32_MAX);
         if (result != ESP_OK)
         {
             goto exit;
         }
-        s_lifecycle_ready = false;
+    }
+    if (s_presentation_ready)
+    {
+        result = ESP_ERR_INVALID_STATE;
+        goto exit;
+    }
+    if (s_registry_ready)
+    {
+        result = app_manager_builtin_registry_reset();
+        if (result != ESP_OK)
+        {
+            goto exit;
+        }
+        s_registry_ready = false;
     }
     if (s_mailbox_ready)
     {
@@ -564,6 +698,8 @@ static void _app_adapter_clear_lvgl_runtime(void)
     s_touch = NULL;
     atomic_store_explicit(&s_display_sleeping, false, memory_order_release);
     atomic_store_explicit(&s_display_fenced, false, memory_order_release);
+    atomic_store_explicit(&s_initial_display_committed, false,
+                          memory_order_release);
     atomic_store_explicit(&s_refresh_capture_active, false,
                           memory_order_release);
     atomic_store_explicit(&s_refresh_capture_error, ESP_OK,
@@ -666,7 +802,10 @@ static void _app_adapter_reset_runtime(void)
     s_theme_ready = false;
     s_adapter_ready = false;
     s_mailbox_ready = false;
+    s_registry_ready = false;
+    s_presentation_ready = false;
     s_lifecycle_ready = false;
+    s_navigation_ready = false;
     s_control_ready = false;
     s_display_port = NULL;
     s_display_port_storage = (bsp_display_port_t)
@@ -677,6 +816,8 @@ static void _app_adapter_reset_runtime(void)
     s_touch = NULL;
     atomic_store_explicit(&s_display_sleeping, false, memory_order_release);
     atomic_store_explicit(&s_display_fenced, false, memory_order_release);
+    atomic_store_explicit(&s_initial_display_committed, false,
+                          memory_order_release);
     atomic_store_explicit(&s_refresh_capture_active, false,
                           memory_order_release);
     atomic_store_explicit(&s_refresh_capture_error, ESP_OK,
@@ -792,6 +933,11 @@ exit:
 static esp_err_t _app_adapter_start_services(
     const app_manager_config_t *config)
 {
+    const size_t arena_bytes = config->page_memory_bytes == 0U ?
+                               APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES :
+                               config->page_memory_bytes;
+    const size_t page_memory_bytes =
+        (arena_bytes / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U;
     esp_err_t result = esp_lv_adapter_start();
     if (result != ESP_OK)
     {
@@ -803,12 +949,46 @@ static esp_err_t _app_adapter_start_services(
         goto exit;
     }
     s_mailbox_ready = true;
+    if (page_memory_bytes == 0U)
+    {
+        result = ESP_ERR_INVALID_SIZE;
+        goto exit;
+    }
+    result = app_manager_builtin_registry_validate(page_memory_bytes);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    s_registry_ready = true;
+    result = app_manager_ui_call(_app_adapter_presentation_init_on_ui,
+                                 NULL, UINT32_MAX);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    s_presentation_ready = true;
+    result = app_manager_lifecycle_configure(
+                 config->max_resident_apps, config->resident_policy,
+                 &config->app_forward_transition,
+                 &config->app_back_transition,
+                 &config->page_forward_transition,
+                 &config->page_back_transition);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
     result = app_manager_lifecycle_init(config->page_memory_bytes);
     if (result != ESP_OK)
     {
         goto exit;
     }
     s_lifecycle_ready = true;
+    result = app_manager_navigation_init();
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    s_navigation_ready = true;
     s_control_ready = true;
     result = app_manager_control_init(config);
 
@@ -867,7 +1047,8 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     atomic_store(&s_state, APP_ADAPTER_READY);
     LOG_I("initialized: %ux%u, mailbox=24, page_arena=%u",
           s_display_port->width, s_display_port->height,
-          (unsigned)(config->page_memory_bytes == 0 ? 32U * 1024U :
+          (unsigned)(config->page_memory_bytes == 0 ?
+                     APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES :
                      config->page_memory_bytes));
     goto exit;
 

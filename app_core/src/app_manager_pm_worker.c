@@ -6,6 +6,7 @@
     #include "host_control_port.h"
 #endif
 
+#include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
 #ifndef HOST_TEST
@@ -65,24 +66,37 @@ exit:
     return result;
 }
 
+static bool _control_can_apply_brightness(void)
+{
+    return !app_manager_display_is_sleeping() &&
+           !s_screen_ops.is_suspended();
+}
+
 static esp_err_t _control_execute_brightness(uint8_t brightness)
 {
     uint8_t previous = s_brightness;
-    esp_err_t result = s_screen_ops.set_brightness(brightness);
+    const bool apply_hardware = _control_can_apply_brightness();
+    esp_err_t result = apply_hardware ?
+                       app_manager_control_apply_brightness(brightness, true) :
+                       ESP_OK;
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+
+    result = nv_storage_set_u8(NVS_KEY_BRIGHTNESS, brightness);
     if (result == ESP_OK)
     {
-        result = nv_storage_set_u8(NVS_KEY_BRIGHTNESS, brightness);
-        if (result == ESP_OK)
-        {
-            xSemaphoreTake(s_state_lock, portMAX_DELAY);
-            s_brightness = brightness;
-            xSemaphoreGive(s_state_lock);
-        }
-        else
-        {
-            (void)s_screen_ops.set_brightness(previous);
-        }
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        s_brightness = brightness;
+        xSemaphoreGive(s_state_lock);
     }
+    else if (apply_hardware)
+    {
+        (void)app_manager_control_apply_brightness(previous, true);
+    }
+
+exit:
     return result;
 }
 
@@ -127,7 +141,9 @@ static esp_err_t _control_execute(const control_command_t *command)
         result = _control_execute_brightness(command->data.brightness);
         break;
     case CONTROL_SET_BRIGHTNESS_TEMP:
-        result = s_screen_ops.set_brightness_temp(command->data.brightness);
+        result = _control_can_apply_brightness() ?
+                 app_manager_control_apply_brightness(
+                     command->data.brightness, false) : ESP_OK;
         break;
     case CONTROL_SET_OFF_TIMEOUT:
         result = _control_execute_timeout(
@@ -212,8 +228,9 @@ exit:
     return success;
 }
 
-static void _control_process_pending_touch_restore(void)
+static bool _control_process_pending_touch_restore(void)
 {
+    bool attempted = false;
     if (!atomic_load_explicit(&s_touch_restore_pending, memory_order_acquire))
     {
         goto exit;
@@ -224,6 +241,7 @@ static void _control_process_pending_touch_restore(void)
                               memory_order_release);
         goto exit;
     }
+    attempted = true;
     if (app_manager_control_restore_active() == ESP_OK)
     {
         atomic_store_explicit(&s_touch_restore_pending, false,
@@ -231,7 +249,7 @@ static void _control_process_pending_touch_restore(void)
     }
 
 exit:
-    return;
+    return attempted;
 }
 
 static void _control_process_pending_standby_commit(void)
@@ -292,7 +310,9 @@ static void _control_process_pending_brightness_temp(void)
     const uint8_t brightness = (uint8_t)atomic_load_explicit(
                                    &s_brightness_temp_value,
                                    memory_order_acquire);
-    const esp_err_t result = s_screen_ops.set_brightness_temp(brightness);
+    const esp_err_t result = _control_can_apply_brightness() ?
+                             app_manager_control_apply_brightness(
+                                 brightness, false) : ESP_OK;
     if (result != ESP_OK &&
             generation == atomic_load_explicit(&s_brightness_temp_generation,
                     memory_order_acquire))
@@ -337,6 +357,10 @@ static void _control_wake_retry_delay(void)
 
 static void _control_poll_pm(void)
 {
+    if (!atomic_load_explicit(&s_control_admitted, memory_order_acquire))
+    {
+        goto exit;
+    }
     int64_t now = esp_timer_get_time();
     int64_t idle_ms = (now - s_last_activity_us) / 1000;
 
@@ -368,7 +392,7 @@ static void _control_poll_pm(void)
     {
         uint8_t dim = s_brightness < APP_CONTROL_DIM_BRIGHTNESS ?
                       s_brightness : APP_CONTROL_DIM_BRIGHTNESS;
-        if (s_screen_ops.set_brightness_temp(dim) == ESP_OK)
+        if (app_manager_control_apply_brightness(dim, false) == ESP_OK)
         {
             app_manager_control_state_set(APP_MANAGER_PM_DIM);
         }
@@ -472,10 +496,14 @@ void app_manager_control_task(void *arg)
         }
         _control_process_pending_brightness_temp();
         _control_process_pending_standby_commit();
-        _control_process_pending_touch_restore();
+        const bool restore_attempted =
+            _control_process_pending_touch_restore();
         _control_process_pending_touch();
         app_manager_control_process_pending_home();
-        _control_poll_pm();
+        if (!restore_attempted)
+        {
+            _control_poll_pm();
+        }
     }
 }
 

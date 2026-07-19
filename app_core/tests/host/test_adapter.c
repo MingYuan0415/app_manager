@@ -4,11 +4,14 @@
 #include <string.h>
 
 #include "app_manager.h"
+#include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
 #include "app_manager_display.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
+#include "app_manager_navigation.h"
+#include "app_manager_presentation.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 
@@ -56,15 +59,22 @@ typedef enum
     MOCK_THEME_SET_FONT,
     MOCK_ADAPTER_START,
     MOCK_MAILBOX_INIT,
+    MOCK_REGISTRY_VALIDATE,
+    MOCK_PRESENTATION_INIT,
+    MOCK_LIFECYCLE_CONFIGURE,
     MOCK_LIFECYCLE_INIT,
+    MOCK_NAVIGATION_INIT,
     MOCK_LIFECYCLE_PAUSE,
     MOCK_LIFECYCLE_ACCESS_WAIT,
     MOCK_LIFECYCLE_RESUME,
     MOCK_CONTROL_INIT,
     MOCK_CONTROL_DEINIT,
+    MOCK_NAVIGATION_DEINIT,
     MOCK_LIFECYCLE_SHUTDOWN_BEGIN,
     MOCK_LIFECYCLE_SHUTDOWN,
     MOCK_LIFECYCLE_DEINIT,
+    MOCK_PRESENTATION_DEINIT,
+    MOCK_REGISTRY_RESET,
     MOCK_MAILBOX_DEINIT,
     MOCK_ADAPTER_LOCK,
     MOCK_ADAPTER_DEINIT,
@@ -85,7 +95,10 @@ typedef struct live_resources
     int started;
     int mmap;
     int mailbox;
+    int registry;
+    int presentation;
     int lifecycle;
+    int navigation;
     int control;
 } live_resources_t;
 
@@ -112,6 +125,7 @@ typedef enum
     EVENT_REFRESH,
     EVENT_TOUCH_NOTIFY,
     EVENT_CONTROL_DEINIT,
+    EVENT_DISPLAY_COMMIT,
     EVENT_LIFECYCLE_SHUTDOWN,
     EVENT_LIFECYCLE_DEINIT,
     EVENT_MAILBOX_DEINIT,
@@ -143,6 +157,7 @@ static unsigned s_touch_notifications;
 static esp_err_t s_draw_bitmap_result;
 static unsigned s_panel_draw_calls;
 static unsigned s_fence_calls;
+static unsigned s_display_commit_calls;
 static esp_lv_adapter_draw_bitmap_callbacks_t s_draw_callbacks;
 
 static struct _lv_display_t s_display_handle;
@@ -232,6 +247,7 @@ static void _mock_reset(void)
     s_draw_bitmap_result = ESP_OK;
     s_panel_draw_calls = 0;
     s_fence_calls = 0;
+    s_display_commit_calls = 0;
     memset(&s_draw_callbacks, 0, sizeof(s_draw_callbacks));
 }
 
@@ -358,7 +374,9 @@ void app_theme_deinit(void)
     _mock_observe_initializing_or_deinitializing();
     s_calls[MOCK_THEME_DEINIT]++;
     _record_event(EVENT_THEME_DEINIT);
-    if (s_live.mailbox != 0 || s_live.lifecycle != 0 || s_live.control != 0)
+    if (s_live.mailbox != 0 || s_live.registry != 0 ||
+            s_live.presentation != 0 || s_live.lifecycle != 0 ||
+            s_live.navigation != 0 || s_live.control != 0)
     {
         s_order_error = true;
     }
@@ -721,7 +739,9 @@ esp_err_t esp_lv_adapter_ft_font_deinit(
             handle != &s_font_handles[s_live.fonts - 1] ||
             s_live.adapter == 0 || s_live.fs == 0 ||
             s_live.theme != 0 ||
-            s_live.control != 0 || s_live.lifecycle != 0 ||
+            s_live.control != 0 || s_live.navigation != 0 ||
+            s_live.lifecycle != 0 || s_live.presentation != 0 ||
+            s_live.registry != 0 ||
             s_live.mailbox != 0 || s_lvgl_lock_depth != 1 ||
             !s_adapter_paused || !s_paused_fence_complete)
     {
@@ -753,10 +773,95 @@ esp_err_t app_manager_mailbox_init(void)
     return ESP_OK;
 }
 
+esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (max_page_memory_size !=
+            ((32U * 1024U / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U) ||
+            s_live.mailbox == 0 ||
+            s_live.registry != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_REGISTRY_VALIDATE))
+    {
+        return s_failure.result;
+    }
+    s_live.registry = 1;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_builtin_registry_reset(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (s_live.lifecycle != 0 || s_live.presentation != 0 ||
+            s_live.navigation != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_REGISTRY_RESET))
+    {
+        return s_failure.result;
+    }
+    s_live.registry = 0;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_presentation_init(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (!s_ui_worker || s_live.registry == 0 || s_live.presentation != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_PRESENTATION_INIT))
+    {
+        return s_failure.result;
+    }
+    s_live.presentation = 1;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_presentation_deinit(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (!s_ui_worker || s_live.lifecycle != 0 || s_live.navigation != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_PRESENTATION_DEINIT))
+    {
+        return s_failure.result;
+    }
+    s_live.presentation = 0;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_configure(
+    size_t max_resident_apps, app_manager_resident_policy_t policy,
+    const app_manager_transition_t *app_forward,
+    const app_manager_transition_t *app_back,
+    const app_manager_transition_t *page_forward,
+    const app_manager_transition_t *page_back)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (max_resident_apps != 0U || policy != APP_MANAGER_RESIDENT_REJECT ||
+            app_forward == NULL || app_back == NULL ||
+            page_forward == NULL || page_back == NULL ||
+            s_live.registry == 0 || s_live.presentation == 0 ||
+            s_live.lifecycle != 0)
+    {
+        s_contract_error = true;
+    }
+    return _mock_should_fail(MOCK_LIFECYCLE_CONFIGURE) ?
+           s_failure.result : ESP_OK;
+}
+
 esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (arena_bytes != 0)
+    if (arena_bytes != 0 || s_live.registry == 0 ||
+            s_live.presentation == 0)
     {
         s_contract_error = true;
     }
@@ -769,10 +874,41 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
     return ESP_OK;
 }
 
+esp_err_t app_manager_navigation_init(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (s_live.lifecycle == 0 || s_live.presentation == 0 ||
+            s_live.navigation != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_NAVIGATION_INIT))
+    {
+        return s_failure.result;
+    }
+    s_live.navigation = 1;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_navigation_deinit(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (s_ui_worker || s_live.control != 0 || s_live.lifecycle == 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_NAVIGATION_DEINIT))
+    {
+        return s_failure.result;
+    }
+    s_live.navigation = 0;
+    return ESP_OK;
+}
+
 esp_err_t app_manager_control_init(const app_manager_config_t *config)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (config == NULL)
+    if (config == NULL || s_live.navigation == 0)
     {
         s_contract_error = true;
     }
@@ -783,6 +919,17 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
         return s_failure.result;
     }
     s_live.control = 1;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_control_commit_display(void)
+{
+    if (s_live.control == 0)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ++s_display_commit_calls;
+    _record_event(EVENT_DISPLAY_COMMIT);
     return ESP_OK;
 }
 
@@ -887,7 +1034,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
 {
     _mock_observe_initializing_or_deinitializing();
     _record_event(EVENT_LIFECYCLE_DEINIT);
-    if (s_live.control != 0 || !s_ui_worker)
+    if (s_live.control != 0 || s_live.navigation != 0 || !s_ui_worker)
     {
         s_order_error = true;
     }
@@ -917,6 +1064,7 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn callback,
         return s_failure.result;
     }
     if (callback == NULL || s_live.mailbox == 0 || s_live.lifecycle == 0 ||
+            s_live.presentation == 0 || s_live.navigation != 0 ||
             s_live.control != 0 || s_adapter_paused ||
             !s_lifecycle_admission_closed)
     {
@@ -933,7 +1081,9 @@ esp_err_t app_manager_mailbox_deinit(void)
 {
     _mock_observe_initializing_or_deinitializing();
     _record_event(EVENT_MAILBOX_DEINIT);
-    if (s_live.control != 0 || s_live.lifecycle != 0)
+    if (s_live.control != 0 || s_live.navigation != 0 ||
+            s_live.lifecycle != 0 || s_live.presentation != 0 ||
+            s_live.registry != 0)
     {
         s_order_error = true;
     }
@@ -1002,8 +1152,9 @@ esp_err_t esp_lv_adapter_deinit(void)
 {
     _mock_observe_initializing_or_deinitializing();
     _record_event(EVENT_ADAPTER_DEINIT);
-    if (s_live.control != 0 || s_live.lifecycle != 0 ||
-            s_live.mailbox != 0 || s_live.fonts != 0 ||
+    if (s_live.control != 0 || s_live.navigation != 0 ||
+            s_live.lifecycle != 0 || s_live.presentation != 0 ||
+            s_live.registry != 0 || s_live.mailbox != 0 || s_live.fonts != 0 ||
             s_lvgl_lock_depth != 0 || !s_adapter_paused ||
             (s_live.display != 0 && !s_paused_fence_complete))
     {
@@ -1166,7 +1317,11 @@ static void _test_each_init_failure_rolls_back(void)
         {MOCK_THEME_SET_FONT, 4, "theme font"},
         {MOCK_ADAPTER_START, 1, "adapter start"},
         {MOCK_MAILBOX_INIT, 1, "mailbox"},
+        {MOCK_REGISTRY_VALIDATE, 1, "registry"},
+        {MOCK_PRESENTATION_INIT, 1, "presentation"},
+        {MOCK_LIFECYCLE_CONFIGURE, 1, "lifecycle config"},
         {MOCK_LIFECYCLE_INIT, 1, "lifecycle"},
+        {MOCK_NAVIGATION_INIT, 1, "navigation"},
         {MOCK_CONTROL_INIT, 1, "control"},
     };
 
@@ -1214,8 +1369,11 @@ static void _test_all_cleanup_failures_are_retryable(void)
     static const mock_op_t cases[] =
     {
         MOCK_CONTROL_DEINIT,
+        MOCK_NAVIGATION_DEINIT,
         MOCK_LIFECYCLE_SHUTDOWN,
         MOCK_LIFECYCLE_DEINIT,
+        MOCK_PRESENTATION_DEINIT,
+        MOCK_REGISTRY_RESET,
         MOCK_MAILBOX_DEINIT,
         MOCK_ADAPTER_LOCK,
         MOCK_ADAPTER_PAUSE,
@@ -1336,6 +1494,34 @@ static void _test_display_sleep_recovery_transaction(void)
     s_touch_callbacks.on_interrupt(NULL, s_touch_callbacks.user_ctx);
     CHECK(s_touch_notifications == 1);
     CHECK(!s_contract_error);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_initial_display_commit_fences_before_panel_enable(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+
+    CHECK(app_manager_display_commit_initial() == ESP_OK);
+    CHECK(s_fence_calls == 1U);
+    CHECK(s_display_commit_calls == 1U);
+    CHECK(s_events[s_event_count - 1U] == EVENT_DISPLAY_COMMIT);
+    CHECK(s_events[s_event_count - 2U] == EVENT_TOUCH_DISABLE);
+    s_event_count = 0;
+    CHECK(app_manager_display_enable_startup_touch() == ESP_OK);
+    CHECK(s_event_count == 3U);
+    CHECK(s_events[0] == EVENT_TOUCH_RESET);
+    CHECK(s_events[1] == EVENT_TOUCH_NOTIFY);
+    CHECK(s_events[2] == EVENT_TOUCH_ENABLE);
+    s_event_count = 0;
+    CHECK(app_manager_display_disable_startup_touch() == ESP_OK);
+    CHECK(s_event_count == 2U);
+    CHECK(s_events[0] == EVENT_TOUCH_DISABLE);
+    CHECK(s_events[1] == EVENT_TOUCH_RESET);
+    CHECK(!s_contract_error);
+
     CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
 }
@@ -1635,6 +1821,7 @@ int main(void)
     _test_init_rollback_cleanup_failure_is_retryable();
     _test_ui_worker_cannot_deinitialize();
     _test_display_port_is_copied();
+    _test_initial_display_commit_fences_before_panel_enable();
     _test_display_sleep_recovery_transaction();
     _test_display_refresh_fence_failure();
     _test_display_refresh_draw_failure();

@@ -9,6 +9,7 @@
     #define LOG_I(fmt, ...) ((void)0)
 #endif
 
+#include "app_manager_control.h"
 #include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
@@ -281,14 +282,14 @@ static esp_err_t _control_resume_hardware(void)
         goto exit;
     }
 
-    result = s_screen_ops.set_brightness_temp(s_brightness);
+    result = app_manager_control_apply_brightness(s_brightness, true);
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
         goto exit;
     }
 
-    result = s_screen_ops.resume_commit();
+    result = app_manager_control_commit_display();
     if (result != ESP_OK || s_screen_ops.is_suspended() ||
             app_manager_display_is_sleeping())
     {
@@ -338,6 +339,13 @@ esp_err_t app_manager_control_suspend_hardware(void)
         LOG_W("screen suspend active rollback failed: %d",
               (int)rollback_result);
         _control_schedule_touch_restore();
+    }
+    else
+    {
+        atomic_store_explicit(&s_touch_restore_pending, false,
+                              memory_order_release);
+        s_last_activity_us = esp_timer_get_time();
+        app_manager_control_state_set(APP_MANAGER_PM_ACTIVE);
     }
     result = transition_error;
 
@@ -429,7 +437,7 @@ esp_err_t app_manager_control_restore_active(void)
     }
     else if (state == APP_MANAGER_PM_DIM)
     {
-        result = s_screen_ops.set_brightness_temp(s_brightness);
+        result = app_manager_control_apply_brightness(s_brightness, false);
     }
     if (result == ESP_OK && !atomic_load(&s_touch_activity_enabled))
     {
@@ -445,6 +453,7 @@ esp_err_t app_manager_control_restore_active(void)
     }
     if (result == ESP_OK)
     {
+        s_last_activity_us = esp_timer_get_time();
         app_manager_control_state_set(APP_MANAGER_PM_ACTIVE);
     }
 
@@ -477,12 +486,12 @@ exit:
     return result;
 }
 
-static void _control_run_home_on_ui(void *arg)
+static void _control_run_home_complete(esp_err_t result, void *context)
 {
-    (void)arg;
-    if (atomic_load(&s_lifecycle_state) == CONTROL_READY)
+    (void)context;
+    if (result != ESP_OK && result != ESP_ERR_INVALID_STATE)
     {
-        (void)app_manager_run(APP_MANAGER_ID_HOME);
+        LOG_W("HOME navigation failed: %d", (int)result);
     }
     atomic_store(&s_home_pending, false);
     atomic_store(&s_home_inflight, false);
@@ -491,6 +500,8 @@ static void _control_run_home_on_ui(void *arg)
 void app_manager_control_process_pending_home(void)
 {
     if (!atomic_load(&s_home_pending) ||
+            !atomic_load_explicit(&s_control_admitted,
+                                  memory_order_acquire) ||
             atomic_load(&s_lifecycle_state) != CONTROL_READY)
     {
         goto exit;
@@ -507,7 +518,13 @@ void app_manager_control_process_pending_home(void)
         goto exit;
     }
 
-    esp_err_t result = app_manager_ui_post(_control_run_home_on_ui, NULL);
+    const app_manager_nav_request_t request =
+    {
+        .operation = APP_MANAGER_NAV_OP_RUN,
+        .app_id = APP_MANAGER_ID_HOME,
+    };
+    esp_err_t result = app_manager_navigate_async(
+                           &request, _control_run_home_complete, NULL);
     if (result != ESP_OK)
     {
         atomic_store(&s_home_inflight, false);

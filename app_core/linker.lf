@@ -1,13 +1,19 @@
-[sections:app_builtin_apps]
+[sections:app_manager_apps]
 entries:
-    .app_builtin_apps
+    .app_manager_apps
 
-[scheme:app_builtin_scheme]
+[sections:app_manager_pages]
 entries:
-    app_builtin_apps -> flash_rodata
+    .app_manager_pages
 
-[mapping:app_builtin_apps_map]
+[scheme:app_manager_registry_scheme]
+entries:
+    app_manager_apps -> flash_rodata
+    app_manager_pages -> flash_rodata
+
+[mapping:app_manager_registry_map]
 archive: *
 entries:
-    * (app_builtin_scheme);
-        app_builtin_apps -> flash_rodata KEEP() SURROUND(app_builtin_apps)
+    * (app_manager_registry_scheme);
+        app_manager_apps -> flash_rodata KEEP() SURROUND(app_manager_apps),
+        app_manager_pages -> flash_rodata KEEP() SURROUND(app_manager_pages)

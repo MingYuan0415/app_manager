@@ -6,6 +6,7 @@
 
 #include "app_manager.h"
 #include "app_manager_control.h"
+#include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
 
 #include <stdatomic.h>
@@ -14,6 +15,27 @@
     static atomic_bool s_touch_snapshot_pause;
     static atomic_bool s_touch_snapshot_reached;
 #endif
+
+esp_err_t app_manager_startup_commit(void)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (!app_manager_is_initialized())
+    {
+        goto exit;
+    }
+    result = app_manager_display_enable_startup_touch();
+    if (result == ESP_OK)
+    {
+        result = app_manager_control_open_admission();
+        if (result != ESP_OK)
+        {
+            (void)app_manager_display_disable_startup_touch();
+        }
+    }
+
+exit:
+    return result;
+}
 
 esp_err_t app_manager_input_inject(app_manager_key_t key,
                                    app_manager_key_event_t event)

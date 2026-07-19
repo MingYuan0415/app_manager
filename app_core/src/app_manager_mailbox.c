@@ -73,6 +73,7 @@ static bool s_timer_created;
     static lv_timer_t *s_lvgl_timer;
 #else
     static esp_timer_handle_t s_host_timer;
+    extern void app_manager_host_ui_step(void) __attribute__((weak));
 #endif
 
 static mailbox_command_t *_mailbox_command_alloc_locked(void)
@@ -211,6 +212,10 @@ static void _mailbox_host_timer_cb(void *arg)
 {
     (void)arg;
     _mailbox_drain();
+    if (app_manager_host_ui_step != NULL)
+    {
+        app_manager_host_ui_step();
+    }
 }
 
 void app_manager_mailbox_host_timer_pause(bool paused)
@@ -513,11 +518,14 @@ static esp_err_t _mailbox_wait_for_result(mailbox_command_t *command,
         result = ESP_ERR_TIMEOUT;
         goto exit;
     }
-    if (taken != pdTRUE && command->executing)
+    if (taken != pdTRUE)
     {
-        xSemaphoreGive(s_lock);
-        (void)xSemaphoreTake(command->done, portMAX_DELAY);
-        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (command->executing)
+        {
+            xSemaphoreGive(s_lock);
+            (void)xSemaphoreTake(command->done, portMAX_DELAY);
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+        }
         _mailbox_command_free_locked(command);
         result = ESP_ERR_TIMEOUT;
         goto exit;
