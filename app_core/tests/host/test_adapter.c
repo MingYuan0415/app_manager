@@ -592,7 +592,7 @@ lv_display_t *esp_lv_adapter_register_display(
                                 config->profile.buffer_height ==
                                 s_display_port.height &&
                                 !config->profile.require_double_buffer :
-                                config->profile.buffer_height == 60 &&
+                                config->profile.buffer_height == 20 &&
                                 config->profile.require_double_buffer);
     if (config == NULL || !panel_valid ||
             config->panel_io != s_display_port.panel_io ||

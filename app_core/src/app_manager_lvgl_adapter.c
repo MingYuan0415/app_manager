@@ -23,6 +23,7 @@
 #include <stdatomic.h>
 
 #define APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES (32U * 1024U)
+#define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT     20U
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE && !CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     #error "App manager FreeType integration requires the LVGL adapter filesystem"
@@ -868,7 +869,7 @@ static esp_err_t _app_adapter_register_display(
             .rotation = ESP_LV_ADAPTER_ROTATE_0,
             .hor_res = display_port->width,
             .ver_res = display_port->height,
-            .buffer_height = 60,
+            .buffer_height = APP_ADAPTER_PARTIAL_BUFFER_HEIGHT,
             .use_psram = true,
             .enable_ppa_accel = false,
             .require_double_buffer = true,
