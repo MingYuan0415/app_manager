@@ -115,54 +115,41 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg);
 static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
 {
     (void)arg;
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_touch == NULL || !app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_resume();
     lv_indev_reset(s_touch, NULL);
     (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
     lv_indev_enable(s_touch, true);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
 {
     (void)arg;
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_touch == NULL || !app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
 {
     (void)arg;
-    esp_err_t result = ESP_OK;
     if (s_touch == NULL || !app_manager_mailbox_is_worker())
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
-    result = app_manager_lifecycle_screen_pause();
-
-exit:
-    return result;
+    return app_manager_lifecycle_screen_pause();
 }
 
 static esp_err_t _app_adapter_pause_and_fence(void)
@@ -173,7 +160,7 @@ static esp_err_t _app_adapter_pause_and_fence(void)
         result = esp_lv_adapter_pause(-1);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         atomic_store_explicit(&s_display_fenced, false,
                               memory_order_relaxed);
@@ -183,7 +170,7 @@ static esp_err_t _app_adapter_pause_and_fence(void)
 
     if (atomic_load_explicit(&s_display_fenced, memory_order_acquire))
     {
-        goto exit;
+        return ESP_OK;
     }
 
     /* Pause closes the producer side; this no-command transaction drains all
@@ -199,17 +186,14 @@ static esp_err_t _app_adapter_pause_and_fence(void)
         atomic_store_explicit(&s_display_fenced, true,
                               memory_order_release);
     }
-
-exit:
     return result;
 }
 
 static esp_err_t _app_adapter_restore_prepare_failure(esp_err_t primary_error)
 {
-    esp_err_t result = primary_error;
     if (atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        goto exit;
+        return primary_error;
     }
 
     const esp_err_t restore_result = app_manager_ui_call(
@@ -217,34 +201,30 @@ static esp_err_t _app_adapter_restore_prepare_failure(esp_err_t primary_error)
                                          NULL, UINT32_MAX);
     if (restore_result != ESP_OK)
     {
-        result = restore_result;
+        return restore_result;
     }
-
-exit:
-    return result;
+    return primary_error;
 }
 
 static esp_err_t _app_adapter_refresh_on_ui(void *arg)
 {
     const bool enable_touch = arg == NULL || *(const bool *)arg;
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_display == NULL || s_touch == NULL || s_display_port == NULL ||
             !app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    result = app_manager_lifecycle_screen_resume();
+    esp_err_t result = app_manager_lifecycle_screen_resume();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
 
     lv_obj_t *screen = lv_display_get_screen_active(s_display);
     if (screen == NULL)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     atomic_store_explicit(&s_refresh_capture_error, ESP_OK,
@@ -267,111 +247,95 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
     }
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
 
     if (enable_touch)
     {
-        result = _app_adapter_enable_touch_on_ui(NULL);
-        goto exit;
+        return _app_adapter_enable_touch_on_ui(NULL);
     }
     app_manager_back_gesture_screen_suspend();
     lv_indev_reset(s_touch, NULL);
     lv_indev_enable(s_touch, false);
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t app_manager_display_sleep_prepare(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_display == NULL || s_touch == NULL || s_display_port == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        result = _app_adapter_pause_and_fence();
-        goto exit;
+        return _app_adapter_pause_and_fence();
     }
 
-    result = app_manager_ui_call(_app_adapter_pause_lifecycle_on_ui, NULL,
-                                 UINT32_MAX);
+    esp_err_t result = app_manager_ui_call(_app_adapter_pause_lifecycle_on_ui,
+                                           NULL, UINT32_MAX);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = app_manager_lifecycle_screen_access_wait();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _app_adapter_pause_and_fence();
     if (result != ESP_OK)
     {
         result = _app_adapter_restore_prepare_failure(result);
-        goto exit;
+        return result;
     }
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_display_sleep_recover(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_display == NULL || s_display_port == NULL ||
             s_display_port->panel == NULL || s_display_port->panel_io == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
     if (!atomic_load_explicit(&s_display_fenced, memory_order_acquire))
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
-    result = esp_lv_adapter_resume();
+    esp_err_t result = esp_lv_adapter_resume();
     if (result == ESP_OK)
     {
         atomic_store_explicit(&s_display_fenced, false,
                               memory_order_relaxed);
         atomic_store_explicit(&s_display_sleeping, false, memory_order_release);
     }
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_display_refresh_and_enable_touch(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = app_manager_ui_call(_app_adapter_refresh_on_ui, NULL, UINT32_MAX);
-
-exit:
-    return result;
+    return app_manager_ui_call(_app_adapter_refresh_on_ui, NULL, UINT32_MAX);
 }
 
 esp_err_t app_manager_display_commit_initial(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_display == NULL || s_touch == NULL ||
             atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     const bool enable_touch = false;
-    result = app_manager_ui_call(_app_adapter_refresh_on_ui,
-                                 (void *)&enable_touch, UINT32_MAX);
+    esp_err_t result = app_manager_ui_call(_app_adapter_refresh_on_ui,
+                                           (void *)&enable_touch, UINT32_MAX);
     if (result == ESP_OK)
     {
         result = app_manager_control_commit_display();
@@ -381,25 +345,19 @@ esp_err_t app_manager_display_commit_initial(void)
         atomic_store_explicit(&s_initial_display_committed, true,
                               memory_order_release);
     }
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_display_enable_startup_touch(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (!atomic_load_explicit(&s_initial_display_committed,
                               memory_order_acquire) ||
             atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = app_manager_ui_call(_app_adapter_enable_touch_on_ui,
-                                 NULL, UINT32_MAX);
-
-exit:
-    return result;
+    return app_manager_ui_call(_app_adapter_enable_touch_on_ui,
+                               NULL, UINT32_MAX);
 }
 
 esp_err_t app_manager_display_disable_startup_touch(void)
@@ -427,7 +385,7 @@ static esp_err_t _app_adapter_mount_resources(char drive_letter)
     esp_err_t result = mmap_assets_new(&mmap_config, &s_resource_assets);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
 
     size_t file_count = mmap_assets_get_stored_files(s_resource_assets);
@@ -437,8 +395,7 @@ static esp_err_t _app_adapter_mount_resources(char drive_letter)
         {
             s_resource_assets = NULL;
         }
-        result = ESP_ERR_NOT_FOUND;
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
 
     const fs_cfg_t fs_config =
@@ -455,10 +412,8 @@ static esp_err_t _app_adapter_mount_resources(char drive_letter)
         {
             s_resource_assets = NULL;
         }
-        goto exit;
+        return result;
     }
-
-exit:
     return result;
 }
 #endif
@@ -468,19 +423,16 @@ static esp_err_t _app_adapter_load_fonts(char drive_letter,
         const uint16_t *font_sizes,
         size_t font_count)
 {
-    esp_err_t result = ESP_OK;
     if (font_sizes == NULL ||
             font_count != sizeof(s_font_ids) / sizeof(s_font_ids[0]))
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     if (drive_letter == 0)
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
     const char font_path[] =
@@ -499,34 +451,31 @@ static esp_err_t _app_adapter_load_fonts(char drive_letter,
             .mem_size = 0,
         };
         esp_lv_adapter_ft_font_handle_t handle = NULL;
-        result = esp_lv_adapter_ft_font_init(&font_config, &handle);
+        esp_err_t result = esp_lv_adapter_ft_font_init(&font_config, &handle);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_font_handles[i] = handle;
         s_font_handle_count = i + 1;
         const lv_font_t *font = esp_lv_adapter_ft_font_get(handle);
         if (font == NULL)
         {
-            result = ESP_FAIL;
-            goto exit;
+            return ESP_FAIL;
         }
         result = app_theme_set_font(s_font_ids[i], font);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
 #else
     (void)drive_letter;
     (void)font_sizes;
     (void)font_count;
-    result = ESP_ERR_NOT_SUPPORTED;
+    return ESP_ERR_NOT_SUPPORTED;
 #endif
-
-exit:
-    return result;
+    return ESP_OK;
 }
 #endif
 
@@ -552,7 +501,7 @@ static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
         result = app_manager_lifecycle_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_lifecycle_ready = false;
     }
@@ -561,7 +510,7 @@ static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
         result = app_manager_back_gesture_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_gesture_ready = false;
     }
@@ -570,12 +519,10 @@ static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
         result = app_manager_presentation_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_presentation_ready = false;
     }
-
-exit:
     return result;
 }
 
@@ -589,7 +536,7 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_control_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_control_ready = false;
     }
@@ -598,7 +545,7 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_back_gesture_shutdown_begin();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (s_navigation_ready)
@@ -606,7 +553,7 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_navigation_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_navigation_ready = false;
     }
@@ -615,13 +562,13 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_lifecycle_shutdown_begin_and_wait();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         result = app_manager_mailbox_shutdown_call(
                      _app_adapter_runtime_deinit_on_ui, NULL);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     else if (s_lifecycle_ready)
@@ -629,7 +576,7 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_lifecycle_shutdown_begin_and_wait();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         app_manager_lifecycle_force_deinit();
         s_lifecycle_ready = false;
@@ -640,20 +587,19 @@ static esp_err_t _app_adapter_cleanup_services(void)
                                      NULL, UINT32_MAX);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (s_presentation_ready)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (s_registry_ready)
     {
         result = app_manager_builtin_registry_reset();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_registry_ready = false;
     }
@@ -662,11 +608,10 @@ static esp_err_t _app_adapter_cleanup_services(void)
         result = app_manager_mailbox_deinit();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_mailbox_ready = false;
     }
-exit:
     return result;
 }
 
@@ -688,7 +633,7 @@ static esp_err_t _app_adapter_cleanup_fonts(void)
         result = esp_lv_adapter_lock(-1);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
 
         /* File-backed faces must close while the adapter VFS is mounted. */
@@ -706,12 +651,10 @@ static esp_err_t _app_adapter_cleanup_fonts(void)
         esp_lv_adapter_unlock();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
 #endif
-
-exit:
     return result;
 }
 
@@ -743,13 +686,13 @@ static esp_err_t _app_adapter_cleanup_lvgl(void)
         if (!esp_lv_adapter_is_initialized())
         {
             _app_adapter_clear_lvgl_runtime();
-            goto exit;
+            return ESP_OK;
         }
 
         result = _app_adapter_pause_and_fence();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         result = esp_lv_adapter_deinit();
         if (!esp_lv_adapter_is_initialized())
@@ -757,8 +700,6 @@ static esp_err_t _app_adapter_cleanup_lvgl(void)
             _app_adapter_clear_lvgl_runtime();
         }
     }
-
-exit:
     return result;
 }
 
@@ -771,13 +712,11 @@ static esp_err_t _app_adapter_cleanup_resources(void)
         result = mmap_assets_del(s_resource_assets);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_resource_assets = NULL;
     }
 #endif
-
-exit:
     return result;
 }
 
@@ -860,7 +799,6 @@ static void _app_adapter_reset_runtime(void)
 static esp_err_t _app_adapter_register_display(
     const bsp_display_port_t *display_port)
 {
-    esp_err_t result = ESP_OK;
     const esp_lv_adapter_display_config_t display_config =
     {
         .panel = display_port->panel,
@@ -882,19 +820,15 @@ static esp_err_t _app_adapter_register_display(
     s_display = esp_lv_adapter_register_display(&display_config);
     if (s_display == NULL)
     {
-        result = ESP_FAIL;
-        goto exit;
+        return ESP_FAIL;
     }
 
     const esp_lv_adapter_draw_bitmap_callbacks_t draw_callbacks =
     {
         .custom_draw_bitmap = _app_adapter_draw_bitmap,
     };
-    result = esp_lv_adapter_set_draw_bitmap_callbacks(
-                 s_display, &draw_callbacks, NULL);
-
-exit:
-    return result;
+    return esp_lv_adapter_set_draw_bitmap_callbacks(
+               s_display, &draw_callbacks, NULL);
 }
 
 static esp_err_t _app_adapter_register_touch(
@@ -915,7 +849,7 @@ static esp_err_t _app_adapter_initialize_lvgl(
     esp_err_t result = esp_lv_adapter_init(&adapter_config);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_adapter_ready = true;
     s_display_port_storage = *config->disp_port;
@@ -925,8 +859,6 @@ static esp_err_t _app_adapter_initialize_lvgl(
     {
         result = _app_adapter_register_touch(s_display_port);
     }
-
-exit:
     return result;
 }
 
@@ -937,8 +869,7 @@ static esp_err_t _app_adapter_initialize_resources(
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     if (config->res_fs_letter == 0)
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     result = _app_adapter_mount_resources(config->res_fs_letter);
 #endif
@@ -955,8 +886,6 @@ static esp_err_t _app_adapter_initialize_resources(
                                          font_sizes, font_count);
     }
 #endif
-
-exit:
     return result;
 }
 
@@ -971,30 +900,29 @@ static esp_err_t _app_adapter_start_services(
     esp_err_t result = esp_lv_adapter_start();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = app_manager_mailbox_init();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_mailbox_ready = true;
     if (page_memory_bytes == 0U)
     {
-        result = ESP_ERR_INVALID_SIZE;
-        goto exit;
+        return ESP_ERR_INVALID_SIZE;
     }
     result = app_manager_builtin_registry_validate(page_memory_bytes);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_registry_ready = true;
     result = app_manager_ui_call(_app_adapter_presentation_init_on_ui,
                                  NULL, UINT32_MAX);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_presentation_ready = true;
     result = app_manager_lifecycle_configure(
@@ -1005,32 +933,29 @@ static esp_err_t _app_adapter_start_services(
                  &config->page_back_transition);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = app_manager_lifecycle_init(config->page_memory_bytes);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_lifecycle_ready = true;
     result = app_manager_navigation_init();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_navigation_ready = true;
     result = app_manager_ui_call(_app_adapter_gesture_init_on_ui,
                                  NULL, UINT32_MAX);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_gesture_ready = true;
     s_control_ready = true;
-    result = app_manager_control_init(config);
-
-exit:
-    return result;
+    return app_manager_control_init(config);
 }
 
 esp_err_t app_manager_init(const struct app_manager_config *config)
@@ -1039,20 +964,18 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     int state = atomic_load(&s_state);
     if (state == APP_ADAPTER_READY)
     {
-        goto exit;
+        return ESP_OK;
     }
     int expected = APP_ADAPTER_UNINITIALIZED;
     if (!atomic_compare_exchange_strong(&s_state, &expected,
                                         APP_ADAPTER_INITIALIZING))
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_app_adapter_config_valid(config))
     {
         atomic_store(&s_state, APP_ADAPTER_UNINITIALIZED);
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
     _app_adapter_reset_runtime();
@@ -1061,7 +984,7 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     if (result != ESP_OK)
     {
         atomic_store(&s_state, APP_ADAPTER_UNINITIALIZED);
-        goto exit;
+        return result;
     }
     s_theme_ready = true;
 
@@ -1087,7 +1010,7 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
           (unsigned)(config->page_memory_bytes == 0 ?
                      APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES :
                      config->page_memory_bytes));
-    goto exit;
+    return ESP_OK;
 
 fail:
     {
@@ -1095,28 +1018,24 @@ fail:
         atomic_store(&s_state, cleanup_result == ESP_OK ?
                      APP_ADAPTER_UNINITIALIZED : APP_ADAPTER_DEINITIALIZING);
     }
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_deinit(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     int state = atomic_load(&s_state);
     if (state == APP_ADAPTER_UNINITIALIZED)
     {
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
     if (state == APP_ADAPTER_INITIALIZING)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (state == APP_ADAPTER_READY)
     {
@@ -1124,17 +1043,15 @@ esp_err_t app_manager_deinit(void)
         if (!atomic_compare_exchange_strong(&s_state, &expected,
                                             APP_ADAPTER_DEINITIALIZING))
         {
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
     }
 
-    result = _app_adapter_cleanup();
+    esp_err_t result = _app_adapter_cleanup();
     if (result == ESP_OK)
     {
         atomic_store(&s_state, APP_ADAPTER_UNINITIALIZED);
     }
-
-exit:
     return result;
 }
 

@@ -174,14 +174,13 @@ static esp_err_t _navigation_post_locked(
     navigation_command_t *command = _navigation_alloc_locked(request);
     if (command == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     if (!_navigation_id_copy(command->app_id, app_id) ||
             !_navigation_id_copy(command->page_id, request->page_id))
     {
         _navigation_free_locked(command);
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     command->request.app_id = app_id != NULL ? command->app_id : NULL;
     command->request.page_id = request->page_id != NULL ?
@@ -194,7 +193,7 @@ static esp_err_t _navigation_post_locked(
     if (result != ESP_OK)
     {
         _navigation_free_locked(command);
-        goto exit;
+        return result;
     }
     command->screen_access_owned = true;
     s_pending_count++;
@@ -203,8 +202,6 @@ static esp_err_t _navigation_post_locked(
     {
         *out_command = command;
     }
-
-exit:
     return result;
 }
 
@@ -222,7 +219,7 @@ static void _navigation_complete(esp_err_t result, void *context)
     if (!command->in_use || command->completed)
     {
         xSemaphoreGive(s_lock);
-        goto exit;
+        return;
     }
     command->result = result;
     command->executing = false;
@@ -264,9 +261,6 @@ static void _navigation_complete(esp_err_t result, void *context)
     {
         completion(result, completion_context);
     }
-
-exit:
-    return;
 }
 
 static void _navigation_execute(void *context)
@@ -300,7 +294,7 @@ static void _navigation_execute(void *context)
             app_manager_lifecycle_screen_access_end();
         }
         app_manager_back_gesture_navigation_settled();
-        goto exit;
+        return;
     }
 
     app_manager_back_gesture_navigation_begin();
@@ -311,9 +305,6 @@ static void _navigation_execute(void *context)
     {
         _navigation_complete(result, command);
     }
-
-exit:
-    return;
 }
 
 static esp_err_t _navigation_submit(const app_manager_nav_request_t *request,
@@ -329,8 +320,7 @@ static esp_err_t _navigation_submit(const app_manager_nav_request_t *request,
 
     if (request == NULL || out_command == NULL)
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
     app_id = request->app_id;
@@ -338,22 +328,21 @@ static esp_err_t _navigation_submit(const app_manager_nav_request_t *request,
     {
         if (app_id != NULL)
         {
-            result = ESP_ERR_INVALID_ARG;
-            goto exit;
+            return ESP_ERR_INVALID_ARG;
         }
         if (!app_manager_mailbox_is_worker())
         {
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
         app_id = app_manager_lifecycle_callback_app_id();
         if (app_id == NULL)
         {
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
     }
     if (!app_manager_lifecycle_screen_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     screen_access_owned = true;
 
@@ -458,7 +447,7 @@ esp_err_t app_manager_navigation_init(void)
     esp_err_t result = ESP_OK;
     if (atomic_load(&s_initialized))
     {
-        goto exit;
+        return ESP_OK;
     }
 #ifndef HOST_TEST
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
@@ -467,8 +456,7 @@ esp_err_t app_manager_navigation_init(void)
 #endif
     if (s_lock == NULL)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     memset(s_commands, 0, sizeof(s_commands));
     for (size_t index = 0; index < APP_MANAGER_NAV_COMMAND_CAPACITY; index++)
@@ -498,14 +486,12 @@ esp_err_t app_manager_navigation_init(void)
     }
     atomic_store(&s_accepting, true);
     atomic_store(&s_initialized, true);
-    goto exit;
+    return ESP_OK;
 
 fail:
     _navigation_release_primitives();
     memset(s_commands, 0, sizeof(s_commands));
     atomic_store(&s_accepting, false);
-
-exit:
     return result;
 }
 
@@ -516,12 +502,11 @@ esp_err_t app_manager_navigation_deinit(void)
 
     if (!atomic_load(&s_initialized))
     {
-        goto exit;
+        return ESP_OK;
     }
     if (app_manager_mailbox_is_worker())
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -532,7 +517,7 @@ esp_err_t app_manager_navigation_deinit(void)
     result = app_manager_ui_call(_navigation_finish_on_ui, NULL, UINT32_MAX);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     _navigation_wait_for_counter(&s_sync_waiters);
 
@@ -577,16 +562,16 @@ void app_manager_navigation_finish_transition(void)
 bool app_manager_navigation_gesture_token_acquire(
     app_manager_navigation_gesture_token_t *token)
 {
-    bool acquired = false;
     if (token == NULL)
     {
-        goto exit;
+        return false;
     }
     token->epoch = 0U;
     if (!_navigation_access_begin())
     {
-        goto exit;
+        return false;
     }
+    bool acquired = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (atomic_load(&s_accepting) && s_pending_count == 0U)
     {
@@ -595,25 +580,20 @@ bool app_manager_navigation_gesture_token_acquire(
     }
     xSemaphoreGive(s_lock);
     _navigation_access_end();
-
-exit:
     return acquired;
 }
 
 bool app_manager_navigation_gesture_token_is_current(
     const app_manager_navigation_gesture_token_t *token)
 {
-    bool current = false;
     if (token == NULL || !_navigation_access_begin())
     {
-        goto exit;
+        return false;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    current = _navigation_token_current_locked(token);
+    bool current = _navigation_token_current_locked(token);
     xSemaphoreGive(s_lock);
     _navigation_access_end();
-
-exit:
     return current;
 }
 
@@ -628,7 +608,7 @@ esp_err_t app_manager_navigation_submit_gesture_back(
     if (token == NULL || !app_manager_mailbox_is_worker() ||
             !_navigation_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!app_manager_lifecycle_screen_access_begin())
     {
@@ -677,25 +657,22 @@ access_end:
         app_manager_lifecycle_screen_access_end();
     }
     _navigation_access_end();
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_navigate(const app_manager_nav_request_t *request,
                                uint32_t timeout_ms)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     navigation_command_t *command = NULL;
     if (app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_navigation_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = _navigation_submit(request, true, NULL, NULL, &command);
+    esp_err_t result = _navigation_submit(request, true, NULL, NULL, &command);
     if (result == ESP_OK)
     {
         atomic_fetch_add(&s_sync_waiters, 1U);
@@ -707,8 +684,6 @@ esp_err_t app_manager_navigate(const app_manager_nav_request_t *request,
     {
         _navigation_access_end();
     }
-
-exit:
     return result;
 }
 
@@ -716,16 +691,13 @@ esp_err_t app_manager_navigate_async(
     const app_manager_nav_request_t *request,
     app_manager_nav_completion_cb_t completion, void *completion_context)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     navigation_command_t *command = NULL;
     if (!_navigation_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = _navigation_submit(request, false, completion,
-                                completion_context, &command);
+    esp_err_t result = _navigation_submit(request, false, completion,
+                                          completion_context, &command);
     _navigation_access_end();
-
-exit:
     return result;
 }

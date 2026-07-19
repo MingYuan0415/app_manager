@@ -55,16 +55,14 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name,
     (void)name;
     (void)stack_size;
     (void)priority;
-    BaseType_t result = pdFAIL;
-    host_task_start_t *start = NULL;
     if (entry == NULL || task == NULL)
     {
-        goto exit;
+        return pdFAIL;
     }
-    start = malloc(sizeof(*start));
+    host_task_start_t *start = malloc(sizeof(*start));
     if (start == NULL)
     {
-        goto exit;
+        return pdFAIL;
     }
     start->entry = entry;
     start->arg = arg;
@@ -72,14 +70,11 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name,
     if (pthread_create(&thread, NULL, _host_task_trampoline, start) != 0)
     {
         free(start);
-        goto exit;
+        return pdFAIL;
     }
     (void)pthread_detach(thread);
     *task = (TaskHandle_t)(uintptr_t)thread;
-    result = pdPASS;
-
-exit:
-    return result;
+    return pdPASS;
 }
 
 void vTaskDelete(TaskHandle_t task)

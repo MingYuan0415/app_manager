@@ -188,22 +188,19 @@ QueueHandle_t xQueueCreate(uint32_t length, uint32_t item_size)
     host_queue_t *queue = calloc(1, sizeof(*queue));
     if (queue == NULL)
     {
-        goto exit;
+        return NULL;
     }
     queue->buffer = calloc(length, sizeof(queue->buffer[0]));
     if (queue->buffer == NULL)
     {
         free(queue);
-        queue = NULL;
-        goto exit;
+        return NULL;
     }
     queue->capacity = (int)length;
     queue->item_size = item_size;
     (void)pthread_mutex_init(&queue->mutex, NULL);
     (void)pthread_cond_init(&queue->not_full, NULL);
     (void)pthread_cond_init(&queue->not_empty, NULL);
-
-exit:
     return queue;
 }
 
@@ -280,7 +277,7 @@ void vQueueDelete(QueueHandle_t handle)
     host_queue_t *queue = handle;
     if (queue == NULL)
     {
-        goto exit;
+        return;
     }
     for (int index = 0; index < queue->capacity; index++)
     {
@@ -291,9 +288,6 @@ void vQueueDelete(QueueHandle_t handle)
     (void)pthread_cond_destroy(&queue->not_full);
     (void)pthread_cond_destroy(&queue->not_empty);
     free(queue);
-
-exit:
-    return;
 }
 
 SemaphoreHandle_t xSemaphoreCreateBinary(void)
@@ -309,44 +303,33 @@ SemaphoreHandle_t xSemaphoreCreateMutex(void)
 BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks)
 {
     host_semaphore_t *semaphore = handle;
-    BaseType_t result = pdFALSE;
-    bool lock_owned = false;
     if (semaphore == NULL)
     {
-        goto exit;
+        return pdFALSE;
     }
     (void)pthread_mutex_lock(&semaphore->mutex);
-    lock_owned = true;
+    BaseType_t result = pdFALSE;
     if (_host_semaphore_wait(semaphore, ticks))
     {
         semaphore->given = false;
         result = pdTRUE;
     }
-
-exit:
-    if (lock_owned)
-    {
-        (void)pthread_mutex_unlock(&semaphore->mutex);
-    }
+    (void)pthread_mutex_unlock(&semaphore->mutex);
     return result;
 }
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t handle)
 {
     host_semaphore_t *semaphore = handle;
-    BaseType_t result = pdFALSE;
     if (semaphore == NULL)
     {
-        goto exit;
+        return pdFALSE;
     }
     (void)pthread_mutex_lock(&semaphore->mutex);
     semaphore->given = true;
     (void)pthread_cond_signal(&semaphore->condition);
     (void)pthread_mutex_unlock(&semaphore->mutex);
-    result = pdTRUE;
-
-exit:
-    return result;
+    return pdTRUE;
 }
 
 void vSemaphoreDelete(SemaphoreHandle_t handle)
@@ -354,14 +337,11 @@ void vSemaphoreDelete(SemaphoreHandle_t handle)
     host_semaphore_t *semaphore = handle;
     if (semaphore == NULL)
     {
-        goto exit;
+        return;
     }
     (void)pthread_mutex_destroy(&semaphore->mutex);
     (void)pthread_cond_destroy(&semaphore->condition);
     free(semaphore);
-
-exit:
-    return;
 }
 
 unsigned host_semaphore_timeout_count(void)
@@ -372,65 +352,52 @@ unsigned host_semaphore_timeout_count(void)
 esp_err_t esp_timer_create(const esp_timer_create_args_t *args,
                            esp_timer_handle_t *output)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (args == NULL || args->callback == NULL || output == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     host_timer_t *timer = calloc(1, sizeof(*timer));
     if (timer == NULL)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     timer->callback = args->callback;
     timer->arg = args->arg;
     *output = timer;
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t esp_timer_start_periodic(esp_timer_handle_t handle,
                                    uint64_t period_us)
 {
     host_timer_t *timer = handle;
-    esp_err_t result = ESP_FAIL;
     if (timer == NULL || period_us == 0U)
     {
-        goto exit;
+        return ESP_FAIL;
     }
     timer->period_us = period_us;
     atomic_store(&timer->running, true);
     if (pthread_create(&timer->thread, NULL, _host_timer_thread, timer) != 0)
     {
         atomic_store(&timer->running, false);
-        goto exit;
+        return ESP_FAIL;
     }
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t esp_timer_stop(esp_timer_handle_t handle)
 {
     host_timer_t *timer = handle;
-    esp_err_t result = ESP_FAIL;
     if (timer == NULL)
     {
-        goto exit;
+        return ESP_FAIL;
     }
     if (atomic_load(&timer->running))
     {
         atomic_store(&timer->running, false);
         (void)pthread_join(timer->thread, NULL);
     }
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t esp_timer_delete(esp_timer_handle_t handle)

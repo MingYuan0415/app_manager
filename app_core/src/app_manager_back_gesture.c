@@ -599,25 +599,23 @@ static lv_obj_t *_back_gesture_create_strip(lv_obj_t *system_layer,
 
 static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
 {
-    esp_err_t result = ESP_ERR_NO_MEM;
-
     s_gesture.left_strip = _back_gesture_create_strip(system_layer, 0);
     if (s_gesture.left_strip == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     s_gesture.right_strip = _back_gesture_create_strip(
                                 system_layer,
                                 s_gesture.width - s_gesture.edge_width);
     if (s_gesture.right_strip == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
 
     s_gesture.indicator = lv_canvas_create(system_layer);
     if (s_gesture.indicator == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     LV_DRAW_BUF_INIT_STATIC(s_indicator_draw_buf);
     lv_canvas_set_draw_buf(s_gesture.indicator, &s_indicator_draw_buf);
@@ -642,7 +640,7 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
     s_gesture.arrow = lv_label_create(s_gesture.indicator);
     if (s_gesture.arrow == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     lv_label_set_text(s_gesture.arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(s_gesture.arrow,
@@ -657,10 +655,7 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
                        LV_OBJ_FLAG_EVENT_BUBBLE |
                        LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_center(s_gesture.arrow);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static void _back_gesture_delete_objects(void)
@@ -698,7 +693,7 @@ esp_err_t app_manager_back_gesture_init(lv_display_t *display,
     }
     if (!app_manager_mailbox_is_worker() || display == NULL || touch == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     memset(&s_gesture, 0, sizeof(s_gesture));
@@ -748,13 +743,11 @@ esp_err_t app_manager_back_gesture_init(lv_display_t *display,
     atomic_store_explicit(&s_initialized, true, memory_order_release);
     atomic_store_explicit(&s_accepting, true, memory_order_release);
     _back_gesture_refresh();
-    goto exit;
+    return ESP_OK;
 
 fail:
     _back_gesture_delete_objects();
     memset(&s_gesture, 0, sizeof(s_gesture));
-
-exit:
     return result;
 }
 
@@ -860,14 +853,12 @@ static esp_err_t _back_gesture_set_enabled_on_ui(void *context)
 esp_err_t app_manager_back_gesture_set_enabled(bool enabled)
 {
     esp_err_t result = ESP_ERR_INVALID_STATE;
-    bool gesture_access_owned = false;
     bool screen_access_owned = false;
 
     if (!_back_gesture_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    gesture_access_owned = true;
     if (!app_manager_lifecycle_screen_access_begin())
     {
         atomic_store_explicit(&s_policy_enabled, enabled,
@@ -884,10 +875,7 @@ exit:
     {
         app_manager_lifecycle_screen_access_end();
     }
-    if (gesture_access_owned)
-    {
-        _back_gesture_access_end();
-    }
+    _back_gesture_access_end();
     return result;
 }
 

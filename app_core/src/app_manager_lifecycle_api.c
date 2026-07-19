@@ -38,10 +38,9 @@ static esp_err_t _app_manager_lifecycle_call(
 bool app_manager_is_actived(const char *app_id)
 {
     bool active = false;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
-        goto exit;
+        return false;
     }
     if (!app_manager_lifecycle_id_is_valid(app_id))
     {
@@ -56,20 +55,15 @@ bool app_manager_is_actived(const char *app_id)
     active = request.condition;
 
 exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    app_manager_lifecycle_screen_access_end();
     return active;
 }
 
 const char *app_manager_get_active_app_id(void)
 {
-    const char *app_id = NULL;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
-        goto exit;
+        return NULL;
     }
     app_manager_lifecycle_request_t request =
     {
@@ -77,23 +71,17 @@ const char *app_manager_get_active_app_id(void)
     };
     (void)_app_manager_lifecycle_call(app_manager_lifecycle_get_active_id_call,
                                       &request);
-    app_id = request.value;
-
-exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    const char *app_id = request.value;
+    app_manager_lifecycle_screen_access_end();
     return app_id;
 }
 
 bool app_page_is_actived(const char *app_id, const char *page_id)
 {
     bool active = false;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
-        goto exit;
+        return false;
     }
     if (!app_manager_lifecycle_id_is_valid(app_id) ||
             !app_manager_lifecycle_id_is_valid(page_id))
@@ -110,20 +98,16 @@ bool app_page_is_actived(const char *app_id, const char *page_id)
     active = request.condition;
 
 exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    app_manager_lifecycle_screen_access_end();
     return active;
 }
 
 bool app_manager_is_page_present(const char *app_id, const char *page_id)
 {
     bool present = false;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
-        goto exit;
+        return false;
     }
     if (!app_manager_lifecycle_id_is_valid(app_id) ||
             !app_manager_lifecycle_id_is_valid(page_id))
@@ -140,25 +124,20 @@ bool app_manager_is_page_present(const char *app_id, const char *page_id)
     present = request.condition;
 
 exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    app_manager_lifecycle_screen_access_end();
     return present;
 }
 
 bool app_manager_is_all_closed(void)
 {
-    bool all_closed = false;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
         uint32_t paused_count = 0;
         if (app_manager_lifecycle_screen_running_snapshot(&paused_count))
         {
-            all_closed = paused_count == 0U;
+            return paused_count == 0U;
         }
-        goto exit;
+        return false;
     }
     app_manager_lifecycle_request_t request =
     {
@@ -166,24 +145,18 @@ bool app_manager_is_all_closed(void)
     };
     (void)_app_manager_lifecycle_call(app_manager_lifecycle_all_closed_call,
                                       &request);
-    all_closed = request.condition;
-
-exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    bool all_closed = request.condition;
+    app_manager_lifecycle_screen_access_end();
     return all_closed;
 }
 
 uint32_t app_manager_get_running_apps(void)
 {
-    uint32_t count = 0;
-    bool access_owned = _app_manager_lifecycle_access_begin();
-    if (!access_owned)
+    if (!_app_manager_lifecycle_access_begin())
     {
+        uint32_t count = 0;
         (void)app_manager_lifecycle_screen_running_snapshot(&count);
-        goto exit;
+        return count;
     }
     app_manager_lifecycle_request_t request =
     {
@@ -191,13 +164,8 @@ uint32_t app_manager_get_running_apps(void)
     };
     (void)_app_manager_lifecycle_call(app_manager_lifecycle_running_count_call,
                                       &request);
-    count = request.count;
-
-exit:
-    if (access_owned)
-    {
-        app_manager_lifecycle_screen_access_end();
-    }
+    uint32_t count = request.count;
+    app_manager_lifecycle_screen_access_end();
     return count;
 }
 

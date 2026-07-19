@@ -182,7 +182,6 @@ esp_err_t app_manager_lifecycle_configure(
     const app_manager_transition_t *page_forward,
     const app_manager_transition_t *page_back)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     lifecycle_settings_t settings;
     app_manager_transition_t default_app_forward = {0};
     app_manager_transition_t default_app_back = {0};
@@ -193,14 +192,13 @@ esp_err_t app_manager_lifecycle_configure(
             atomic_load_explicit(&s_screen_phase, memory_order_acquire) !=
             LIFECYCLE_SCREEN_CLOSED)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (max_resident_apps > APP_MANAGER_MAX_RESIDENT_APPS ||
             resident_policy < APP_MANAGER_RESIDENT_REJECT ||
             resident_policy > APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     app_forward = app_forward != NULL ? app_forward : &default_app_forward;
     app_back = app_back != NULL ? app_back : &default_app_back;
@@ -212,7 +210,7 @@ esp_err_t app_manager_lifecycle_configure(
             !_lifecycle_transition_value_valid(page_forward) ||
             !_lifecycle_transition_value_valid(page_back))
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
     _lifecycle_settings_defaults(&settings);
@@ -232,10 +230,7 @@ esp_err_t app_manager_lifecycle_configure(
                              APP_MANAGER_TRANSITION_PUSH_RIGHT);
     s_settings = settings;
     s_settings_configured = true;
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 bool app_manager_lifecycle_id_is_valid(const char *id)
@@ -273,8 +268,7 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
     if (page == NULL || !page->in_use || page->descriptor == NULL ||
             page->descriptor->handler == NULL)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     previous_page = s_handler_page;
@@ -309,14 +303,12 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
 
     if (!page->in_use || page->generation != generation)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if ((message == APP_MANAGER_MSG_ONPAUSE ||
             message == APP_MANAGER_MSG_ONSTOP) && cleanup_error != ESP_OK)
     {
-        result = cleanup_error;
-        goto exit;
+        return cleanup_error;
     }
     switch (message)
     {
@@ -343,26 +335,20 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
     default:
         break;
     }
-
-exit:
     return result;
 }
 
 static esp_err_t _lifecycle_start_page(app_manager_page_node_t *page)
 {
-    esp_err_t result = ESP_OK;
     if (page->started)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (page->private_memory != NULL && page->private_memory_size > 0U)
     {
         memset(page->private_memory, 0, page->private_memory_size);
     }
-    result = _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTART);
-
-exit:
-    return result;
+    return _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTART);
 }
 
 static esp_err_t _lifecycle_mount_page(app_manager_page_node_t *page)
@@ -372,24 +358,22 @@ static esp_err_t _lifecycle_mount_page(app_manager_page_node_t *page)
 
     if (page == NULL)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (page->mounted)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (!page->started)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (page->screen == NULL)
     {
         page->screen = app_manager_presentation_create_page_screen();
         if (page->screen == NULL)
         {
-            result = ESP_ERR_NO_MEM;
-            goto exit;
+            return ESP_ERR_NO_MEM;
         }
         screen_created = true;
     }
@@ -399,54 +383,44 @@ static esp_err_t _lifecycle_mount_page(app_manager_page_node_t *page)
         (void)app_manager_presentation_delete_page_screen(page->screen);
         page->screen = NULL;
     }
-
-exit:
     return result;
 }
 
 static esp_err_t _lifecycle_delete_unmounted_screen(
     app_manager_page_node_t *page)
 {
-    esp_err_t result = ESP_OK;
     if (page == NULL || page->screen == NULL)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (page->mounted)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = app_manager_presentation_delete_page_screen(page->screen);
+    esp_err_t result = app_manager_presentation_delete_page_screen(page->screen);
     if (result == ESP_OK)
     {
         page->screen = NULL;
     }
-
-exit:
     return result;
 }
 
 static esp_err_t _lifecycle_unmount_page(app_manager_page_node_t *page,
         bool delete_screen)
 {
-    esp_err_t result = ESP_OK;
     if (page == NULL || !page->mounted)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (page->active)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = _lifecycle_call_handler(page, APP_MANAGER_MSG_ONUNMOUNT);
+    esp_err_t result = _lifecycle_call_handler(page, APP_MANAGER_MSG_ONUNMOUNT);
     if (result == ESP_OK && delete_screen)
     {
         result = _lifecycle_delete_unmounted_screen(page);
     }
-
-exit:
     return result;
 }
 
@@ -464,30 +438,27 @@ static esp_err_t _lifecycle_resume_page(app_manager_page_node_t *page)
 
 static esp_err_t _lifecycle_stop_page(app_manager_page_node_t *page)
 {
-    esp_err_t result = ESP_OK;
     if (page == NULL)
     {
-        goto exit;
+        return ESP_OK;
     }
-    result = _lifecycle_pause_page(page);
+    esp_err_t result = _lifecycle_pause_page(page);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     if (page->mounted)
     {
         result = _lifecycle_unmount_page(page, true);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (page->started)
     {
         result = _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTOP);
     }
-
-exit:
     return result;
 }
 
@@ -495,39 +466,34 @@ static bool _lifecycle_page_is_linked(
     const app_manager_app_node_t *app,
     const app_manager_page_node_t *page)
 {
-    bool linked = false;
     if (app == NULL || page == NULL)
     {
-        goto exit;
+        return false;
     }
     for (const app_manager_page_node_t *node = app->current_page;
             node != NULL; node = node->previous)
     {
         if (node == page)
         {
-            linked = true;
-            break;
+            return true;
         }
     }
-
-exit:
-    return linked;
+    return false;
 }
 
 static esp_err_t _lifecycle_free_page(app_manager_page_node_t *page)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (page == NULL || page->active || page->mounted || page->started)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     app_manager_app_node_t *app = page->app;
     if (page->screen != NULL)
     {
-        result = _lifecycle_delete_unmounted_screen(page);
+        esp_err_t result = _lifecycle_delete_unmounted_screen(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (_lifecycle_page_is_linked(app, page))
@@ -535,10 +501,7 @@ static esp_err_t _lifecycle_free_page(app_manager_page_node_t *page)
         app_manager_nav_model_unlink_page(app, page);
     }
     app_manager_nav_model_free_page(&s_model, page);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static bool _lifecycle_app_is_linked(const app_manager_app_node_t *app)
@@ -582,22 +545,21 @@ static esp_err_t _lifecycle_release_and_free_app(app_manager_app_node_t *app)
     {
         if (page->active || page->mounted || page->started)
         {
-            result = ESP_ERR_INVALID_STATE;
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
         if (page->screen != NULL)
         {
             result = _lifecycle_delete_unmounted_screen(page);
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
         }
     }
     result = app_manager_builtin_release(&app->lease);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     while (app->current_page != NULL)
     {
@@ -610,9 +572,7 @@ static esp_err_t _lifecycle_release_and_free_app(app_manager_app_node_t *app)
         app_manager_nav_model_remove_app(&s_model, app);
     }
     app_manager_nav_model_free_app(app);
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static esp_err_t _lifecycle_stop_all_app_pages(app_manager_app_node_t *app)
@@ -632,18 +592,15 @@ static esp_err_t _lifecycle_stop_all_app_pages(app_manager_app_node_t *app)
 
 static esp_err_t _lifecycle_destroy_background_app(app_manager_app_node_t *app)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (app == NULL || app->active)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = _lifecycle_stop_all_app_pages(app);
+    esp_err_t result = _lifecycle_stop_all_app_pages(app);
     if (result == ESP_OK)
     {
         result = _lifecycle_release_and_free_app(app);
     }
-
-exit:
     return result;
 }
 
@@ -660,7 +617,7 @@ static esp_err_t _lifecycle_retry_pending_cleanup(void)
                      _lifecycle_delete_unmounted_screen(page);
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
             page->unmount_pending = false;
         }
@@ -675,7 +632,7 @@ static esp_err_t _lifecycle_retry_pending_cleanup(void)
         }
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
@@ -688,10 +645,9 @@ static esp_err_t _lifecycle_retry_pending_cleanup(void)
         result = _lifecycle_destroy_background_app(app);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
-exit:
     return result;
 }
 
@@ -726,28 +682,22 @@ static app_manager_app_node_t *_lifecycle_oldest_evictable_app(void)
 
 static esp_err_t _lifecycle_make_resident_space(void)
 {
-    esp_err_t result = ESP_OK;
     if (app_manager_nav_model_running_count(&s_model) <
             s_settings.max_resident_apps)
     {
-        goto exit;
+        return ESP_OK;
     }
     if (s_settings.resident_policy !=
             APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     app_manager_app_node_t *candidate = _lifecycle_oldest_evictable_app();
     if (candidate == NULL)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
-    result = _lifecycle_destroy_background_app(candidate);
-
-exit:
-    return result;
+    return _lifecycle_destroy_background_app(candidate);
 }
 
 static void _lifecycle_copy_arguments(app_manager_app_node_t *app,
@@ -774,12 +724,11 @@ static esp_err_t _lifecycle_create_page(app_manager_app_node_t *app,
                                         bool link_page,
                                         app_manager_page_node_t **out_page)
 {
-    esp_err_t result = ESP_ERR_NO_MEM;
     app_manager_page_node_t *page = app_manager_nav_model_alloc_page(
                                         &s_model, descriptor->memory_size);
     if (page == NULL)
     {
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     page->descriptor = descriptor;
     page->user_data = descriptor->user_data;
@@ -789,16 +738,14 @@ static esp_err_t _lifecycle_create_page(app_manager_app_node_t *app,
         app_manager_nav_model_link_page(app, page);
     }
     _lifecycle_copy_arguments(app, page, request);
-    result = _lifecycle_start_page(page);
+    esp_err_t result = _lifecycle_start_page(page);
     if (result != ESP_OK)
     {
         (void)_lifecycle_free_page(page);
-        goto exit;
+        return result;
     }
     *out_page = page;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static esp_err_t _lifecycle_create_app(const char *app_id,
@@ -813,24 +760,23 @@ static esp_err_t _lifecycle_create_app(const char *app_id,
 
     if (app_manager_builtin_find_by_id(app_id) == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     result = _lifecycle_make_resident_space();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     app = app_manager_nav_model_alloc_app(&s_model);
     if (app == NULL)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     result = app_manager_builtin_acquire(app_id, &app->lease);
     if (result != ESP_OK)
     {
         app_manager_nav_model_free_app(app);
-        goto exit;
+        return result;
     }
     app->descriptor = app_manager_builtin_lease_app(&app->lease);
     if (app->descriptor == NULL)
@@ -872,7 +818,7 @@ static esp_err_t _lifecycle_create_app(const char *app_id,
     }
     *out_app = app;
     *out_page = target;
-    goto exit;
+    return ESP_OK;
 
 fail_pages:
     (void)_lifecycle_stop_all_app_pages(app);
@@ -901,9 +847,6 @@ fail_app:
             app->cleanup_pending = true;
         }
     }
-    goto exit;
-
-exit:
     return result;
 }
 
@@ -927,12 +870,12 @@ static esp_err_t _lifecycle_trim_between(app_manager_app_node_t *app,
         result = _lifecycle_stop_page(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         result = _lifecycle_free_page(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         page = previous;
     }
@@ -940,8 +883,6 @@ static esp_err_t _lifecycle_trim_between(app_manager_app_node_t *app,
     {
         result = ESP_ERR_NOT_FOUND;
     }
-
-exit:
     return result;
 }
 
@@ -955,20 +896,18 @@ static esp_err_t _lifecycle_trim_to_background_target(
         result = _lifecycle_stop_page(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         result = _lifecycle_free_page(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (app->current_page != target)
     {
         result = ESP_ERR_NOT_FOUND;
     }
-
-exit:
     return result;
 }
 
@@ -1148,7 +1087,7 @@ static esp_err_t _lifecycle_stabilize_target(void)
 
     if (target == NULL || !target->in_use)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     result = _lifecycle_start_page(target);
     if (result == ESP_OK)
@@ -1164,8 +1103,6 @@ static esp_err_t _lifecycle_stabilize_target(void)
         s_transition.target_resumed = true;
         result = app_manager_presentation_load_immediate(target->screen);
     }
-
-exit:
     return result;
 }
 
@@ -1190,9 +1127,8 @@ static esp_err_t _lifecycle_restore_source(void)
     app_manager_page_node_t *source = s_transition.source_page;
     if (source == NULL)
     {
-        result = app_manager_presentation_load_immediate(
-                     app_manager_presentation_neutral_screen());
-        goto exit;
+        return app_manager_presentation_load_immediate(
+                   app_manager_presentation_neutral_screen());
     }
     result = _lifecycle_start_page(source);
     if (result == ESP_OK)
@@ -1201,12 +1137,12 @@ static esp_err_t _lifecycle_restore_source(void)
     }
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = app_manager_presentation_load_immediate(source->screen);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_resume_page(source);
     if (result == ESP_OK && s_transition.source_app != NULL)
@@ -1214,8 +1150,6 @@ static esp_err_t _lifecycle_restore_source(void)
         s_transition.source_app->active = true;
         s_transition.source_paused = false;
     }
-
-exit:
     return result;
 }
 
@@ -1273,7 +1207,7 @@ static esp_err_t _lifecycle_retry_target_recovery(void)
     if (!atomic_load_explicit(&s_target_recovery_pending,
                               memory_order_acquire))
     {
-        goto exit;
+        return ESP_OK;
     }
 
     app_manager_app_node_t *app = s_model.active_app;
@@ -1281,8 +1215,7 @@ static esp_err_t _lifecycle_retry_target_recovery(void)
     if (app == NULL || page == NULL || !app->in_use || !page->in_use ||
             app->descriptor == NULL || page->descriptor == NULL)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     result = _lifecycle_start_page(page);
     if (result == ESP_OK)
@@ -1303,8 +1236,6 @@ static esp_err_t _lifecycle_retry_target_recovery(void)
         atomic_store_explicit(&s_target_recovery_pending, false,
                               memory_order_release);
     }
-
-exit:
     return result;
 }
 
@@ -1313,13 +1244,12 @@ static esp_err_t _lifecycle_retry_source_recovery(void)
     esp_err_t result = ESP_OK;
     if (!atomic_load_explicit(&s_recovery_pending, memory_order_acquire))
     {
-        goto exit;
+        return ESP_OK;
     }
     if (s_recovery_app == NULL || s_recovery_page == NULL ||
             !s_recovery_app->in_use || !s_recovery_page->in_use)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     result = _lifecycle_start_page(s_recovery_page);
     if (result == ESP_OK)
@@ -1351,8 +1281,6 @@ static esp_err_t _lifecycle_retry_source_recovery(void)
             (void)_lifecycle_unmount_page(s_recovery_page, true);
         }
     }
-
-exit:
     return result;
 }
 
@@ -1370,12 +1298,10 @@ static esp_err_t _lifecycle_finalize_forward(void)
         s_transition.source_unmounted = true;
     }
     _lifecycle_commit_target();
-    goto exit;
+    return result;
 
 rollback:
     _lifecycle_rollback_to_source();
-
-exit:
     return result;
 }
 
@@ -1401,12 +1327,10 @@ static esp_err_t _lifecycle_finalize_back_page(void)
         goto rollback;
     }
     _lifecycle_commit_target();
-    goto exit;
+    return result;
 
 rollback:
     _lifecycle_rollback_to_source();
-
-exit:
     return result;
 }
 
@@ -1433,12 +1357,10 @@ static esp_err_t _lifecycle_finalize_back_app(void)
     }
     s_transition.provider_released = true;
     _lifecycle_commit_target();
-    goto exit;
+    return result;
 
 rollback:
     _lifecycle_rollback_to_source();
-
-exit:
     return result;
 }
 
@@ -1486,7 +1408,7 @@ static esp_err_t _lifecycle_begin_transition(
 
     if (s_transition.in_use || from_screen == NULL || to_screen == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     s_transition = (lifecycle_transition_state_t)
     {
@@ -1511,8 +1433,7 @@ static esp_err_t _lifecycle_begin_transition(
         memset(&s_transition, 0, sizeof(s_transition));
         atomic_store_explicit(&s_transitioning, false,
                               memory_order_release);
-        result = primary_result;
-        goto exit;
+        return primary_result;
     }
     s_transition.source_paused = source_page != NULL;
     s_transition.phase = LIFECYCLE_TRANSITION_HANDOFF;
@@ -1526,8 +1447,7 @@ static esp_err_t _lifecycle_begin_transition(
             memset(&s_transition, 0, sizeof(s_transition));
             atomic_store_explicit(&s_transitioning, false,
                                   memory_order_release);
-            result = primary_result;
-            goto exit;
+            return primary_result;
         }
         s_transition.target_resumed = true;
     }
@@ -1544,8 +1464,6 @@ static esp_err_t _lifecycle_begin_transition(
                               memory_order_release);
         result = primary_result;
     }
-
-exit:
     return result;
 }
 
@@ -1581,7 +1499,7 @@ static esp_err_t _lifecycle_run_app(
         app_created = result == ESP_OK;
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     else
@@ -1589,15 +1507,14 @@ static esp_err_t _lifecycle_run_app(
         target_page = target_app->current_page;
         if (target_page == NULL)
         {
-            result = ESP_ERR_INVALID_STATE;
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
         _lifecycle_update_intent(target_app, target_page, request);
     }
     if (target_app == source_app && target_page == source_page)
     {
         completion(ESP_OK, context);
-        goto exit;
+        return ESP_OK;
     }
     result = _lifecycle_prepare_target(target_page, source_page);
     if (result != ESP_OK)
@@ -1611,7 +1528,7 @@ static esp_err_t _lifecycle_run_app(
         s_transition = cleanup;
         (void)_lifecycle_rollback_target();
         memset(&s_transition, 0, sizeof(s_transition));
-        goto exit;
+        return result;
     }
     app_manager_transition_t transition =
         _lifecycle_resolve_request_transition(request,
@@ -1620,8 +1537,6 @@ static esp_err_t _lifecycle_run_app(
                  LIFECYCLE_TRANSITION_FORWARD_APP,
                  source_app, source_page, target_app, target_page,
                  app_created, false, &transition, completion, context);
-
-exit:
     return result;
 }
 
@@ -1642,8 +1557,7 @@ static esp_err_t _lifecycle_open_page(
     if (app_manager_builtin_find_page(request->app_id,
                                       request->page_id) == NULL)
     {
-        result = ESP_ERR_NOT_FOUND;
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     if (target_app == NULL)
     {
@@ -1652,7 +1566,7 @@ static esp_err_t _lifecycle_open_page(
         app_created = result == ESP_OK;
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     else
@@ -1665,7 +1579,7 @@ static esp_err_t _lifecycle_open_page(
             if (target_app == source_app && target_page == source_page)
             {
                 completion(ESP_OK, context);
-                goto exit;
+                return ESP_OK;
             }
             result = target_app == source_app ?
                      _lifecycle_trim_between(target_app, source_page,
@@ -1674,7 +1588,7 @@ static esp_err_t _lifecycle_open_page(
                          target_page);
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
         }
         else
@@ -1684,8 +1598,7 @@ static esp_err_t _lifecycle_open_page(
                                                     request->page_id);
             if (descriptor == NULL)
             {
-                result = ESP_ERR_NOT_FOUND;
-                goto exit;
+                return ESP_ERR_NOT_FOUND;
             }
             result = _lifecycle_create_page(target_app, descriptor, request,
                                             false,
@@ -1693,7 +1606,7 @@ static esp_err_t _lifecycle_open_page(
             page_created = result == ESP_OK;
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
         }
     }
@@ -1710,7 +1623,7 @@ static esp_err_t _lifecycle_open_page(
         };
         (void)_lifecycle_rollback_target();
         memset(&s_transition, 0, sizeof(s_transition));
-        goto exit;
+        return result;
     }
 
     const bool app_transition = target_app != source_app;
@@ -1726,8 +1639,6 @@ static esp_err_t _lifecycle_open_page(
                   LIFECYCLE_TRANSITION_FORWARD_PAGE),
                  source_app, source_page, target_app, target_page,
                  app_created, page_created, &transition, completion, context);
-
-exit:
     return result;
 }
 
@@ -1741,7 +1652,7 @@ static esp_err_t _lifecycle_back_page(
     esp_err_t result = _lifecycle_trim_between(app, source, target_page);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_prepare_target(target_page, source);
     if (result != ESP_OK)
@@ -1750,15 +1661,13 @@ static esp_err_t _lifecycle_back_page(
         {
             (void)_lifecycle_unmount_page(target_page, true);
         }
-        goto exit;
+        return result;
     }
     app_manager_transition_t transition =
         _lifecycle_resolve_request_transition(request, &s_settings.page_back);
     result = _lifecycle_begin_transition(
                  LIFECYCLE_TRANSITION_BACK_PAGE, app, source, app, target_page,
                  false, false, &transition, completion, context);
-
-exit:
     return result;
 }
 
@@ -1779,7 +1688,7 @@ static esp_err_t _lifecycle_back_app(
         result = _lifecycle_stop_page(page);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (target_page != NULL)
@@ -1791,7 +1700,7 @@ static esp_err_t _lifecycle_back_app(
         }
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     app_manager_transition_t transition =
@@ -1800,8 +1709,6 @@ static esp_err_t _lifecycle_back_app(
                  LIFECYCLE_TRANSITION_BACK_APP, source_app, source_page,
                  target_app, target_page, false, false, &transition,
                  completion, context);
-
-exit:
     return result;
 }
 
@@ -1809,91 +1716,72 @@ static esp_err_t _lifecycle_back(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (s_model.active_app == NULL || s_model.active_app->current_page == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (request->app_id != NULL &&
             strcmp(request->app_id, s_model.active_app->descriptor->id) != 0)
     {
-        result = ESP_ERR_NOT_FOUND;
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     app_manager_page_node_t *source = s_model.active_app->current_page;
     if (source->previous != NULL)
     {
-        result = _lifecycle_back_page(request, source->previous,
-                                      completion, context);
+        return _lifecycle_back_page(request, source->previous,
+                                    completion, context);
     }
-    else
-    {
-        result = _lifecycle_back_app(request, completion, context);
-    }
-
-exit:
-    return result;
+    return _lifecycle_back_app(request, completion, context);
 }
 
 static esp_err_t _lifecycle_back_to(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_NOT_FOUND;
     app_manager_app_node_t *app = s_model.active_app;
     if (app == NULL || (request->app_id != NULL &&
                         strcmp(request->app_id, app->descriptor->id) != 0))
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     app_manager_page_node_t *target = app_manager_nav_model_find_page(
                                           app, request->page_id);
     if (target == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     if (target == app->current_page)
     {
         completion(ESP_OK, context);
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
-    result = _lifecycle_back_page(request, target, completion, context);
-
-exit:
-    return result;
+    return _lifecycle_back_page(request, target, completion, context);
 }
 
 static esp_err_t _lifecycle_exit_app(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_NOT_FOUND;
     const char *app_id = request->app_id;
     if (app_id == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     app_manager_app_node_t *app = app_manager_nav_model_find_app(&s_model,
                                   app_id);
     if (app == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     if (app == s_model.active_app)
     {
-        result = _lifecycle_back_app(request, completion, context);
+        return _lifecycle_back_app(request, completion, context);
     }
-    else
+    esp_err_t result = _lifecycle_destroy_background_app(app);
+    if (result == ESP_OK)
     {
-        result = _lifecycle_destroy_background_app(app);
-        if (result == ESP_OK)
-        {
-            completion(ESP_OK, context);
-        }
+        completion(ESP_OK, context);
     }
-
-exit:
     return result;
 }
 
@@ -1901,47 +1789,43 @@ static esp_err_t _lifecycle_remove_page(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_NOT_FOUND;
     app_manager_app_node_t *app = request->app_id != NULL ?
                                   app_manager_nav_model_find_app(
                                       &s_model, request->app_id) :
                                   s_model.active_app;
     if (app == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     app_manager_page_node_t *page = app_manager_nav_model_find_page(
                                         app, request->page_id);
     if (page == NULL)
     {
-        goto exit;
+        return ESP_ERR_NOT_FOUND;
     }
     if (app == s_model.active_app && page == app->current_page)
     {
-        result = _lifecycle_back(request, completion, context);
-        goto exit;
+        return _lifecycle_back(request, completion, context);
     }
-    result = _lifecycle_stop_page(page);
+    esp_err_t result = _lifecycle_stop_page(page);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_free_page(page);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     if (app->current_page == NULL)
     {
         result = _lifecycle_release_and_free_app(app);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     completion(ESP_OK, context);
-
-exit:
     return result;
 }
 
@@ -1960,12 +1844,10 @@ static esp_err_t _lifecycle_cleanup_background(
         result = _lifecycle_destroy_background_app(app);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     completion(ESP_OK, context);
-
-exit:
     return result;
 }
 
@@ -1977,27 +1859,24 @@ static bool _lifecycle_request_valid(const app_manager_nav_request_t *request)
                  _lifecycle_transition_value_valid(&request->transition);
     if (!valid)
     {
-        goto exit;
+        return false;
     }
     if (request->has_arguments &&
             (request->arguments.version != APP_MANAGER_TYPED_BLOB_VERSION ||
              request->arguments.size > APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES ||
              request->arguments.reserved != 0U))
     {
-        valid = false;
-        goto exit;
+        return false;
     }
     if (request->app_id != NULL &&
             !app_manager_lifecycle_id_is_valid(request->app_id))
     {
-        valid = false;
-        goto exit;
+        return false;
     }
     if (request->page_id != NULL &&
             !app_manager_lifecycle_id_is_valid(request->page_id))
     {
-        valid = false;
-        goto exit;
+        return false;
     }
     switch (request->operation)
     {
@@ -2023,8 +1902,6 @@ static bool _lifecycle_request_valid(const app_manager_nav_request_t *request)
         valid = false;
         break;
     }
-
-exit:
     return valid;
 }
 
@@ -2032,10 +1909,9 @@ esp_err_t app_manager_lifecycle_navigate(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (!_lifecycle_request_valid(request) || completion == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized || s_tearing_down ||
             !app_manager_mailbox_is_worker() ||
@@ -2043,23 +1919,22 @@ esp_err_t app_manager_lifecycle_navigate(
             s_handler_page != NULL ||
             atomic_load_explicit(&s_transitioning, memory_order_acquire))
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = _lifecycle_retry_target_recovery();
+    esp_err_t result = _lifecycle_retry_target_recovery();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_retry_source_recovery();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_retry_pending_cleanup();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     switch (request->operation)
     {
@@ -2090,8 +1965,6 @@ esp_err_t app_manager_lifecycle_navigate(
         result = ESP_ERR_INVALID_ARG;
         break;
     }
-
-exit:
     return result;
 }
 
@@ -2104,8 +1977,7 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
                 &s_screen_phase, &expected, LIFECYCLE_SCREEN_INITIALIZING,
                 memory_order_acq_rel, memory_order_acquire))
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!s_settings_configured)
     {
@@ -2150,13 +2022,11 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
     s_initialized = true;
     atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_ACTIVE,
                           memory_order_release);
-    goto exit;
+    return ESP_OK;
 
 fail:
     atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_CLOSED,
                           memory_order_release);
-
-exit:
     return result;
 }
 
@@ -2214,14 +2084,14 @@ esp_err_t app_manager_lifecycle_deinit(void)
             atomic_load(&s_screen_phase) != LIFECYCLE_SCREEN_CLOSED ||
             atomic_load(&s_screen_accesses) != 0U)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     s_tearing_down = true;
     app_manager_presentation_finish_now();
     result = _lifecycle_retry_pending_cleanup();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
     {
@@ -2235,7 +2105,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
             result = _lifecycle_pause_page(app->current_page);
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
             app->active = false;
         }
@@ -2245,13 +2115,13 @@ esp_err_t app_manager_lifecycle_deinit(void)
                          app_manager_presentation_neutral_screen());
             if (result != ESP_OK)
             {
-                goto exit;
+                return result;
             }
         }
         result = _lifecycle_destroy_background_app(app);
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     app_manager_nav_model_deinit(&s_model);
@@ -2262,10 +2132,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
     s_recovery_page = NULL;
     s_target_recovery_pending = false;
     atomic_store(&s_paused_running_apps, 0U);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 bool app_manager_lifecycle_screen_mutation_allowed(void)
@@ -2292,11 +2159,10 @@ void app_manager_lifecycle_screen_access_end(void)
 
 esp_err_t app_manager_lifecycle_screen_access_wait(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (app_manager_mailbox_is_worker() ||
             atomic_load(&s_screen_phase) != LIFECYCLE_SCREEN_PAUSED)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     while (atomic_load(&s_screen_accesses) != 0U)
     {
@@ -2306,21 +2172,15 @@ esp_err_t app_manager_lifecycle_screen_access_wait(void)
         vTaskDelay(1);
 #endif
     }
-    if (atomic_load(&s_screen_phase) == LIFECYCLE_SCREEN_PAUSED)
-    {
-        result = ESP_OK;
-    }
-
-exit:
-    return result;
+    return atomic_load(&s_screen_phase) == LIFECYCLE_SCREEN_PAUSED ?
+           ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t app_manager_lifecycle_shutdown_begin_and_wait(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_CLOSED,
                           memory_order_release);
@@ -2332,10 +2192,7 @@ esp_err_t app_manager_lifecycle_shutdown_begin_and_wait(void)
         vTaskDelay(1);
 #endif
     }
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 bool app_manager_lifecycle_screen_running_snapshot(uint32_t *count)
@@ -2360,23 +2217,22 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
     if (!s_initialized || s_tearing_down ||
             !app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (atomic_load(&s_screen_phase) == LIFECYCLE_SCREEN_PAUSED)
     {
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
     app_manager_presentation_finish_now();
     if (atomic_load_explicit(&s_transitioning, memory_order_acquire) ||
             app_manager_presentation_is_running())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     result = _lifecycle_retry_pending_cleanup();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     app = s_model.active_app;
     page = app != NULL ? app->current_page : NULL;
@@ -2384,13 +2240,13 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
                 &s_screen_phase, &expected, LIFECYCLE_SCREEN_PAUSING,
                 memory_order_acq_rel, memory_order_acquire))
     {
-        goto exit;
+        return result;
     }
     result = _lifecycle_pause_page(page);
     if (result != ESP_OK)
     {
         atomic_store(&s_screen_phase, LIFECYCLE_SCREEN_ACTIVE);
-        goto exit;
+        return result;
     }
     result = app_manager_presentation_load_immediate(
                  app_manager_presentation_neutral_screen());
@@ -2398,7 +2254,7 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
     {
         (void)_lifecycle_resume_page(page);
         atomic_store(&s_screen_phase, LIFECYCLE_SCREEN_ACTIVE);
-        goto exit;
+        return result;
     }
     result = _lifecycle_unmount_page(page, true);
     if (result != ESP_OK)
@@ -2435,7 +2291,7 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
                 atomic_store(&s_paused_running_apps,
                              app_manager_nav_model_running_count(&s_model));
                 atomic_store(&s_screen_phase, LIFECYCLE_SCREEN_PAUSED);
-                goto exit;
+                return result;
             }
         }
         if (app != NULL)
@@ -2443,7 +2299,7 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
             app->active = true;
         }
         atomic_store(&s_screen_phase, LIFECYCLE_SCREEN_ACTIVE);
-        goto exit;
+        return result;
     }
     if (app != NULL)
     {
@@ -2455,8 +2311,6 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
                           memory_order_release);
     atomic_store_explicit(&s_target_recovery_pending, false,
                           memory_order_release);
-
-exit:
     return result;
 }
 
@@ -2470,18 +2324,17 @@ esp_err_t app_manager_lifecycle_screen_resume(void)
     if (!s_initialized || s_tearing_down ||
             !app_manager_mailbox_is_worker())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (atomic_load(&s_screen_phase) == LIFECYCLE_SCREEN_ACTIVE)
     {
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
     if (!atomic_compare_exchange_strong_explicit(
                 &s_screen_phase, &expected, LIFECYCLE_SCREEN_RESUMING,
                 memory_order_acq_rel, memory_order_acquire))
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (page != NULL)
     {
@@ -2537,8 +2390,6 @@ esp_err_t app_manager_lifecycle_screen_resume(void)
         atomic_store_explicit(&s_screen_phase, LIFECYCLE_SCREEN_PAUSED,
                               memory_order_release);
     }
-
-exit:
     return result;
 }
 
@@ -2575,7 +2426,7 @@ app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
             !source_page->started || !source_page->mounted ||
             !source_page->active || source_page->app != source_app)
     {
-        goto exit;
+        return APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE;
     }
 
     app_manager_page_node_t *target_page = source_page->previous;
@@ -2585,7 +2436,7 @@ app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
                 target_page->unmount_pending || !target_page->started ||
                 target_page->active || target_page->app != source_app)
         {
-            goto exit;
+            return APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE;
         }
         target = APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE;
     }
@@ -2600,13 +2451,11 @@ app_manager_lifecycle_back_target_t app_manager_lifecycle_back_target(
                 target_page->unmount_pending || !target_page->started ||
                 target_page->active || target_page->app != target_app)
         {
-            goto exit;
+            return APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE;
         }
         target = APP_MANAGER_LIFECYCLE_BACK_TARGET_APP;
     }
     *source_app_id = source_app->descriptor->id;
-
-exit:
     return target;
 }
 

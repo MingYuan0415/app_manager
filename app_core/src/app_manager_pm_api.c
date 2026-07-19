@@ -18,12 +18,11 @@
 
 esp_err_t app_manager_startup_commit(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (!app_manager_is_initialized())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
-    result = app_manager_display_enable_startup_touch();
+    esp_err_t result = app_manager_display_enable_startup_touch();
     if (result == ESP_OK)
     {
         result = app_manager_control_open_admission();
@@ -32,20 +31,17 @@ esp_err_t app_manager_startup_commit(void)
             (void)app_manager_display_disable_startup_touch();
         }
     }
-
-exit:
     return result;
 }
 
 esp_err_t app_manager_input_inject(app_manager_key_t key,
                                    app_manager_key_event_t event)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (key < APP_MANAGER_KEY_HOME || key > APP_MANAGER_KEY_POWER ||
             event < APP_MANAGER_KEY_EVENT_DOWN ||
             event > APP_MANAGER_KEY_EVENT_DOUBLE_CLICK)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     control_command_t command =
     {
@@ -57,8 +53,7 @@ esp_err_t app_manager_input_inject(app_manager_key_t key,
     {
         if (!app_manager_control_access_begin())
         {
-            result = ESP_ERR_INVALID_STATE;
-            goto exit;
+            return ESP_ERR_INVALID_STATE;
         }
         atomic_store(&s_wake_pending, true);
         if (!atomic_exchange(&s_home_pending, true))
@@ -66,21 +61,16 @@ esp_err_t app_manager_input_inject(app_manager_key_t key,
             (void)xQueueSend(s_queue, &command, 0);
         }
         app_manager_control_access_end();
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
-    result = app_manager_control_post(command);
-
-exit:
-    return result;
+    return app_manager_control_post(command);
 }
 
 esp_err_t app_manager_pm_notify_user_activity(void)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     atomic_store_explicit(&s_standby_abort_pending, true,
                           memory_order_release);
@@ -90,18 +80,14 @@ esp_err_t app_manager_pm_notify_user_activity(void)
         atomic_store(&s_wake_pending, true);
     }
     app_manager_control_access_end();
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 bool IRAM_ATTR app_manager_pm_notify_user_activity_from_isr(void)
 {
-    bool accepted = false;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return false;
     }
     atomic_store_explicit(&s_standby_abort_pending, true,
                           memory_order_release);
@@ -112,21 +98,16 @@ bool IRAM_ATTR app_manager_pm_notify_user_activity_from_isr(void)
         atomic_store(&s_wake_pending, true);
     }
     app_manager_control_access_end();
-    accepted = true;
-
-exit:
-    return accepted;
+    return true;
 }
 
 bool IRAM_ATTR app_manager_control_notify_touch_activity_from_isr(void)
 {
     bool accepted = false;
-    bool access_owned = false;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return false;
     }
-    access_owned = true;
     uint32_t generation = atomic_load(&s_touch_generation);
 #ifdef HOST_TEST
     if (atomic_load(&s_touch_snapshot_pause))
@@ -162,10 +143,7 @@ bool IRAM_ATTR app_manager_control_notify_touch_activity_from_isr(void)
     accepted = true;
 
 exit:
-    if (access_owned)
-    {
-        app_manager_control_access_end();
-    }
+    app_manager_control_access_end();
     return accepted;
 }
 
@@ -177,20 +155,17 @@ uint32_t app_manager_control_touch_generation_for_test(void)
 
 bool app_manager_control_notify_touch_generation_for_test(uint32_t generation)
 {
-    bool queued = false;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return false;
     }
     control_command_t command =
     {
         .type = CONTROL_TOUCH_ACTIVITY,
         .data.touch_generation = generation,
     };
-    queued = xQueueSend(s_queue, &command, 0) == pdTRUE;
+    bool queued = xQueueSend(s_queue, &command, 0) == pdTRUE;
     app_manager_control_access_end();
-
-exit:
     return queued;
 }
 
@@ -226,61 +201,52 @@ esp_err_t app_manager_pm_request_screen_off(void)
 
 app_manager_pm_state_t app_manager_pm_get_state(void)
 {
-    app_manager_pm_state_t state = APP_MANAGER_PM_ACTIVE;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return APP_MANAGER_PM_ACTIVE;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    state = s_state;
+    app_manager_pm_state_t state = s_state;
     xSemaphoreGive(s_state_lock);
     app_manager_control_access_end();
-
-exit:
     return state;
 }
 
 bool app_manager_pm_standby_commit_guard(uint32_t generation, void *context)
 {
     (void)context;
-    bool ready = false;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return false;
     }
     if (xSemaphoreTake(s_state_lock, 0) != pdTRUE)
     {
         app_manager_control_access_end();
-        goto exit;
+        return false;
     }
-    ready = app_manager_control_standby_commit_ready(generation);
+    bool ready = app_manager_control_standby_commit_ready(generation);
     xSemaphoreGive(s_state_lock);
     app_manager_control_access_end();
-
-exit:
     return ready;
 }
 
 bool app_manager_pm_standby_prepare_guard(void)
 {
-    bool clear = false;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return false;
     }
-    clear = !atomic_load_explicit(&s_standby_abort_pending,
-                                  memory_order_acquire) &&
-            atomic_load_explicit(&s_power_pending_events,
-                                 memory_order_acquire) == 0U &&
-            atomic_load_explicit(&s_power_input_pending,
-                                 memory_order_acquire) == 0U &&
-            !atomic_load_explicit(&s_power_pending_wake,
-                                  memory_order_acquire) &&
-            !atomic_load_explicit(&s_wake_pending,
-                                  memory_order_acquire);
+    bool clear = !atomic_load_explicit(&s_standby_abort_pending,
+                                       memory_order_acquire) &&
+                 atomic_load_explicit(&s_power_pending_events,
+                                      memory_order_acquire) == 0U &&
+                 atomic_load_explicit(&s_power_input_pending,
+                                      memory_order_acquire) == 0U &&
+                 !atomic_load_explicit(&s_power_pending_wake,
+                                       memory_order_acquire) &&
+                 !atomic_load_explicit(&s_wake_pending,
+                                       memory_order_acquire);
     app_manager_control_access_end();
-
-exit:
     return clear;
 }
 
@@ -313,70 +279,56 @@ void app_manager_pm_standby_commit_callback(uint32_t generation, void *context)
 
 int32_t app_manager_pm_get_timeout_ms(void)
 {
-    int32_t timeout_ms = APP_CONTROL_DEFAULT_OFF_MS;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return APP_CONTROL_DEFAULT_OFF_MS;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    timeout_ms = s_off_timeout_ms;
+    int32_t timeout_ms = s_off_timeout_ms;
     xSemaphoreGive(s_state_lock);
     app_manager_control_access_end();
-
-exit:
     return timeout_ms;
 }
 
 esp_err_t app_manager_pm_set_timeout_ms(int32_t timeout_ms)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (timeout_ms < -1 || (timeout_ms >= 0 && timeout_ms < s_dim_timeout_ms))
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     control_command_t command =
     {
         .type = CONTROL_SET_OFF_TIMEOUT,
         .data.timeout_ms = timeout_ms,
     };
-    result = app_manager_control_call(command);
-
-exit:
-    return result;
+    return app_manager_control_call(command);
 }
 
 int32_t app_manager_pm_get_standby_delay_ms(void)
 {
-    int32_t timeout_ms = APP_CONTROL_DEFAULT_STANDBY_MS;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return APP_CONTROL_DEFAULT_STANDBY_MS;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    timeout_ms = s_standby_timeout_ms;
+    int32_t timeout_ms = s_standby_timeout_ms;
     xSemaphoreGive(s_state_lock);
     app_manager_control_access_end();
-
-exit:
     return timeout_ms;
 }
 
 esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (timeout_ms < -1)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     control_command_t command =
     {
         .type = CONTROL_SET_STANDBY_TIMEOUT,
         .data.timeout_ms = timeout_ms,
     };
-    result = app_manager_control_call(command);
-
-exit:
-    return result;
+    return app_manager_control_call(command);
 }
 
 esp_err_t app_manager_screen_suspend(void)
@@ -421,16 +373,13 @@ esp_err_t app_manager_screen_set_brightness_temp(uint8_t brightness)
 
 uint8_t app_manager_screen_get_brightness(void)
 {
-    uint8_t brightness = UINT8_MAX;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return UINT8_MAX;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    brightness = s_brightness;
+    uint8_t brightness = s_brightness;
     xSemaphoreGive(s_state_lock);
     app_manager_control_access_end();
-
-exit:
     return brightness;
 }

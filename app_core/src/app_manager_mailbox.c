@@ -270,20 +270,18 @@ static bool _mailbox_create_primitives(void)
 
 static esp_err_t _mailbox_start_timer(void)
 {
-    esp_err_t result = ESP_OK;
 #ifndef HOST_TEST
-    result = esp_lv_adapter_lock(-1);
+    esp_err_t result = esp_lv_adapter_lock(-1);
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     s_lvgl_timer = lv_timer_create(_mailbox_lvgl_timer_cb,
                                    APP_MANAGER_MAILBOX_PERIOD_MS, NULL);
     esp_lv_adapter_unlock();
     if (s_lvgl_timer == NULL)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
 #else
     const esp_timer_create_args_t args =
@@ -294,21 +292,17 @@ static esp_err_t _mailbox_start_timer(void)
     };
     if (esp_timer_create(&args, &s_host_timer) != ESP_OK)
     {
-        result = ESP_FAIL;
-        goto exit;
+        return ESP_FAIL;
     }
     s_timer_created = true;
     if (esp_timer_start_periodic(
                 s_host_timer, APP_MANAGER_MAILBOX_PERIOD_MS * 1000U) != ESP_OK)
     {
-        result = ESP_FAIL;
-        goto exit;
+        return ESP_FAIL;
     }
 #endif
     s_timer_created = true;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t app_manager_mailbox_init(void)
@@ -316,7 +310,7 @@ esp_err_t app_manager_mailbox_init(void)
     esp_err_t result = ESP_OK;
     if (atomic_load(&s_initialized))
     {
-        goto exit;
+        return ESP_OK;
     }
 
     _mailbox_reset_runtime();
@@ -343,14 +337,12 @@ esp_err_t app_manager_mailbox_init(void)
     LOG_I("ready: slots=%d period=%dms drain=%d",
           APP_MANAGER_MAILBOX_SLOTS, APP_MANAGER_MAILBOX_PERIOD_MS,
           APP_MANAGER_MAILBOX_DRAIN_LIMIT);
-    goto exit;
+    return ESP_OK;
 
 fail:
     atomic_store(&s_initialized, true);
     atomic_store(&s_accepting, false);
     (void)app_manager_mailbox_deinit();
-
-exit:
     return result;
 }
 
@@ -382,8 +374,7 @@ static esp_err_t _mailbox_stop_admission(void)
         mailbox_command_t *barrier_ptr = &barrier;
         if (xQueueSend(s_queue, &barrier_ptr, portMAX_DELAY) != pdTRUE)
         {
-            result = ESP_FAIL;
-            goto exit;
+            return ESP_FAIL;
         }
         (void)xSemaphoreTake(s_ready, portMAX_DELAY);
         while (atomic_load(&s_api_users) != 0U)
@@ -395,8 +386,6 @@ static esp_err_t _mailbox_stop_admission(void)
 #endif
         }
     }
-
-exit:
     return result;
 }
 
@@ -469,7 +458,7 @@ esp_err_t app_manager_mailbox_deinit(void)
     bool shutdown_owned = !atomic_flag_test_and_set(&s_shutdown_busy);
     if (!shutdown_owned)
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!atomic_load(&s_initialized))
     {
@@ -545,13 +534,12 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn cb, void *arg
     bool lock_owned = false;
     if (cb == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     shutdown_owned = !atomic_flag_test_and_set(&s_shutdown_busy);
     if (!shutdown_owned)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!atomic_load(&s_initialized) || s_lock == NULL ||
             s_queue == NULL || s_ready == NULL)
@@ -623,7 +611,7 @@ esp_err_t app_manager_mailbox_post(void (*cb)(void *), void *arg)
     bool lock_owned = false;
     if (!_mailbox_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     access_owned = true;
     if (cb == NULL)
@@ -676,7 +664,7 @@ esp_err_t app_manager_mailbox_call(app_manager_ui_call_fn cb, void *arg,
     bool lock_owned = false;
     if (!_mailbox_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     access_owned = true;
     if (cb == NULL)
@@ -743,22 +731,17 @@ esp_err_t app_manager_ui_call(app_manager_ui_call_fn cb, void *arg,
 
 esp_err_t app_manager_get_ui_dispatch_fn(app_manager_ui_dispatch_fn *out_fn)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (out_fn == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     if (!atomic_load(&s_initialized) || !atomic_load(&s_accepting))
     {
         *out_fn = NULL;
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     *out_fn = app_manager_ui_post;
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 bool app_manager_mailbox_is_worker(void)

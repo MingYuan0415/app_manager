@@ -247,7 +247,7 @@ esp_err_t app_manager_presentation_init(void)
 
     if (s_presentation.initialized)
     {
-        goto exit;
+        return ESP_OK;
     }
 
     memset(&s_presentation, 0, sizeof(s_presentation));
@@ -310,7 +310,7 @@ esp_err_t app_manager_presentation_init(void)
     {
         goto fail;
     }
-    goto exit;
+    return ESP_OK;
 
 fail:
     if (s_presentation.completion_timer != NULL)
@@ -328,8 +328,6 @@ fail:
         lv_obj_delete(s_presentation.neutral_screen);
     }
     memset(&s_presentation, 0, sizeof(s_presentation));
-
-exit:
     return result;
 }
 
@@ -369,50 +367,39 @@ esp_err_t app_manager_presentation_deinit(void)
 
 lv_obj_t *app_manager_presentation_create_page_screen(void)
 {
-    lv_obj_t *screen = NULL;
-
     if (!s_presentation.initialized || s_presentation.deinitializing)
     {
-        goto exit;
+        return NULL;
     }
-    screen = lv_obj_create(NULL);
+    lv_obj_t *screen = lv_obj_create(NULL);
     if (screen != NULL)
     {
         lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     }
-
-exit:
     return screen;
 }
 
 esp_err_t app_manager_presentation_delete_page_screen(lv_obj_t *screen)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
-
     if (!s_presentation.initialized || s_presentation.deinitializing)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_presentation_screen_is_valid(screen) ||
             screen == s_presentation.neutral_screen)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     if (screen == s_presentation.from_screen ||
             screen == s_presentation.to_screen ||
             screen == lv_display_get_screen_active(s_presentation.display))
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     lv_anim_delete(screen, NULL);
     lv_obj_delete(screen);
-    result = ESP_OK;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 lv_obj_t *app_manager_presentation_neutral_screen(void)
@@ -423,25 +410,19 @@ lv_obj_t *app_manager_presentation_neutral_screen(void)
 
 esp_err_t app_manager_presentation_load_immediate(lv_obj_t *screen)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
-
     if (!s_presentation.initialized || s_presentation.deinitializing ||
             s_presentation.running)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_presentation_screen_is_valid(screen))
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
 
     lv_screen_load(screen);
-    result = lv_display_get_screen_active(s_presentation.display) == screen ?
-             ESP_OK : ESP_ERR_INVALID_STATE;
-
-exit:
-    return result;
+    return lv_display_get_screen_active(s_presentation.display) == screen ?
+           ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t app_manager_presentation_start(
@@ -449,38 +430,35 @@ esp_err_t app_manager_presentation_start(
     app_manager_transition_effect_t effect, uint32_t duration_ms,
     app_manager_presentation_completion_cb_t completion, void *context)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     lv_screen_load_anim_t animation;
     uint32_t generation;
 
     if (!s_presentation.initialized || s_presentation.deinitializing ||
             s_presentation.running)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_presentation_screen_is_valid(from_screen) ||
             !_presentation_screen_is_valid(to_screen) || completion == NULL ||
             duration_ms > APP_MANAGER_TRANSITION_MAX_DURATION_MS ||
             !_presentation_map_effect(effect, &animation))
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     if (lv_display_get_screen_active(s_presentation.display) != from_screen)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (from_screen == to_screen || effect == APP_MANAGER_TRANSITION_NONE ||
             duration_ms == 0U)
     {
-        result = app_manager_presentation_load_immediate(to_screen);
+        esp_err_t result = app_manager_presentation_load_immediate(to_screen);
         if (result == ESP_OK)
         {
             completion(context);
         }
-        goto exit;
+        return result;
     }
 
     generation = s_presentation.generation + 1U;
@@ -501,24 +479,22 @@ esp_err_t app_manager_presentation_start(
                                       (void *)(uintptr_t)generation);
     if (s_presentation.loaded_event == NULL)
     {
-        result = ESP_ERR_NO_MEM;
         _presentation_reset_transition();
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     _presentation_set_blocked(true);
 
     lv_screen_load_anim(to_screen, animation, duration_ms, 0U, false);
     if (lv_anim_get(to_screen, NULL) != NULL)
     {
-        result = ESP_OK;
-        goto exit;
+        return ESP_OK;
     }
 
     _presentation_remove_loaded_event();
     lv_anim_delete(from_screen, NULL);
-    result = lv_display_get_screen_active(s_presentation.display) == to_screen ?
-             ESP_OK : _presentation_recover_animation_start(from_screen,
-                 to_screen);
+    esp_err_t result =
+        lv_display_get_screen_active(s_presentation.display) == to_screen ?
+        ESP_OK : _presentation_recover_animation_start(from_screen, to_screen);
     if (result == ESP_OK)
     {
         _presentation_complete(generation);
@@ -527,8 +503,6 @@ esp_err_t app_manager_presentation_start(
     {
         _presentation_reset_transition();
     }
-
-exit:
     return result;
 }
 

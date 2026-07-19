@@ -76,7 +76,7 @@ bool app_manager_control_standby_generation_begin(void)
                                  memory_order_acquire) == 0U;
     if (!ready)
     {
-        goto exit;
+        return false;
     }
 
     uint32_t generation = atomic_fetch_add_explicit(
@@ -114,17 +114,14 @@ bool app_manager_control_standby_generation_begin(void)
         app_manager_control_standby_generation_abort();
         app_manager_control_state_set(APP_MANAGER_PM_SCREEN_OFF);
     }
-
-exit:
     return ready;
 }
 
 bool app_manager_control_standby_commit_ready(uint32_t generation)
 {
-    bool ready = false;
     if (generation == 0U)
     {
-        goto exit;
+        return false;
     }
     /* Any PWR/HOME/wake intent accepted after the request invalidates this
      * generation. The system-PM worker must observe that before sleep. */
@@ -134,16 +131,16 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
             atomic_load_explicit(&s_home_pending, memory_order_acquire) ||
             atomic_load_explicit(&s_power_input_pending, memory_order_acquire) != 0U)
     {
-        goto exit;
+        return false;
     }
     if (atomic_load_explicit(&s_standby_abort_pending, memory_order_acquire))
     {
-        goto exit;
+        return false;
     }
     if (s_state != APP_MANAGER_PM_STANDBY_PREPARING ||
             !app_manager_control_screen_is_canonical_sleep())
     {
-        goto exit;
+        return false;
     }
 
     const uint32_t epoch = atomic_load_explicit(&s_standby_generation,
@@ -152,7 +149,7 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
                            memory_order_acquire);
     if (epoch == 0U)
     {
-        goto exit;
+        return false;
     }
     if (bound_epoch == 0U)
     {
@@ -168,25 +165,22 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
             atomic_load_explicit(&s_standby_system_generation,
                                  memory_order_acquire) != generation)
     {
-        goto exit;
+        return false;
     }
 
     /* Close producer-before-guard races after publishing the binding. */
-    ready = !atomic_load_explicit(&s_standby_abort_pending,
-                                  memory_order_acquire) &&
-            atomic_load_explicit(&s_power_pending_events,
-                                 memory_order_acquire) == 0U &&
-            !atomic_load_explicit(&s_power_pending_wake,
-                                  memory_order_acquire) &&
-            !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
-            !atomic_load_explicit(&s_home_pending, memory_order_acquire) &&
-            atomic_load_explicit(&s_power_input_pending,
-                                 memory_order_acquire) == 0U &&
-            atomic_load_explicit(&s_standby_generation,
-                                 memory_order_acquire) == epoch;
-
-exit:
-    return ready;
+    return !atomic_load_explicit(&s_standby_abort_pending,
+                                 memory_order_acquire) &&
+           atomic_load_explicit(&s_power_pending_events,
+                                memory_order_acquire) == 0U &&
+           !atomic_load_explicit(&s_power_pending_wake,
+                                 memory_order_acquire) &&
+           !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
+           !atomic_load_explicit(&s_home_pending, memory_order_acquire) &&
+           atomic_load_explicit(&s_power_input_pending,
+                                memory_order_acquire) == 0U &&
+           atomic_load_explicit(&s_standby_generation,
+                                memory_order_acquire) == epoch;
 }
 
 void app_manager_control_standby_generation_abort(void)
@@ -215,7 +209,7 @@ static esp_err_t _control_rollback_resume_to_sleep(void)
     if (result != ESP_OK)
     {
         LOG_W("adapter sleep rollback failed: %d", (int)result);
-        goto exit;
+        return result;
     }
 
     result = s_screen_ops.suspend();
@@ -228,8 +222,6 @@ static esp_err_t _control_rollback_resume_to_sleep(void)
         result = ESP_FAIL;
         LOG_W("screen sleep rollback did not reach suspended state");
     }
-
-exit:
     return result;
 }
 static void _control_recover_failed_resume(void)
@@ -258,35 +250,35 @@ static esp_err_t _control_resume_hardware(void)
         {
             _control_schedule_touch_restore();
         }
-        goto exit;
+        return result;
     }
 
     result = s_screen_ops.resume_prepare();
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
-        goto exit;
+        return result;
     }
 
     result = app_manager_display_sleep_recover();
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
-        goto exit;
+        return result;
     }
 
     result = app_manager_display_refresh_and_enable_touch();
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
-        goto exit;
+        return result;
     }
 
     result = app_manager_control_apply_brightness(s_brightness, true);
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
-        goto exit;
+        return result;
     }
 
     result = app_manager_control_commit_display();
@@ -295,12 +287,10 @@ static esp_err_t _control_resume_hardware(void)
     {
         result = result != ESP_OK ? result : ESP_FAIL;
         _control_recover_failed_resume();
-        goto exit;
+        return result;
     }
 
     _control_enable_touch_activity();
-
-exit:
     return result;
 }
 
@@ -314,13 +304,13 @@ esp_err_t app_manager_control_suspend_hardware(void)
         /* The adapter may also have failed while restoring lifecycle or LVGL
          * input. Keep the logical gate closed until a full active retry. */
         _control_schedule_touch_restore();
-        goto exit;
+        return result;
     }
 
     result = s_screen_ops.suspend();
     if (result == ESP_OK && app_manager_control_screen_is_canonical_sleep())
     {
-        goto exit;
+        return ESP_OK;
     }
 
     esp_err_t transition_error = result != ESP_OK ? result : ESP_FAIL;
@@ -347,10 +337,7 @@ esp_err_t app_manager_control_suspend_hardware(void)
         s_last_activity_us = esp_timer_get_time();
         app_manager_control_state_set(APP_MANAGER_PM_ACTIVE);
     }
-    result = transition_error;
-
-exit:
-    return result;
+    return transition_error;
 }
 
 esp_err_t app_manager_control_prepare_shutdown(void)
@@ -374,7 +361,7 @@ esp_err_t app_manager_control_prepare_shutdown(void)
         }
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
 
@@ -383,7 +370,7 @@ esp_err_t app_manager_control_prepare_shutdown(void)
         result = app_manager_display_sleep_prepare();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (s_screen_ops.is_suspended())
@@ -391,13 +378,10 @@ esp_err_t app_manager_control_prepare_shutdown(void)
         result = s_screen_ops.resume_prepare();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
-    result = app_manager_display_sleep_recover();
-
-exit:
-    return result;
+    return app_manager_display_sleep_recover();
 }
 
 esp_err_t app_manager_control_restore_active(void)
@@ -424,7 +408,7 @@ esp_err_t app_manager_control_restore_active(void)
         }
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
     }
     if (state == APP_MANAGER_PM_SCREEN_OFF ||
@@ -456,8 +440,6 @@ esp_err_t app_manager_control_restore_active(void)
         s_last_activity_us = esp_timer_get_time();
         app_manager_control_state_set(APP_MANAGER_PM_ACTIVE);
     }
-
-exit:
     return result;
 }
 
@@ -472,18 +454,14 @@ esp_err_t app_manager_control_handle_activity(void)
 
 esp_err_t app_manager_control_handle_touch_activity(uint32_t generation)
 {
-    esp_err_t result = ESP_OK;
     if (!atomic_load(&s_touch_activity_enabled) ||
             generation != atomic_load(&s_touch_generation) ||
             (s_state != APP_MANAGER_PM_ACTIVE &&
              s_state != APP_MANAGER_PM_DIM))
     {
-        goto exit;
+        return ESP_OK;
     }
-    result = app_manager_control_handle_activity();
-
-exit:
-    return result;
+    return app_manager_control_handle_activity();
 }
 
 static void _control_run_home_complete(esp_err_t result, void *context)
@@ -504,7 +482,7 @@ void app_manager_control_process_pending_home(void)
                                   memory_order_acquire) ||
             atomic_load(&s_lifecycle_state) != CONTROL_READY)
     {
-        goto exit;
+        return;
     }
 
     if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
@@ -515,7 +493,7 @@ void app_manager_control_process_pending_home(void)
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s_home_inflight, &expected, true))
     {
-        goto exit;
+        return;
     }
 
     const app_manager_nav_request_t request =
@@ -533,9 +511,6 @@ void app_manager_control_process_pending_home(void)
             LOG_W("HOME navigation dispatch failed: %d", (int)result);
         }
     }
-
-exit:
-    return;
 }
 
 static esp_err_t _control_handle_power_input(
@@ -555,7 +530,7 @@ static esp_err_t _control_handle_power_input(
             s_power_wake_click_pending = true;
             result = app_manager_control_handle_activity();
             *handled = true;
-            goto exit;
+            return result;
         }
         s_power_wake_click_pending = false;
     }
@@ -585,8 +560,6 @@ static esp_err_t _control_handle_power_input(
         result = app_manager_control_handle_activity();
         *handled = true;
     }
-
-exit:
     return result;
 }
 
@@ -603,7 +576,7 @@ esp_err_t app_manager_control_handle_input(app_manager_key_t key,
         result = _control_handle_power_input(event, screen_off, &handled);
         if (handled)
         {
-            goto exit;
+            return result;
         }
     }
     if (key == APP_MANAGER_KEY_HOME && event == APP_MANAGER_KEY_EVENT_CLICK &&
@@ -614,7 +587,7 @@ esp_err_t app_manager_control_handle_input(app_manager_key_t key,
     result = app_manager_control_handle_activity();
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
     if (key == APP_MANAGER_KEY_POWER && event == APP_MANAGER_KEY_EVENT_CLICK)
     {
@@ -630,7 +603,5 @@ esp_err_t app_manager_control_handle_input(app_manager_key_t key,
         app_manager_control_process_pending_home();
         result = ESP_OK;
     }
-
-exit:
     return result;
 }

@@ -20,27 +20,19 @@ void app_theme_deinit(void)
 
 esp_err_t app_theme_set_font(app_theme_font_id_t id, const lv_font_t *font)
 {
-    esp_err_t result = ESP_OK;
     if (id < 0 || id >= APP_THEME_FONT_MAX || font == NULL)
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     s_fonts[id] = font;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 const lv_font_t *app_theme_get_font(app_theme_font_id_t id)
 {
-    const lv_font_t *font = NULL;
     if (id < 0 || id >= APP_THEME_FONT_MAX)
     {
-        goto exit;
+        return NULL;
     }
-    font = s_fonts[id];
-
-exit:
-    return font;
+    return s_fonts[id];
 }

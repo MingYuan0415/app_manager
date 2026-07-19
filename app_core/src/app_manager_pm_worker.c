@@ -50,19 +50,16 @@ static esp_err_t _control_execute_suspend(void)
 {
     bool state_was_suspended = s_state == APP_MANAGER_PM_SCREEN_OFF ||
                                s_state == APP_MANAGER_PM_STANDBY;
-    esp_err_t result = ESP_OK;
     if (state_was_suspended && s_screen_ops.is_suspended())
     {
-        goto exit;
+        return ESP_OK;
     }
-    result = app_manager_control_suspend_hardware();
+    esp_err_t result = app_manager_control_suspend_hardware();
     if (result == ESP_OK && !state_was_suspended)
     {
         s_screen_off_us = esp_timer_get_time();
         app_manager_control_state_set(APP_MANAGER_PM_SCREEN_OFF);
     }
-
-exit:
     return result;
 }
 
@@ -81,7 +78,7 @@ static esp_err_t _control_execute_brightness(uint8_t brightness)
                        ESP_OK;
     if (result != ESP_OK)
     {
-        goto exit;
+        return result;
     }
 
     result = nv_storage_set_u8(NVS_KEY_BRIGHTNESS, brightness);
@@ -95,8 +92,6 @@ static esp_err_t _control_execute_brightness(uint8_t brightness)
     {
         (void)app_manager_control_apply_brightness(previous, true);
     }
-
-exit:
     return result;
 }
 
@@ -165,30 +160,25 @@ static esp_err_t _control_execute(const control_command_t *command)
 
 static bool _control_process_pending_wake(void)
 {
-    bool success = true;
     if (!atomic_exchange(&s_wake_pending, false))
     {
-        goto exit;
+        return true;
     }
     if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
     {
         app_manager_control_standby_generation_abort();
     }
-    success = app_manager_control_handle_activity() == ESP_OK;
-
-exit:
-    return success;
+    return app_manager_control_handle_activity() == ESP_OK;
 }
 
 static bool _control_process_pending_power(void)
 {
-    bool success = true;
     const uint32_t events = atomic_exchange_explicit(
                                 &s_power_pending_events, 0U,
                                 memory_order_acq_rel);
     if (events == 0U)
     {
-        goto exit;
+        return true;
     }
 
     atomic_fetch_and_explicit(&s_power_input_pending, ~events,
@@ -210,10 +200,9 @@ static bool _control_process_pending_power(void)
                                      memory_order_release);
             atomic_store_explicit(&s_power_pending_wake, true,
                                   memory_order_release);
-            success = false;
-            goto exit;
+            return false;
         }
-        goto exit;
+        return true;
     }
 
     /* While ACTIVE only CLICK has an action; DOWN/UP/LONG are edge context
@@ -223,33 +212,27 @@ static bool _control_process_pending_power(void)
         (void)app_manager_control_handle_input(APP_MANAGER_KEY_POWER,
                                                APP_MANAGER_KEY_EVENT_CLICK);
     }
-
-exit:
-    return success;
+    return true;
 }
 
 static bool _control_process_pending_touch_restore(void)
 {
-    bool attempted = false;
     if (!atomic_load_explicit(&s_touch_restore_pending, memory_order_acquire))
     {
-        goto exit;
+        return false;
     }
     if (app_manager_control_screen_is_canonical_sleep())
     {
         atomic_store_explicit(&s_touch_restore_pending, false,
                               memory_order_release);
-        goto exit;
+        return false;
     }
-    attempted = true;
     if (app_manager_control_restore_active() == ESP_OK)
     {
         atomic_store_explicit(&s_touch_restore_pending, false,
                               memory_order_release);
     }
-
-exit:
-    return attempted;
+    return true;
 }
 
 static void _control_process_pending_standby_commit(void)
@@ -257,7 +240,7 @@ static void _control_process_pending_standby_commit(void)
     if (!atomic_exchange_explicit(&s_standby_commit_pending, false,
                                   memory_order_acq_rel))
     {
-        goto exit;
+        return;
     }
     const uint32_t commit_epoch = atomic_load_explicit(
                                       &s_standby_commit_epoch,
@@ -278,22 +261,16 @@ static void _control_process_pending_standby_commit(void)
     {
         app_manager_control_state_set(APP_MANAGER_PM_STANDBY);
     }
-
-exit:
-    return;
 }
 
 static void _control_process_pending_touch(void)
 {
     if (!atomic_exchange(&s_touch_pending, false))
     {
-        goto exit;
+        return;
     }
     (void)app_manager_control_handle_touch_activity(
         atomic_load(&s_touch_pending_generation));
-
-exit:
-    return;
 }
 
 static void _control_process_pending_brightness_temp(void)
@@ -301,7 +278,7 @@ static void _control_process_pending_brightness_temp(void)
     if (!atomic_exchange_explicit(&s_brightness_temp_pending, false,
                                   memory_order_acq_rel))
     {
-        goto exit;
+        return;
     }
 
     const uint32_t generation = atomic_load_explicit(
@@ -320,29 +297,23 @@ static void _control_process_pending_brightness_temp(void)
         atomic_store_explicit(&s_brightness_temp_pending, true,
                               memory_order_release);
     }
-
-exit:
-    return;
 }
 
 static bool _control_command_needs_wake_retry(const control_command_t *command,
         esp_err_t result)
 {
-    bool wake_command = false;
     if (command->synchronous || result == ESP_OK)
     {
-        goto exit;
+        return false;
     }
 
-    wake_command = command->type == CONTROL_WAKE_SIGNAL ||
-                   command->type == CONTROL_RESUME;
+    bool wake_command = command->type == CONTROL_WAKE_SIGNAL ||
+                        command->type == CONTROL_RESUME;
     if (command->type == CONTROL_INPUT)
     {
         wake_command = s_state != APP_MANAGER_PM_ACTIVE ||
                        s_screen_ops.is_suspended();
     }
-
-exit:
     return wake_command;
 }
 
@@ -359,7 +330,7 @@ static void _control_poll_pm(void)
 {
     if (!atomic_load_explicit(&s_control_admitted, memory_order_acquire))
     {
-        goto exit;
+        return;
     }
     int64_t now = esp_timer_get_time();
     int64_t idle_ms = (now - s_last_activity_us) / 1000;
@@ -368,7 +339,7 @@ static void _control_poll_pm(void)
     {
         if (!s_screen_ops.is_suspended() && app_manager_control_suspend_hardware() != ESP_OK)
         {
-            goto exit;
+            return;
         }
         if (s_standby_timeout_ms >= 0 &&
                 (now - s_screen_off_us) / 1000 >= s_standby_timeout_ms &&
@@ -381,12 +352,12 @@ static void _control_poll_pm(void)
                 app_manager_control_state_set(APP_MANAGER_PM_SCREEN_OFF);
             }
         }
-        goto exit;
+        return;
     }
     if (s_state == APP_MANAGER_PM_STANDBY_PREPARING ||
             s_state == APP_MANAGER_PM_STANDBY || s_off_timeout_ms < 0)
     {
-        goto exit;
+        return;
     }
     if (s_state == APP_MANAGER_PM_ACTIVE && idle_ms >= s_dim_timeout_ms)
     {
@@ -405,9 +376,6 @@ static void _control_poll_pm(void)
             app_manager_control_state_set(APP_MANAGER_PM_SCREEN_OFF);
         }
     }
-
-exit:
-    return;
 }
 
 void app_manager_control_task(void *arg)
@@ -509,10 +477,9 @@ void app_manager_control_task(void *arg)
 
 esp_err_t app_manager_control_post(control_command_t command)
 {
-    esp_err_t result = ESP_ERR_INVALID_STATE;
     if (!app_manager_control_access_begin())
     {
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     command.synchronous = false;
     if (command.type == CONTROL_SET_BRIGHTNESS_TEMP)
@@ -524,9 +491,8 @@ esp_err_t app_manager_control_post(control_command_t command)
                                   memory_order_release);
         atomic_store_explicit(&s_brightness_temp_pending, true,
                               memory_order_release);
-        result = ESP_OK;
         app_manager_control_access_end();
-        goto exit;
+        return ESP_OK;
     }
     if (command.type == CONTROL_SET_BRIGHTNESS)
     {
@@ -554,11 +520,8 @@ esp_err_t app_manager_control_post(control_command_t command)
                                   memory_order_release);
         }
     }
-    result = queued ? ESP_OK : ESP_ERR_NO_MEM;
     app_manager_control_access_end();
-
-exit:
-    return result;
+    return queued ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t app_manager_control_call(control_command_t command)

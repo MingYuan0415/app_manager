@@ -103,32 +103,27 @@ static bool _builtin_has_leases(void)
 static const app_manager_app_desc_t *_builtin_find_app_in(
     const app_manager_app_desc_t *apps, size_t count, const char *app_id)
 {
-    const app_manager_app_desc_t *match = NULL;
     if (app_id == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t i = 0; i < count; i++)
     {
         if (apps[i].id != NULL && strcmp(apps[i].id, app_id) == 0)
         {
-            match = &apps[i];
-            break;
+            return &apps[i];
         }
     }
-
-exit:
-    return match;
+    return NULL;
 }
 
 static const app_manager_page_desc_t *_builtin_find_page_in(
     const app_manager_page_desc_t *pages, size_t count, const char *app_id,
     const char *page_id)
 {
-    const app_manager_page_desc_t *match = NULL;
     if (app_id == NULL || page_id == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t i = 0; i < count; i++)
     {
@@ -136,19 +131,15 @@ static const app_manager_page_desc_t *_builtin_find_page_in(
                 strcmp(pages[i].app_id, app_id) == 0 &&
                 strcmp(pages[i].page_id, page_id) == 0)
         {
-            match = &pages[i];
-            break;
+            return &pages[i];
         }
     }
-
-exit:
-    return match;
+    return NULL;
 }
 
 static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
                                         size_t app_count)
 {
-    esp_err_t result = ESP_OK;
     const uint32_t known_flags = APP_MANAGER_APP_FLAG_PINNED |
                                  APP_MANAGER_APP_FLAG_HIDDEN;
     for (size_t i = 0; i < app_count; i++)
@@ -160,21 +151,17 @@ static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
                 app->type != APP_MANAGER_APP_BUILTIN ||
                 (app->flags & ~known_flags) != 0)
         {
-            result = ESP_ERR_INVALID_ARG;
-            goto exit;
+            return ESP_ERR_INVALID_ARG;
         }
         for (size_t j = 0; j < i; j++)
         {
             if (strcmp(apps[j].id, app->id) == 0)
             {
-                result = ESP_ERR_INVALID_ARG;
-                goto exit;
+                return ESP_ERR_INVALID_ARG;
             }
         }
     }
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static esp_err_t _builtin_validate_pages(
@@ -182,7 +169,6 @@ static esp_err_t _builtin_validate_pages(
     const app_manager_page_desc_t *pages, size_t page_count,
     size_t max_page_memory_size)
 {
-    esp_err_t result = ESP_OK;
     for (size_t i = 0; i < page_count; i++)
     {
         const app_manager_page_desc_t *page = &pages[i];
@@ -191,16 +177,14 @@ static esp_err_t _builtin_validate_pages(
                 page->memory_size > max_page_memory_size ||
                 _builtin_find_app_in(apps, app_count, page->app_id) == NULL)
         {
-            result = ESP_ERR_INVALID_ARG;
-            goto exit;
+            return ESP_ERR_INVALID_ARG;
         }
         for (size_t j = 0; j < i; j++)
         {
             if (strcmp(pages[j].app_id, page->app_id) == 0 &&
                     strcmp(pages[j].page_id, page->page_id) == 0)
             {
-                result = ESP_ERR_INVALID_ARG;
-                goto exit;
+                return ESP_ERR_INVALID_ARG;
             }
         }
     }
@@ -209,32 +193,26 @@ static esp_err_t _builtin_validate_pages(
         if (_builtin_find_page_in(pages, page_count, apps[i].id,
                                   apps[i].root_page_id) == NULL)
         {
-            result = ESP_ERR_INVALID_ARG;
-            goto exit;
+            return ESP_ERR_INVALID_ARG;
         }
     }
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 static app_manager_builtin_lease_slot_t *_builtin_lease_slot(
     const app_manager_builtin_lease_t *lease)
 {
-    app_manager_builtin_lease_slot_t *slot = NULL;
     if (lease == NULL || lease->slot >= APP_MANAGER_MAX_RESIDENT_APPS ||
             lease->reserved != APP_MANAGER_BUILTIN_LEASE_TAG)
     {
-        goto exit;
+        return NULL;
     }
     app_manager_builtin_lease_slot_t *candidate = &s_lease_slots[lease->slot];
     if (candidate->in_use && candidate->generation == lease->generation)
     {
-        slot = candidate;
+        return candidate;
     }
-
-exit:
-    return slot;
+    return NULL;
 }
 
 static void _builtin_invalidate_lease(app_manager_builtin_lease_t *lease)
@@ -251,17 +229,14 @@ esp_err_t app_manager_register_builtin_descriptors(
     const app_manager_app_desc_t *apps, size_t app_count,
     const app_manager_page_desc_t *pages, size_t page_count)
 {
-    esp_err_t result = ESP_OK;
     if ((apps == NULL) != (app_count == 0) ||
             (pages == NULL) != (page_count == 0))
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     if (_builtin_has_leases())
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     s_fallback_apps = apps;
     s_fallback_app_count = app_count;
@@ -272,9 +247,7 @@ esp_err_t app_manager_register_builtin_descriptors(
     s_registry_pages = NULL;
     s_registry_page_count = 0;
     s_registry_validated = false;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
@@ -326,20 +299,16 @@ exit:
 
 esp_err_t app_manager_builtin_registry_reset(void)
 {
-    esp_err_t result = ESP_OK;
     if (_builtin_has_leases())
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     s_registry_apps = NULL;
     s_registry_app_count = 0;
     s_registry_pages = NULL;
     s_registry_page_count = 0;
     s_registry_validated = false;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 size_t app_manager_builtin_app_count(void)
@@ -397,18 +366,15 @@ const app_manager_page_desc_t *app_manager_builtin_find_page(
 esp_err_t app_manager_builtin_acquire(const char *app_id,
                                       app_manager_builtin_lease_t *out_lease)
 {
-    esp_err_t result = ESP_OK;
     if (out_lease == NULL)
     {
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     _builtin_invalidate_lease(out_lease);
     const app_manager_app_desc_t *app = app_manager_builtin_find_by_id(app_id);
     if (app == NULL)
     {
-        result = s_registry_validated ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
-        goto exit;
+        return s_registry_validated ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
     }
     size_t index = APP_MANAGER_MAX_RESIDENT_APPS;
     for (size_t i = 0; i < APP_MANAGER_MAX_RESIDENT_APPS; i++)
@@ -421,8 +387,7 @@ esp_err_t app_manager_builtin_acquire(const char *app_id,
     }
     if (index == APP_MANAGER_MAX_RESIDENT_APPS)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     app_manager_builtin_lease_slot_t *slot = &s_lease_slots[index];
     slot->generation++;
@@ -435,9 +400,7 @@ esp_err_t app_manager_builtin_acquire(const char *app_id,
     out_lease->slot = (uint16_t)index;
     out_lease->reserved = APP_MANAGER_BUILTIN_LEASE_TAG;
     out_lease->generation = slot->generation;
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 const app_manager_app_desc_t *app_manager_builtin_lease_app(
@@ -461,27 +424,22 @@ const app_manager_page_desc_t *app_manager_builtin_lease_find_page(
 
 esp_err_t app_manager_builtin_release(app_manager_builtin_lease_t *lease)
 {
-    esp_err_t result = ESP_OK;
     app_manager_builtin_lease_slot_t *slot = _builtin_lease_slot(lease);
     if (slot == NULL)
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
 #ifdef HOST_TEST
     if (s_release_failures > 0U)
     {
         s_release_failures--;
-        result = ESP_FAIL;
-        goto exit;
+        return ESP_FAIL;
     }
 #endif
     slot->app = NULL;
     slot->in_use = false;
     _builtin_invalidate_lease(lease);
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 #ifdef HOST_TEST
@@ -514,20 +472,16 @@ const app_manager_app_desc_t *app_manager_builtin_list_open(void)
 const app_manager_app_desc_t *app_manager_builtin_list_get_next(
     const app_manager_app_desc_t *previous)
 {
-    const app_manager_app_desc_t *next = NULL;
     if (!s_registry_validated || previous == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t i = 0; i < s_registry_app_count; i++)
     {
         if (&s_registry_apps[i] == previous)
         {
-            next = app_manager_builtin_enumerate(i + 1U);
-            break;
+            return app_manager_builtin_enumerate(i + 1U);
         }
     }
-
-exit:
-    return next;
+    return NULL;
 }

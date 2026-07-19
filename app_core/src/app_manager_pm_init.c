@@ -301,45 +301,38 @@ static void _control_reset_runtime_state(void)
 
 static esp_err_t _control_start_task(void)
 {
-    esp_err_t result = ESP_OK;
     if (xTaskCreate(app_manager_control_task, "app_control", APP_CONTROL_TASK_STACK,
                     NULL, APP_CONTROL_TASK_PRIORITY, &s_task) != pdPASS)
     {
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
     if (xSemaphoreTake(s_task_ready,
                        pdMS_TO_TICKS(APP_CONTROL_TASK_READY_MS)) != pdTRUE)
     {
         vTaskDelete(s_task);
         s_task = NULL;
-        result = ESP_ERR_TIMEOUT;
+        return ESP_ERR_TIMEOUT;
     }
-
-exit:
-    return result;
+    return ESP_OK;
 }
 
 esp_err_t app_manager_control_init(const app_manager_config_t *config)
 {
-    esp_err_t result = ESP_OK;
     int state = atomic_load(&s_lifecycle_state);
     if (state == CONTROL_READY)
     {
-        goto exit;
+        return ESP_OK;
     }
     int expected = CONTROL_UNINITIALIZED;
     if (!atomic_compare_exchange_strong(&s_lifecycle_state, &expected,
                                         CONTROL_INITIALIZING))
     {
-        result = ESP_ERR_INVALID_STATE;
-        goto exit;
+        return ESP_ERR_INVALID_STATE;
     }
     if (!_control_config_valid(config))
     {
         atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
-        result = ESP_ERR_INVALID_ARG;
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     s_screen_ops = config->screen_ops;
     s_input_ops = config->input_ops;
@@ -348,18 +341,17 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
     {
         _control_release_primitives();
         atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
-        result = ESP_ERR_NO_MEM;
-        goto exit;
+        return ESP_ERR_NO_MEM;
     }
 
     _control_load_settings();
     _control_reset_runtime_state();
-    result = _control_start_task();
+    esp_err_t result = _control_start_task();
     if (result != ESP_OK)
     {
         _control_release_primitives();
         atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
-        goto exit;
+        return result;
     }
     atomic_store(&s_lifecycle_state, CONTROL_READY);
     result = app_manager_control_apply_brightness(s_brightness, true);
@@ -367,8 +359,6 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
     {
         (void)app_manager_control_deinit();
     }
-
-exit:
     return result;
 }
 
@@ -432,7 +422,7 @@ static esp_err_t _control_stop_task(void)
         result = s_input_ops.unregister_handler();
         if (result != ESP_OK)
         {
-            goto exit;
+            return result;
         }
         s_input_registered = false;
     }
@@ -459,8 +449,6 @@ static esp_err_t _control_stop_task(void)
         }
     }
     xSemaphoreGive(s_call_lock);
-
-exit:
     return result;
 }
 

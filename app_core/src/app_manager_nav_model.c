@@ -13,10 +13,9 @@
 esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
                                      size_t arena_bytes)
 {
-    esp_err_t result = ESP_ERR_INVALID_ARG;
     if (model == NULL)
     {
-        goto exit;
+        return ESP_ERR_INVALID_ARG;
     }
     memset(model, 0, sizeof(*model));
     if (arena_bytes == 0)
@@ -27,8 +26,7 @@ esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
         (arena_bytes / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U;
     if (model->page_stride == 0)
     {
-        result = ESP_ERR_INVALID_SIZE;
-        goto exit;
+        return ESP_ERR_INVALID_SIZE;
     }
 #ifndef HOST_TEST
     model->page_arena = heap_caps_aligned_calloc(
@@ -46,17 +44,14 @@ esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
     model->page_arena = calloc(1,
                                model->page_stride * APP_MANAGER_MAX_PAGE_INSTANCES);
 #endif
-    result = model->page_arena != NULL ? ESP_OK : ESP_ERR_NO_MEM;
-
-exit:
-    return result;
+    return model->page_arena != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 void app_manager_nav_model_deinit(app_manager_nav_model_t *model)
 {
     if (model == NULL)
     {
-        goto exit;
+        return;
     }
 #ifndef HOST_TEST
     heap_caps_free(model->page_arena);
@@ -64,18 +59,14 @@ void app_manager_nav_model_deinit(app_manager_nav_model_t *model)
     free(model->page_arena);
 #endif
     memset(model, 0, sizeof(*model));
-
-exit:
-    return;
 }
 
 app_manager_app_node_t *app_manager_nav_model_find_app(
     app_manager_nav_model_t *model, const char *app_id)
 {
-    app_manager_app_node_t *match = NULL;
     if (model == NULL || app_id == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
     {
@@ -83,22 +74,18 @@ app_manager_app_node_t *app_manager_nav_model_find_app(
         if (app->in_use && !app->cleanup_pending && app->descriptor != NULL &&
                 strcmp(app->descriptor->id, app_id) == 0)
         {
-            match = app;
-            break;
+            return app;
         }
     }
-
-exit:
-    return match;
+    return NULL;
 }
 
 app_manager_page_node_t *app_manager_nav_model_find_page(
     app_manager_app_node_t *app, const char *page_id)
 {
-    app_manager_page_node_t *match = NULL;
     if (app == NULL || page_id == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (app_manager_page_node_t *page = app->current_page;
             page != NULL; page = page->previous)
@@ -106,22 +93,18 @@ app_manager_page_node_t *app_manager_nav_model_find_page(
         if (!page->cleanup_pending && page->descriptor != NULL &&
                 strcmp(page->descriptor->page_id, page_id) == 0)
         {
-            match = page;
-            break;
+            return page;
         }
     }
-
-exit:
-    return match;
+    return NULL;
 }
 
 app_manager_app_node_t *app_manager_nav_model_alloc_app(
     app_manager_nav_model_t *model)
 {
-    app_manager_app_node_t *app = NULL;
     if (model == NULL)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
     {
@@ -129,22 +112,18 @@ app_manager_app_node_t *app_manager_nav_model_alloc_app(
         {
             memset(&model->apps[index], 0, sizeof(model->apps[index]));
             model->apps[index].in_use = true;
-            app = &model->apps[index];
-            break;
+            return &model->apps[index];
         }
     }
-
-exit:
-    return app;
+    return NULL;
 }
 
 app_manager_page_node_t *app_manager_nav_model_alloc_page(
     app_manager_nav_model_t *model, size_t memory_size)
 {
-    app_manager_page_node_t *page = NULL;
     if (model == NULL || memory_size > model->page_stride)
     {
-        goto exit;
+        return NULL;
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
     {
@@ -161,13 +140,10 @@ app_manager_page_node_t *app_manager_nav_model_alloc_page(
                     &model->page_arena[index * model->page_stride];
                 memset(model->pages[index].private_memory, 0, memory_size);
             }
-            page = &model->pages[index];
-            break;
+            return &model->pages[index];
         }
     }
-
-exit:
-    return page;
+    return NULL;
 }
 
 void app_manager_nav_model_free_app(app_manager_app_node_t *app)
@@ -183,7 +159,7 @@ void app_manager_nav_model_free_page(app_manager_nav_model_t *model,
 {
     if (model == NULL || page == NULL)
     {
-        goto exit;
+        return;
     }
     size_t index = (size_t)(page - model->pages);
     uint32_t generation = page->generation;
@@ -194,9 +170,6 @@ void app_manager_nav_model_free_page(app_manager_nav_model_t *model,
     }
     memset(page, 0, sizeof(*page));
     page->generation = generation;
-
-exit:
-    return;
 }
 
 void app_manager_nav_model_push_app(app_manager_nav_model_t *model,
@@ -204,7 +177,7 @@ void app_manager_nav_model_push_app(app_manager_nav_model_t *model,
 {
     if (model == NULL || app == NULL)
     {
-        goto exit;
+        return;
     }
     if (model->active_app != NULL)
     {
@@ -213,9 +186,6 @@ void app_manager_nav_model_push_app(app_manager_nav_model_t *model,
     }
     app->next = NULL;
     model->active_app = app;
-
-exit:
-    return;
 }
 
 void app_manager_nav_model_remove_app(app_manager_nav_model_t *model,
@@ -223,7 +193,7 @@ void app_manager_nav_model_remove_app(app_manager_nav_model_t *model,
 {
     if (model == NULL || app == NULL)
     {
-        goto exit;
+        return;
     }
     if (app->previous != NULL)
     {
@@ -239,9 +209,6 @@ void app_manager_nav_model_remove_app(app_manager_nav_model_t *model,
     }
     app->previous = NULL;
     app->next = NULL;
-
-exit:
-    return;
 }
 
 void app_manager_nav_model_link_page(app_manager_app_node_t *app,
@@ -249,7 +216,7 @@ void app_manager_nav_model_link_page(app_manager_app_node_t *app,
 {
     if (app == NULL || page == NULL)
     {
-        goto exit;
+        return;
     }
     page->app = app;
     page->previous = app->current_page;
@@ -259,9 +226,6 @@ void app_manager_nav_model_link_page(app_manager_app_node_t *app,
     }
     page->next = NULL;
     app->current_page = page;
-
-exit:
-    return;
 }
 
 void app_manager_nav_model_unlink_page(app_manager_app_node_t *app,
@@ -269,7 +233,7 @@ void app_manager_nav_model_unlink_page(app_manager_app_node_t *app,
 {
     if (app == NULL || page == NULL)
     {
-        goto exit;
+        return;
     }
     if (page->previous != NULL)
     {
@@ -285,9 +249,6 @@ void app_manager_nav_model_unlink_page(app_manager_app_node_t *app,
     }
     page->previous = NULL;
     page->next = NULL;
-
-exit:
-    return;
 }
 
 uint32_t app_manager_nav_model_running_count(
@@ -306,7 +267,12 @@ uint32_t app_manager_nav_model_running_count(
 
 bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
 {
-    bool valid = model != NULL;
+    if (model == NULL)
+    {
+        return false;
+    }
+
+    bool valid = true;
     bool visited_apps[APP_MANAGER_MAX_RESIDENT_APPS] = {0};
     bool visited_pages[APP_MANAGER_MAX_PAGE_INSTANCES] = {0};
     size_t resident_count = 0;
@@ -317,11 +283,6 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
     size_t active_page_count = 0;
     size_t mounted_page_count = 0;
     size_t pending_mounted_page_count = 0;
-    if (!valid)
-    {
-        goto exit;
-    }
-
     for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
     {
         const app_manager_app_node_t *app = &model->apps[index];
@@ -334,7 +295,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
                 (app->current_page != NULL || app->cleanup_pending);
         if (!valid)
         {
-            goto exit;
+            return false;
         }
         active_app_count += app->active ? 1U : 0U;
     }
@@ -347,8 +308,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
         if (index < 0 || index >= APP_MANAGER_MAX_RESIDENT_APPS ||
                 !app->in_use || visited_apps[index] || app->next != newer)
         {
-            valid = false;
-            goto exit;
+            return false;
         }
         visited_apps[index] = true;
         linked_app_count++;
@@ -357,8 +317,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
     if ((model->active_app == NULL && linked_app_count != 0U) ||
             (model->active_app != NULL && model->active_app->next != NULL))
     {
-        valid = false;
-        goto exit;
+        return false;
     }
 
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
@@ -382,7 +341,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
                  (!page->active && (!page->mounted || page->started)));
         if (!valid)
         {
-            goto exit;
+            return false;
         }
         active_page_count += page->active ? 1U : 0U;
         mounted_page_count += page->mounted ? 1U : 0U;
@@ -410,8 +369,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
                     !page->in_use || visited_pages[page_index] ||
                     page->app != app || page->next != newer_page)
             {
-                valid = false;
-                goto exit;
+                return false;
             }
             visited_pages[page_index] = true;
             linked_page_count++;
@@ -419,8 +377,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
         }
         if (app->current_page != NULL && app->current_page->next != NULL)
         {
-            valid = false;
-            goto exit;
+            return false;
         }
     }
 
@@ -431,8 +388,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
                 (!app->cleanup_pending || app->active ||
                  app->previous != NULL || app->next != NULL))
         {
-            valid = false;
-            goto exit;
+            return false;
         }
     }
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
@@ -442,8 +398,7 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
                 (!page->cleanup_pending || page->active ||
                  page->previous != NULL || page->next != NULL))
         {
-            valid = false;
-            goto exit;
+            return false;
         }
     }
 
@@ -464,7 +419,5 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
         valid = active_page_count == 0U &&
                 mounted_page_count == pending_mounted_page_count;
     }
-
-exit:
     return valid;
 }
