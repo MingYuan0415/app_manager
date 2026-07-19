@@ -22,6 +22,7 @@ idf_component_register(
     PRIV_REQUIRES
         espressif__esp_lvgl_adapter
         esp_lcd
+        esp_driver_gpio
         mt_log
         nv_storage
         esp_timer

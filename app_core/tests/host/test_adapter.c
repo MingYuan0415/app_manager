@@ -47,6 +47,7 @@ typedef enum
     MOCK_ADAPTER_INIT,
     MOCK_REGISTER_DISPLAY,
     MOCK_REGISTER_TOUCH,
+    MOCK_GPIO_INTR_DISABLE,
     MOCK_UI_CALL,
     MOCK_GET_ACTIVE_SCREEN,
     MOCK_ADAPTER_PAUSE,
@@ -165,7 +166,17 @@ static esp_err_t s_draw_bitmap_result;
 static unsigned s_panel_draw_calls;
 static unsigned s_fence_calls;
 static unsigned s_display_commit_calls;
+static unsigned s_draw_callback_registrations;
+static unsigned s_initial_touch_disable_calls;
+static unsigned s_gpio_disable_calls;
 static esp_lv_adapter_draw_bitmap_callbacks_t s_draw_callbacks;
+static esp_lcd_panel_handle_t s_registered_panel;
+static esp_lv_adapter_tear_avoid_mode_t s_registered_tear_mode;
+static bool s_touch_enabled;
+static bool s_touch_gpio_irq_enabled;
+static bool s_touch_enabled_at_display_commit;
+static bool s_touch_irq_enabled_at_display_commit;
+static bool s_adapter_deinit_keeps_initialized;
 
 static struct _lv_display_t s_display_handle;
 static struct _lv_indev_t s_touch_handle;
@@ -173,9 +184,19 @@ static struct _lv_obj_t s_screen_handle;
 static struct _lv_font_t s_font_handles[APP_THEME_FONT_MAX];
 static struct mmap_assets_t s_assets_handle;
 static int s_fs_handle;
-static int s_panel;
+static esp_err_t _panel_draw_bitmap(esp_lcd_panel_t *panel,
+                                    int x_start, int y_start,
+                                    int x_end, int y_end,
+                                    const void *color_data);
+static esp_lcd_panel_t s_panel =
+{
+    .draw_bitmap = _panel_draw_bitmap,
+};
 static int s_panel_io;
-static int s_touch;
+static esp_lcd_touch_t s_touch =
+{
+    .config = {.int_gpio_num = 12},
+};
 
 #define CHECK(condition) _test_check((condition), #condition, __LINE__)
 
@@ -257,7 +278,17 @@ static void _mock_reset(void)
     s_panel_draw_calls = 0;
     s_fence_calls = 0;
     s_display_commit_calls = 0;
+    s_draw_callback_registrations = 0;
+    s_initial_touch_disable_calls = 0;
+    s_gpio_disable_calls = 0;
     memset(&s_draw_callbacks, 0, sizeof(s_draw_callbacks));
+    s_registered_panel = NULL;
+    s_registered_tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT;
+    s_touch_enabled = false;
+    s_touch_gpio_irq_enabled = false;
+    s_touch_enabled_at_display_commit = false;
+    s_touch_irq_enabled_at_display_commit = false;
+    s_adapter_deinit_keeps_initialized = false;
 }
 
 static void _record_event(adapter_event_t event)
@@ -330,6 +361,14 @@ static bsp_display_port_t s_display_port =
     .panel = &s_panel,
     .panel_io = &s_panel_io,
     .touch = &s_touch,
+    .te = {
+        .enabled = true,
+        .gpio_num = 13,
+        .bus_freq_hz = 60000000U,
+        .data_lines = 4U,
+        .bits_per_pixel = 16U,
+        .intr_type = 1,
+    },
 };
 
 static app_manager_config_t _make_config(void)
@@ -428,6 +467,20 @@ esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t panel,
                                     int x_end, int y_end,
                                     const void *color_data)
 {
+    if (panel == NULL || panel->draw_bitmap == NULL)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_ARG;
+    }
+    return panel->draw_bitmap(panel, x_start, y_start,
+                              x_end, y_end, color_data);
+}
+
+static esp_err_t _panel_draw_bitmap(esp_lcd_panel_t *panel,
+                                    int x_start, int y_start,
+                                    int x_end, int y_end,
+                                    const void *color_data)
+{
     (void)x_start;
     (void)y_start;
     (void)x_end;
@@ -439,6 +492,22 @@ esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t panel,
     }
     s_panel_draw_calls++;
     return s_draw_bitmap_result;
+}
+
+esp_err_t gpio_intr_disable(gpio_num_t gpio_num)
+{
+    if (gpio_num != s_touch.config.int_gpio_num ||
+            !s_touch_gpio_irq_enabled)
+    {
+        s_contract_error = true;
+    }
+    s_gpio_disable_calls++;
+    if (_mock_should_fail(MOCK_GPIO_INTR_DISABLE))
+    {
+        return s_failure.result;
+    }
+    s_touch_gpio_irq_enabled = false;
+    return ESP_OK;
 }
 
 esp_err_t esp_lcd_panel_io_tx_param(esp_lcd_panel_io_handle_t io,
@@ -471,7 +540,8 @@ esp_err_t esp_lv_adapter_set_draw_bitmap_callbacks(
 {
     (void)user_ctx;
     if (display != &s_display_handle || callbacks == NULL ||
-            callbacks->custom_draw_bitmap == NULL)
+            callbacks->custom_draw_bitmap == NULL ||
+            s_registered_tear_mode != ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT)
     {
         s_contract_error = true;
     }
@@ -479,6 +549,7 @@ esp_err_t esp_lv_adapter_set_draw_bitmap_callbacks(
     {
         s_draw_callbacks = *callbacks;
     }
+    s_draw_callback_registrations++;
     return ESP_OK;
 }
 
@@ -486,15 +557,57 @@ lv_display_t *esp_lv_adapter_register_display(
     const esp_lv_adapter_display_config_t *config)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (config == NULL || config->panel != s_display_port.panel ||
+    const bool te_config_valid = s_display_port.te.enabled ?
+                                 config != NULL &&
+                                 config->tear_avoid_mode ==
+                                 ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC &&
+                                 config->te_sync.gpio_num ==
+                                 s_display_port.te.gpio_num &&
+                                 config->te_sync.time_tvdl_ms ==
+                                 ESP_LV_ADAPTER_TE_TVDL_DEFAULT_MS &&
+                                 config->te_sync.time_tvdh_ms ==
+                                 ESP_LV_ADAPTER_TE_TVDH_DEFAULT_MS &&
+                                 config->te_sync.bus_freq_hz ==
+                                 s_display_port.te.bus_freq_hz &&
+                                 config->te_sync.data_lines ==
+                                 s_display_port.te.data_lines &&
+                                 config->te_sync.bits_per_pixel ==
+                                 s_display_port.te.bits_per_pixel &&
+                                 config->te_sync.intr_type ==
+                                 s_display_port.te.intr_type &&
+                                 config->te_sync.refresh_window_percent ==
+                                 ESP_LV_ADAPTER_TE_WINDOW_PERCENT_DEFAULT :
+                                 config != NULL &&
+                                 config->tear_avoid_mode ==
+                                 ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT &&
+                                 config->te_sync.gpio_num == -1;
+    const bool panel_valid = config != NULL &&
+                             (s_display_port.te.enabled ?
+                              config->panel != NULL &&
+                              config->panel != s_display_port.panel &&
+                              config->panel->draw_bitmap != NULL :
+                              config->panel == s_display_port.panel);
+    const bool profile_valid = config != NULL &&
+                               (s_display_port.te.enabled ?
+                                config->profile.buffer_height ==
+                                s_display_port.height &&
+                                !config->profile.require_double_buffer :
+                                config->profile.buffer_height == 60 &&
+                                config->profile.require_double_buffer);
+    if (config == NULL || !panel_valid ||
             config->panel_io != s_display_port.panel_io ||
             config->profile.hor_res != s_display_port.width ||
             config->profile.ver_res != s_display_port.height ||
-            config->profile.buffer_height != 60 ||
             !config->profile.use_psram ||
-            !config->profile.require_double_buffer)
+            !profile_valid ||
+            !te_config_valid)
     {
         s_contract_error = true;
+    }
+    if (config != NULL)
+    {
+        s_registered_panel = config->panel;
+        s_registered_tear_mode = config->tear_avoid_mode;
     }
     if (_mock_should_fail(MOCK_REGISTER_DISPLAY))
     {
@@ -520,6 +633,9 @@ lv_indev_t *esp_lv_adapter_register_touch(
     }
     s_touch_callbacks = config->callbacks;
     s_live.touch = 1;
+    s_touch_enabled = true;
+    s_touch_gpio_irq_enabled =
+        s_touch.config.int_gpio_num != GPIO_NUM_NC;
     return &s_touch_handle;
 }
 
@@ -586,34 +702,58 @@ void lv_refr_now(lv_display_t *display)
         s_contract_error = true;
     }
     _record_event(EVENT_REFRESH);
-    if (s_draw_callbacks.custom_draw_bitmap != NULL)
+    if (s_registered_tear_mode == ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC)
     {
-        (void)s_draw_callbacks.custom_draw_bitmap(display, &s_panel,
+        (void)esp_lcd_panel_draw_bitmap(s_registered_panel,
+                                        0, 0, 16, 8, NULL);
+    }
+    else if (s_draw_callbacks.custom_draw_bitmap != NULL)
+    {
+        (void)s_draw_callbacks.custom_draw_bitmap(display, s_registered_panel,
                 0, 0, 16, 8, NULL, NULL);
     }
 }
 
 void lv_indev_enable(lv_indev_t *indev, bool enable)
 {
-    if (!s_ui_worker || indev != &s_touch_handle)
+    const bool initial_disable = !s_ui_worker &&
+                                 s_lvgl_lock_depth == 1 &&
+                                 s_live.gesture == 0 && !enable;
+    if ((!s_ui_worker && !initial_disable) || indev != &s_touch_handle)
     {
         s_contract_error = true;
     }
-    if ((enable && s_gesture_suspended) ||
-            (!enable && !s_gesture_suspended))
+    if (!initial_disable &&
+            ((enable && s_gesture_suspended) ||
+             (!enable && !s_gesture_suspended)))
     {
         s_order_error = true;
     }
-    _record_event(enable ? EVENT_TOUCH_ENABLE : EVENT_TOUCH_DISABLE);
+    s_touch_enabled = enable;
+    if (initial_disable)
+    {
+        s_initial_touch_disable_calls++;
+    }
+    else
+    {
+        _record_event(enable ? EVENT_TOUCH_ENABLE : EVENT_TOUCH_DISABLE);
+    }
 }
 
 void lv_indev_reset(lv_indev_t *indev, lv_obj_t *obj)
 {
-    if (!s_ui_worker || indev != &s_touch_handle || obj != NULL)
+    const bool initial_reset = !s_ui_worker &&
+                               s_lvgl_lock_depth == 1 &&
+                               s_live.gesture == 0;
+    if ((!s_ui_worker && !initial_reset) ||
+            indev != &s_touch_handle || obj != NULL)
     {
         s_contract_error = true;
     }
-    _record_event(EVENT_TOUCH_RESET);
+    if (!initial_reset)
+    {
+        _record_event(EVENT_TOUCH_RESET);
+    }
 }
 
 bool esp_lv_adapter_touch_notify_interrupt(lv_indev_t *touch)
@@ -1017,6 +1157,9 @@ esp_err_t app_manager_control_commit_display(void)
         return ESP_ERR_INVALID_STATE;
     }
     ++s_display_commit_calls;
+    s_touch_enabled_at_display_commit = s_touch_enabled;
+    s_touch_irq_enabled_at_display_commit = s_touch_gpio_irq_enabled;
+    s_touch_gpio_irq_enabled = true;
     _record_event(EVENT_DISPLAY_COMMIT);
     return ESP_OK;
 }
@@ -1251,11 +1394,17 @@ esp_err_t esp_lv_adapter_deinit(void)
         s_order_error = true;
     }
     const bool fail = _mock_should_fail(MOCK_ADAPTER_DEINIT);
+    if (fail && s_adapter_deinit_keeps_initialized)
+    {
+        return s_failure.result;
+    }
     s_live.started = 0;
     s_live.fs = 0;
     s_live.touch = 0;
     s_live.display = 0;
     s_live.adapter = 0;
+    s_touch_enabled = false;
+    s_touch_gpio_irq_enabled = false;
     s_adapter_paused = false;
     s_paused_fence_complete = false;
     return fail ? s_failure.result : ESP_OK;
@@ -1315,6 +1464,8 @@ static void _check_clean_state(void)
     CHECK(!s_lifecycle_admission_closed);
     CHECK(!s_gesture_accepting);
     CHECK(s_gesture_suspended);
+    CHECK(!s_touch_enabled);
+    CHECK(!s_touch_gpio_irq_enabled);
 }
 
 static void _init_then_deinit_successfully(void)
@@ -1386,6 +1537,75 @@ static void _test_resource_drive_letter_is_forwarded(void)
     _check_clean_state();
 }
 
+static void _test_disabled_te_uses_default_mode(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    s_display_port.te.enabled = false;
+
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(s_registered_panel == &s_panel);
+    CHECK(s_registered_tear_mode ==
+          ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT);
+    CHECK(s_draw_callback_registrations == 1U);
+    s_draw_bitmap_result = ESP_FAIL;
+    CHECK(app_manager_display_commit_initial() == ESP_FAIL);
+    CHECK(s_panel_draw_calls == 1U);
+    CHECK(s_display_commit_calls == 0U);
+    s_draw_bitmap_result = ESP_OK;
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+    s_display_port.te.enabled = true;
+}
+
+static void _test_te_profile_uses_proxy_and_disables_startup_touch(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(s_registered_panel != NULL);
+    CHECK(s_registered_panel != &s_panel);
+    CHECK(s_registered_tear_mode ==
+          ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC);
+    CHECK(s_draw_callback_registrations == 0U);
+    CHECK(s_initial_touch_disable_calls == 1U);
+    CHECK(s_gpio_disable_calls == 1U);
+    CHECK(!s_touch_enabled);
+    CHECK(!s_touch_gpio_irq_enabled);
+
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_te_register_failure_clears_proxy_after_deinit(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    _mock_inject(MOCK_REGISTER_DISPLAY, 1);
+
+    CHECK(app_manager_init(&config) == ESP_FAIL);
+    esp_lcd_panel_handle_t proxy = s_registered_panel;
+    CHECK(proxy != NULL && proxy != &s_panel);
+    CHECK(esp_lcd_panel_draw_bitmap(proxy, 0, 0, 16, 8, NULL) ==
+          ESP_ERR_INVALID_STATE);
+    _check_clean_state();
+}
+
+static void _test_polling_touch_skips_gpio_disable(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    s_touch.config.int_gpio_num = GPIO_NUM_NC;
+
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(s_gpio_disable_calls == 0U);
+    CHECK(!s_touch_enabled);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+    s_touch.config.int_gpio_num = 12;
+}
+
 typedef struct init_failure_case
 {
     mock_op_t op;
@@ -1401,6 +1621,8 @@ static void _test_each_init_failure_rolls_back(void)
         {MOCK_ADAPTER_INIT, 1, "adapter"},
         {MOCK_REGISTER_DISPLAY, 1, "display"},
         {MOCK_REGISTER_TOUCH, 1, "touch"},
+        {MOCK_GPIO_INTR_DISABLE, 1, "touch GPIO"},
+        {MOCK_ADAPTER_LOCK, 1, "initial touch lock"},
         {MOCK_MMAP_NEW, 1, "mmap"},
         {MOCK_MMAP_FILE_COUNT, 1, "empty assets"},
         {MOCK_FS_MOUNT, 1, "filesystem"},
@@ -1439,6 +1661,7 @@ static void _test_cleanup_failure_is_retryable(mock_op_t cleanup_op)
     app_manager_config_t config = _make_config();
     CHECK(app_manager_init(&config) == ESP_OK);
     CHECK(app_manager_is_initialized());
+    const unsigned cleanup_calls = s_calls[cleanup_op];
 
     _mock_inject(cleanup_op, 1);
     CHECK(app_manager_deinit() == ESP_FAIL);
@@ -1450,7 +1673,7 @@ static void _test_cleanup_failure_is_retryable(mock_op_t cleanup_op)
 
     _mock_clear_injection();
     CHECK(app_manager_deinit() == ESP_OK);
-    CHECK(s_calls[cleanup_op] == 2);
+    CHECK(s_calls[cleanup_op] == cleanup_calls + 2U);
     _check_clean_state();
 
     _mock_reset();
@@ -1602,6 +1825,10 @@ static void _test_initial_display_commit_fences_before_panel_enable(void)
     CHECK(app_manager_display_commit_initial() == ESP_OK);
     CHECK(s_fence_calls == 1U);
     CHECK(s_display_commit_calls == 1U);
+    CHECK(!s_touch_enabled_at_display_commit);
+    CHECK(!s_touch_irq_enabled_at_display_commit);
+    CHECK(!s_touch_enabled);
+    CHECK(s_touch_gpio_irq_enabled);
     CHECK(s_events[s_event_count - 1U] == EVENT_DISPLAY_COMMIT);
     CHECK(s_events[s_event_count - 2U] == EVENT_TOUCH_DISABLE);
     s_event_count = 0;
@@ -1610,6 +1837,8 @@ static void _test_initial_display_commit_fences_before_panel_enable(void)
     CHECK(s_events[0] == EVENT_TOUCH_RESET);
     CHECK(s_events[1] == EVENT_TOUCH_NOTIFY);
     CHECK(s_events[2] == EVENT_TOUCH_ENABLE);
+    CHECK(s_touch_enabled);
+    CHECK(s_touch_gpio_irq_enabled);
     s_event_count = 0;
     CHECK(app_manager_display_disable_startup_touch() == ESP_OK);
     CHECK(s_event_count == 2U);
@@ -1618,6 +1847,70 @@ static void _test_initial_display_commit_fences_before_panel_enable(void)
     CHECK(!s_contract_error);
 
     CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_initial_te_draw_no_mem_blocks_commit(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+
+    s_draw_bitmap_result = ESP_ERR_NO_MEM;
+    _mock_inject(MOCK_IO_FENCE, 1);
+    CHECK(app_manager_display_commit_initial() == ESP_ERR_NO_MEM);
+    CHECK(s_panel_draw_calls == 1U);
+    CHECK(s_fence_calls == 1U);
+    CHECK(s_display_commit_calls == 0U);
+    CHECK(!s_touch_enabled);
+    CHECK(!s_touch_gpio_irq_enabled);
+    CHECK(app_manager_display_enable_startup_touch() ==
+          ESP_ERR_INVALID_STATE);
+
+    _mock_clear_injection();
+    s_draw_bitmap_result = ESP_OK;
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_refresh_without_touch_requires_explicit_enable(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_display_sleep_prepare() == ESP_OK);
+    CHECK(app_manager_display_sleep_recover() == ESP_OK);
+
+    CHECK(app_manager_display_refresh_without_touch() == ESP_OK);
+    CHECK(!s_touch_enabled);
+    CHECK(app_manager_display_enable_touch() == ESP_OK);
+    CHECK(s_touch_enabled);
+
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
+static void _test_panel_proxy_delegate_lifetime(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    CHECK(app_manager_init(&config) == ESP_OK);
+    esp_lcd_panel_handle_t proxy = s_registered_panel;
+    CHECK(proxy != NULL && proxy != &s_panel);
+
+    s_adapter_deinit_keeps_initialized = true;
+    _mock_inject(MOCK_ADAPTER_DEINIT, 1);
+    CHECK(app_manager_deinit() == ESP_FAIL);
+    CHECK(s_live.adapter == 1);
+    const unsigned draw_calls = s_panel_draw_calls;
+    CHECK(esp_lcd_panel_draw_bitmap(proxy, 0, 0, 16, 8, NULL) == ESP_OK);
+    CHECK(s_panel_draw_calls == draw_calls + 1U);
+
+    s_adapter_deinit_keeps_initialized = false;
+    _mock_clear_injection();
+    CHECK(app_manager_deinit() == ESP_OK);
+    CHECK(esp_lcd_panel_draw_bitmap(proxy, 0, 0, 16, 8, NULL) ==
+          ESP_ERR_INVALID_STATE);
     _check_clean_state();
 }
 
@@ -1910,6 +2203,10 @@ int main(void)
 {
     _test_invalid_config_and_ready_state();
     _test_resource_drive_letter_is_forwarded();
+    _test_disabled_te_uses_default_mode();
+    _test_te_profile_uses_proxy_and_disables_startup_touch();
+    _test_te_register_failure_clears_proxy_after_deinit();
+    _test_polling_touch_skips_gpio_disable();
     _test_each_init_failure_rolls_back();
     _test_all_cleanup_failures_are_retryable();
     _test_adapter_deinit_error_reconciles_ownership();
@@ -1917,6 +2214,9 @@ int main(void)
     _test_ui_worker_cannot_deinitialize();
     _test_display_port_is_copied();
     _test_initial_display_commit_fences_before_panel_enable();
+    _test_initial_te_draw_no_mem_blocks_commit();
+    _test_refresh_without_touch_requires_explicit_enable();
+    _test_panel_proxy_delegate_lifetime();
     _test_display_sleep_recovery_transaction();
     _test_display_refresh_fence_failure();
     _test_display_refresh_draw_failure();

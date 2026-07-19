@@ -267,7 +267,7 @@ static esp_err_t _control_resume_hardware(void)
         return result;
     }
 
-    result = app_manager_display_refresh_and_enable_touch();
+    result = app_manager_display_refresh_without_touch();
     if (result != ESP_OK)
     {
         _control_recover_failed_resume();
@@ -286,6 +286,13 @@ static esp_err_t _control_resume_hardware(void)
             app_manager_display_is_sleeping())
     {
         result = result != ESP_OK ? result : ESP_FAIL;
+        _control_recover_failed_resume();
+        return result;
+    }
+
+    result = app_manager_display_enable_touch();
+    if (result != ESP_OK)
+    {
         _control_recover_failed_resume();
         return result;
     }

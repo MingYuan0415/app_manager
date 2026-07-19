@@ -12,7 +12,7 @@ esp_err_t app_manager_display_sleep_prepare(void);
 
 /**
  * @brief Resume LVGL after the existing panel hardware has been rebuilt.
- * @note The foreground page remains paused until refresh_and_enable_touch().
+ * @note The foreground page remains paused until a refresh operation resumes it.
  * @return ESP_OK when recovered, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_sleep_recover(void);
@@ -22,6 +22,18 @@ esp_err_t app_manager_display_sleep_recover(void);
  * @return ESP_OK when refreshed, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_display_refresh_and_enable_touch(void);
+
+/**
+ * @brief Resume the foreground page and redraw while touch remains disabled.
+ * @return ESP_OK when refreshed, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_display_refresh_without_touch(void);
+
+/**
+ * @brief Enable LVGL touch after the physical display commit succeeds.
+ * @return ESP_OK when enabled, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_display_enable_touch(void);
 
 /**
  * @brief Enable LVGL touch after the initial visible frame has committed.

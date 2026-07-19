@@ -6,11 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_touch.h"
 #include "esp_mmap_assets.h"
 #include "lvgl.h"
 
-typedef void *esp_lcd_touch_handle_t;
-typedef void *esp_lcd_panel_handle_t;
 typedef void *esp_lcd_panel_io_handle_t;
 
 /** @brief Adapter initialization options. */
@@ -43,16 +43,27 @@ typedef enum
 typedef enum
 {
     ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT = 0,
+    ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC = 1,
 } esp_lv_adapter_tear_avoid_mode_t;
 
 /** @brief Tearing-effect synchronization options. */
 typedef struct esp_lv_adapter_te_sync_config
 {
     int gpio_num;
+    uint32_t time_tvdl_ms;
+    uint32_t time_tvdh_ms;
+    uint32_t bus_freq_hz;
+    uint8_t data_lines;
+    uint8_t bits_per_pixel;
+    int intr_type;
+    uint8_t refresh_window_percent;
 } esp_lv_adapter_te_sync_config_t;
 
 #define ESP_LV_ADAPTER_TE_SYNC_DISABLED() \
     ((esp_lv_adapter_te_sync_config_t){ .gpio_num = -1 })
+#define ESP_LV_ADAPTER_TE_TVDL_DEFAULT_MS 13
+#define ESP_LV_ADAPTER_TE_TVDH_DEFAULT_MS 1
+#define ESP_LV_ADAPTER_TE_WINDOW_PERCENT_DEFAULT 66
 
 /** @brief Display resolution and buffer profile. */
 typedef struct esp_lv_adapter_display_profile
@@ -71,7 +82,7 @@ typedef struct esp_lv_adapter_display_profile
 /** @brief Display registration handles and profile. */
 typedef struct esp_lv_adapter_display_config
 {
-    void *panel;
+    esp_lcd_panel_handle_t panel;
     void *panel_io;
     esp_lv_adapter_display_profile_t profile;
     esp_lv_adapter_tear_avoid_mode_t tear_avoid_mode;

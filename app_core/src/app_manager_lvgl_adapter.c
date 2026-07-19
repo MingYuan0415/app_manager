@@ -13,9 +13,12 @@
 #include "app_manager_navigation.h"
 #include "app_manager_presentation.h"
 #include "app_theme.h"
+#include "driver/gpio.h"
 #include "esp_attr.h"
+#include "esp_lcd_panel_interface.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lcd_touch.h"
 #include "esp_lv_adapter.h"
 #include <stdatomic.h>
 
@@ -65,15 +68,10 @@ static atomic_bool s_initial_display_committed;
  * submission error in the UI worker so a failed refresh is not made visible. */
 static atomic_bool s_refresh_capture_active;
 static atomic_int s_refresh_capture_error;
+static esp_lcd_panel_handle_t s_panel_proxy_delegate;
 
-static esp_err_t _app_adapter_draw_bitmap(lv_display_t *display,
-        esp_lcd_panel_handle_t panel,
-        int x_start, int y_start, int x_end, int y_end,
-        const void *color_map, void *user_ctx)
+static void _app_adapter_capture_refresh_error(esp_err_t result)
 {
-    (void)user_ctx;
-    esp_err_t result = esp_lcd_panel_draw_bitmap(panel, x_start, y_start,
-                       x_end, y_end, color_map);
     if (result != ESP_OK &&
             atomic_load_explicit(&s_refresh_capture_active,
                                  memory_order_acquire))
@@ -83,8 +81,45 @@ static esp_err_t _app_adapter_draw_bitmap(lv_display_t *display,
             &s_refresh_capture_error, &expected, (int)result,
             memory_order_acq_rel, memory_order_acquire);
     }
-    (void)display;
+}
+
+static esp_err_t _app_adapter_submit_bitmap(esp_lcd_panel_handle_t panel,
+        int x_start, int y_start, int x_end, int y_end,
+        const void *color_map)
+{
+    esp_err_t result = esp_lcd_panel_draw_bitmap(panel, x_start, y_start,
+                       x_end, y_end, color_map);
+    _app_adapter_capture_refresh_error(result);
     return result;
+}
+
+static esp_err_t _app_adapter_panel_proxy_draw_bitmap(esp_lcd_panel_t *panel,
+        int x_start, int y_start, int x_end, int y_end,
+        const void *color_map)
+{
+    if (panel == NULL || s_panel_proxy_delegate == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return _app_adapter_submit_bitmap(s_panel_proxy_delegate,
+                                      x_start, y_start, x_end, y_end,
+                                      color_map);
+}
+
+static esp_lcd_panel_t s_panel_proxy =
+{
+    .draw_bitmap = _app_adapter_panel_proxy_draw_bitmap,
+};
+
+static esp_err_t _app_adapter_draw_bitmap(lv_display_t *display,
+        esp_lcd_panel_handle_t panel,
+        int x_start, int y_start, int x_end, int y_end,
+        const void *color_map, void *user_ctx)
+{
+    (void)user_ctx;
+    (void)display;
+    return _app_adapter_submit_bitmap(panel, x_start, y_start,
+                                      x_end, y_end, color_map);
 }
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE
@@ -324,6 +359,28 @@ esp_err_t app_manager_display_refresh_and_enable_touch(void)
         return ESP_ERR_INVALID_STATE;
     }
     return app_manager_ui_call(_app_adapter_refresh_on_ui, NULL, UINT32_MAX);
+}
+
+esp_err_t app_manager_display_refresh_without_touch(void)
+{
+    if (atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const bool enable_touch = false;
+    return app_manager_ui_call(_app_adapter_refresh_on_ui,
+                               (void *)&enable_touch, UINT32_MAX);
+}
+
+esp_err_t app_manager_display_enable_touch(void)
+{
+    if (s_display == NULL || s_touch == NULL ||
+            atomic_load_explicit(&s_display_sleeping, memory_order_acquire))
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return app_manager_ui_call(_app_adapter_enable_touch_on_ui,
+                               NULL, UINT32_MAX);
 }
 
 esp_err_t app_manager_display_commit_initial(void)
@@ -661,6 +718,7 @@ static esp_err_t _app_adapter_cleanup_fonts(void)
 static void _app_adapter_clear_lvgl_runtime(void)
 {
     s_adapter_ready = false;
+    s_panel_proxy_delegate = NULL;
     s_display_port = NULL;
     s_display_port_storage = (bsp_display_port_t)
     {
@@ -783,6 +841,7 @@ static void _app_adapter_reset_runtime(void)
     };
     s_display = NULL;
     s_touch = NULL;
+    s_panel_proxy_delegate = NULL;
     atomic_store_explicit(&s_display_sleeping, false, memory_order_release);
     atomic_store_explicit(&s_display_fenced, false, memory_order_release);
     atomic_store_explicit(&s_initial_display_committed, false,
@@ -799,9 +858,10 @@ static void _app_adapter_reset_runtime(void)
 static esp_err_t _app_adapter_register_display(
     const bsp_display_port_t *display_port)
 {
-    const esp_lv_adapter_display_config_t display_config =
+    const bool te_enabled = display_port->te.enabled;
+    esp_lv_adapter_display_config_t display_config =
     {
-        .panel = display_port->panel,
+        .panel = te_enabled ? &s_panel_proxy : display_port->panel,
         .panel_io = display_port->panel_io,
         .profile = {
             .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
@@ -817,10 +877,35 @@ static esp_err_t _app_adapter_register_display(
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT,
         .te_sync = ESP_LV_ADAPTER_TE_SYNC_DISABLED(),
     };
+    if (te_enabled)
+    {
+        s_panel_proxy_delegate = display_port->panel;
+        display_config.profile.buffer_height = display_port->height;
+        display_config.profile.require_double_buffer = false;
+        display_config.tear_avoid_mode =
+            ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC;
+        display_config.te_sync = (esp_lv_adapter_te_sync_config_t)
+        {
+            .gpio_num = display_port->te.gpio_num,
+            .time_tvdl_ms = ESP_LV_ADAPTER_TE_TVDL_DEFAULT_MS,
+            .time_tvdh_ms = ESP_LV_ADAPTER_TE_TVDH_DEFAULT_MS,
+            .bus_freq_hz = display_port->te.bus_freq_hz,
+            .data_lines = display_port->te.data_lines,
+            .bits_per_pixel = display_port->te.bits_per_pixel,
+            .intr_type = display_port->te.intr_type,
+            .refresh_window_percent =
+                ESP_LV_ADAPTER_TE_WINDOW_PERCENT_DEFAULT,
+        };
+    }
     s_display = esp_lv_adapter_register_display(&display_config);
     if (s_display == NULL)
     {
         return ESP_FAIL;
+    }
+
+    if (te_enabled)
+    {
+        return ESP_OK;
     }
 
     const esp_lv_adapter_draw_bitmap_callbacks_t draw_callbacks =
@@ -838,7 +923,29 @@ static esp_err_t _app_adapter_register_touch(
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(s_display, display_port->touch);
     touch_config.callbacks.on_interrupt = _app_adapter_touch_interrupt;
     s_touch = esp_lv_adapter_register_touch(&touch_config);
-    return s_touch != NULL ? ESP_OK : ESP_FAIL;
+    if (s_touch == NULL)
+    {
+        return ESP_FAIL;
+    }
+
+    esp_err_t result = ESP_OK;
+    if (display_port->touch->config.int_gpio_num != GPIO_NUM_NC)
+    {
+        result = gpio_intr_disable(display_port->touch->config.int_gpio_num);
+        if (result != ESP_OK)
+        {
+            return result;
+        }
+    }
+    result = esp_lv_adapter_lock(-1);
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+    lv_indev_enable(s_touch, false);
+    lv_indev_reset(s_touch, NULL);
+    esp_lv_adapter_unlock();
+    return ESP_OK;
 }
 
 static esp_err_t _app_adapter_initialize_lvgl(

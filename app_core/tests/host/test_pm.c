@@ -23,6 +23,7 @@ atomic_llong g_host_time_us;
 static atomic_int s_adapter_pause_count;
 static atomic_int s_adapter_resume_count;
 static atomic_int s_display_refresh_count;
+static atomic_int s_touch_enable_count;
 static atomic_int s_screen_suspend_count;
 static atomic_int s_screen_resume_count;
 static atomic_int s_screen_commit_count;
@@ -40,6 +41,7 @@ static atomic_bool s_fail_lifecycle_pause;
 static atomic_bool s_fail_adapter_pause;
 static atomic_bool s_fail_adapter_recover;
 static atomic_bool s_fail_display_refresh;
+static atomic_bool s_fail_touch_enable;
 static atomic_bool s_fail_screen_suspend;
 static atomic_bool s_fail_screen_resume;
 static atomic_bool s_fail_screen_commit;
@@ -59,6 +61,7 @@ static atomic_int s_screen_suspend_step;
 static atomic_int s_screen_resume_step;
 static atomic_int s_screen_commit_step;
 static atomic_int s_brightness_restore_step;
+static atomic_int s_touch_enable_step;
 static bool s_nv_brightness_valid;
 static uint8_t s_nv_brightness;
 static bool s_nv_off_timeout_valid;
@@ -77,6 +80,7 @@ static atomic_bool s_block_input_unregister;
 static atomic_bool s_input_unregister_entered;
 static _Thread_local bool s_in_ui_call;
 static bool s_startup_touch_enabled;
+static atomic_bool s_logical_touch_enabled;
 
 static void _trace_transition(atomic_int *step)
 {
@@ -123,6 +127,7 @@ esp_err_t app_manager_display_sleep_prepare(void)
     {
         return ESP_FAIL;
     }
+    atomic_store(&s_logical_touch_enabled, false);
     _trace_transition(&s_adapter_pause_step);
     atomic_fetch_add(&s_adapter_pause_count, 1);
     if (atomic_load(&s_fail_adapter_pause))
@@ -153,18 +158,47 @@ esp_err_t app_manager_display_refresh_and_enable_touch(void)
 {
     _trace_transition(&s_display_refresh_step);
     atomic_fetch_add(&s_display_refresh_count, 1);
+    if (atomic_load(&s_fail_display_refresh))
+    {
+        return ESP_FAIL;
+    }
+    atomic_store(&s_logical_touch_enabled, true);
+    return ESP_OK;
+}
+
+esp_err_t app_manager_display_refresh_without_touch(void)
+{
+    _trace_transition(&s_display_refresh_step);
+    atomic_fetch_add(&s_display_refresh_count, 1);
+    assert(!atomic_load(&s_logical_touch_enabled));
     return atomic_load(&s_fail_display_refresh) ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t app_manager_display_enable_touch(void)
+{
+    _trace_transition(&s_touch_enable_step);
+    atomic_fetch_add(&s_touch_enable_count, 1);
+    assert(!atomic_load(&s_adapter_sleeping));
+    assert(!atomic_load(&s_screen_suspended));
+    if (atomic_load(&s_fail_touch_enable))
+    {
+        return ESP_FAIL;
+    }
+    atomic_store(&s_logical_touch_enabled, true);
+    return ESP_OK;
 }
 
 esp_err_t app_manager_display_enable_startup_touch(void)
 {
     s_startup_touch_enabled = true;
+    atomic_store(&s_logical_touch_enabled, true);
     return ESP_OK;
 }
 
 esp_err_t app_manager_display_disable_startup_touch(void)
 {
     s_startup_touch_enabled = false;
+    atomic_store(&s_logical_touch_enabled, false);
     return ESP_OK;
 }
 
@@ -329,6 +363,7 @@ static esp_err_t _screen_resume_prepare(void)
 static esp_err_t _screen_resume_commit(void)
 {
     assert(s_in_ui_call);
+    assert(!atomic_load(&s_logical_touch_enabled));
     _trace_transition(&s_screen_commit_step);
     atomic_fetch_add(&s_screen_commit_count, 1);
     if (atomic_load(&s_fail_screen_commit) ||
@@ -475,6 +510,7 @@ static void _reset_transition_trace(void)
     atomic_store(&s_screen_resume_step, 0);
     atomic_store(&s_screen_commit_step, 0);
     atomic_store(&s_brightness_restore_step, 0);
+    atomic_store(&s_touch_enable_step, 0);
     atomic_store(&s_trace_transition, true);
 }
 
@@ -489,12 +525,13 @@ static void _assert_suspend_transition_order(void)
 static void _assert_resume_transition_order(void)
 {
     atomic_store(&s_trace_transition, false);
-    assert(atomic_load(&s_transition_sequence) == 5);
+    assert(atomic_load(&s_transition_sequence) == 6);
     assert(atomic_load(&s_screen_resume_step) == 1);
     assert(atomic_load(&s_adapter_resume_step) == 2);
     assert(atomic_load(&s_display_refresh_step) == 3);
     assert(atomic_load(&s_brightness_restore_step) == 4);
     assert(atomic_load(&s_screen_commit_step) == 5);
+    assert(atomic_load(&s_touch_enable_step) == 6);
 }
 
 static void _reset_mocks(void)
@@ -503,6 +540,7 @@ static void _reset_mocks(void)
     atomic_store(&s_adapter_pause_count, 0);
     atomic_store(&s_adapter_resume_count, 0);
     atomic_store(&s_display_refresh_count, 0);
+    atomic_store(&s_touch_enable_count, 0);
     atomic_store(&s_screen_suspend_count, 0);
     atomic_store(&s_screen_resume_count, 0);
     atomic_store(&s_screen_commit_count, 0);
@@ -517,6 +555,7 @@ static void _reset_mocks(void)
     atomic_store(&s_fail_adapter_pause, false);
     atomic_store(&s_fail_adapter_recover, false);
     atomic_store(&s_fail_display_refresh, false);
+    atomic_store(&s_fail_touch_enable, false);
     atomic_store(&s_fail_screen_suspend, false);
     atomic_store(&s_fail_screen_resume, false);
     atomic_store(&s_fail_screen_commit, false);
@@ -543,6 +582,7 @@ static void _reset_mocks(void)
     atomic_store(&s_block_input_unregister, false);
     atomic_store(&s_input_unregister_entered, false);
     s_startup_touch_enabled = false;
+    atomic_store(&s_logical_touch_enabled, false);
 }
 
 int main(void)
@@ -1026,6 +1066,22 @@ int main(void)
     assert(atomic_load(&s_adapter_sleeping));
     atomic_store(&s_fail_display_refresh, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
+
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    int failed_touch_enable = atomic_load(&s_touch_enable_count) + 1;
+    int touch_enable_rollback_suspend =
+        atomic_load(&s_screen_suspend_count) + 1;
+    atomic_store(&s_fail_touch_enable, true);
+    assert(app_manager_pm_notify_system_wake() == ESP_OK);
+    _wait_for_count(&s_touch_enable_count, failed_touch_enable);
+    _wait_for_count(&s_screen_suspend_count, touch_enable_rollback_suspend);
+    assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
+    assert(atomic_load(&s_adapter_sleeping));
+    assert(!atomic_load(&s_logical_touch_enabled));
+    atomic_store(&s_fail_touch_enable, false);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    assert(atomic_load(&s_logical_touch_enabled));
 
     /* A failed lifecycle PAUSE after RESUME must not pause the adapter or rail. */
     assert(app_manager_pm_request_screen_off() == ESP_OK);
