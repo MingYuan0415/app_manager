@@ -23,6 +23,13 @@ void app_manager_control_state_set(app_manager_pm_state_t state)
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     s_state = state;
     xSemaphoreGive(s_state_lock);
+    if (state == APP_MANAGER_PM_SCREEN_OFF ||
+            state == APP_MANAGER_PM_STANDBY_PREPARING ||
+            state == APP_MANAGER_PM_STANDBY)
+    {
+        atomic_store_explicit(&s_input_wake_required, true,
+                              memory_order_release);
+    }
 }
 
 static void _control_disable_touch_activity(void)
@@ -50,7 +57,7 @@ static void _control_schedule_touch_restore(void)
                           memory_order_release);
 }
 
-bool app_manager_control_power_event_is_wake(void)
+bool app_manager_control_screen_needs_wake(void)
 {
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     const app_manager_pm_state_t state = s_state;
@@ -59,6 +66,18 @@ bool app_manager_control_power_event_is_wake(void)
            state == APP_MANAGER_PM_STANDBY_PREPARING ||
            state == APP_MANAGER_PM_STANDBY || s_screen_ops.is_suspended() ||
            app_manager_display_is_sleeping();
+}
+
+bool app_manager_control_input_needs_wake(void)
+{
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    const app_manager_pm_state_t state = s_state;
+    xSemaphoreGive(s_state_lock);
+    return state == APP_MANAGER_PM_SCREEN_OFF ||
+           state == APP_MANAGER_PM_STANDBY_PREPARING ||
+           state == APP_MANAGER_PM_STANDBY ||
+           atomic_load_explicit(&s_input_wake_required,
+                                memory_order_acquire);
 }
 
 bool app_manager_control_standby_generation_begin(void)
@@ -71,7 +90,9 @@ bool app_manager_control_standby_generation_begin(void)
             !atomic_load_explicit(&s_power_pending_wake,
                                   memory_order_acquire) &&
             !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
-            !atomic_load_explicit(&s_home_pending, memory_order_acquire) &&
+            !_app_manager_control_home_wake_is_pending() &&
+            atomic_load_explicit(&s_home_pending_generation,
+                                 memory_order_acquire) == 0U &&
             atomic_load_explicit(&s_power_input_pending,
                                  memory_order_acquire) == 0U;
     if (!ready)
@@ -106,7 +127,9 @@ bool app_manager_control_standby_generation_begin(void)
             !atomic_load_explicit(&s_power_pending_wake,
                                   memory_order_acquire) &&
             !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
-            !atomic_load_explicit(&s_home_pending, memory_order_acquire) &&
+            !_app_manager_control_home_wake_is_pending() &&
+            atomic_load_explicit(&s_home_pending_generation,
+                                 memory_order_acquire) == 0U &&
             atomic_load_explicit(&s_power_input_pending,
                                  memory_order_acquire) == 0U;
     if (!ready)
@@ -128,7 +151,9 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
     if (atomic_load_explicit(&s_power_pending_events, memory_order_acquire) != 0U ||
             atomic_load_explicit(&s_power_pending_wake, memory_order_acquire) ||
             atomic_load_explicit(&s_wake_pending, memory_order_acquire) ||
-            atomic_load_explicit(&s_home_pending, memory_order_acquire) ||
+            _app_manager_control_home_wake_is_pending() ||
+            atomic_load_explicit(&s_home_pending_generation,
+                                 memory_order_acquire) != 0U ||
             atomic_load_explicit(&s_power_input_pending, memory_order_acquire) != 0U)
     {
         return false;
@@ -176,7 +201,9 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
            !atomic_load_explicit(&s_power_pending_wake,
                                  memory_order_acquire) &&
            !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
-           !atomic_load_explicit(&s_home_pending, memory_order_acquire) &&
+           !_app_manager_control_home_wake_is_pending() &&
+           atomic_load_explicit(&s_home_pending_generation,
+                                memory_order_acquire) == 0U &&
            atomic_load_explicit(&s_power_input_pending,
                                 memory_order_acquire) == 0U &&
            atomic_load_explicit(&s_standby_generation,
@@ -205,6 +232,8 @@ void app_manager_control_standby_generation_abort(void)
 
 static esp_err_t _control_rollback_resume_to_sleep(void)
 {
+    atomic_store_explicit(&s_input_wake_required, true,
+                          memory_order_release);
     esp_err_t result = app_manager_display_sleep_prepare();
     if (result != ESP_OK)
     {
@@ -240,6 +269,8 @@ static void _control_recover_failed_resume(void)
 
 static esp_err_t _control_resume_hardware(void)
 {
+    atomic_store_explicit(&s_input_wake_required, true,
+                          memory_order_release);
     _control_disable_touch_activity();
 
     /* A previous rollback may have left a hidden panel with a live worker. */
@@ -298,11 +329,15 @@ static esp_err_t _control_resume_hardware(void)
     }
 
     _control_enable_touch_activity();
+    atomic_store_explicit(&s_input_wake_required, false,
+                          memory_order_release);
     return result;
 }
 
 esp_err_t app_manager_control_suspend_hardware(void)
 {
+    atomic_store_explicit(&s_input_wake_required, true,
+                          memory_order_release);
     _control_disable_touch_activity();
 
     esp_err_t result = app_manager_display_sleep_prepare();
@@ -444,6 +479,8 @@ esp_err_t app_manager_control_restore_active(void)
     }
     if (result == ESP_OK)
     {
+        atomic_store_explicit(&s_input_wake_required, false,
+                              memory_order_release);
         s_last_activity_us = esp_timer_get_time();
         app_manager_control_state_set(APP_MANAGER_PM_ACTIVE);
     }
@@ -478,13 +515,16 @@ static void _control_run_home_complete(esp_err_t result, void *context)
     {
         LOG_W("HOME navigation failed: %d", (int)result);
     }
-    atomic_store(&s_home_pending, false);
+    atomic_store(&s_home_pending_generation, 0U);
     atomic_store(&s_home_inflight, false);
 }
 
 void app_manager_control_process_pending_home(void)
 {
-    if (!atomic_load(&s_home_pending) ||
+    const uint32_t generation = atomic_load_explicit(
+                                    &s_home_pending_generation,
+                                    memory_order_acquire);
+    if (generation == 0U ||
             !atomic_load_explicit(&s_control_admitted,
                                   memory_order_acquire) ||
             atomic_load(&s_lifecycle_state) != CONTROL_READY)
@@ -492,10 +532,26 @@ void app_manager_control_process_pending_home(void)
         return;
     }
 
+    if (_app_manager_control_home_sequence_is_wake(generation) ||
+            s_home_worker_wake_generation == generation)
+    {
+        if (s_home_worker_wake_generation == generation)
+        {
+            s_home_worker_wake_generation = 0U;
+        }
+        uint32_t expected_generation = generation;
+        (void)atomic_compare_exchange_strong_explicit(
+            &s_home_pending_generation, &expected_generation, 0U,
+            memory_order_acq_rel, memory_order_acquire);
+        _app_manager_control_home_sequence_close(generation);
+        return;
+    }
+
     if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
     {
         app_manager_control_standby_generation_abort();
     }
+    _app_manager_control_home_sequence_close(generation);
 
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s_home_inflight, &expected, true))
@@ -570,13 +626,73 @@ static esp_err_t _control_handle_power_input(
     return result;
 }
 
+static esp_err_t _control_handle_home_input(
+    app_manager_key_event_t event, uint32_t generation, bool screen_off,
+    bool *handled)
+{
+    /* The atomic state protects producers and queue fallback; this worker-only
+     * generation preserves the decision after a newer sequence is admitted. */
+    esp_err_t result = ESP_OK;
+    *handled = false;
+    if (event == APP_MANAGER_KEY_EVENT_DOWN)
+    {
+        s_home_worker_wake_generation = screen_off ? generation : 0U;
+        if (screen_off)
+        {
+            if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
+            {
+                app_manager_control_standby_generation_abort();
+            }
+            result = app_manager_control_handle_activity();
+            *handled = true;
+        }
+    }
+    else if (event == APP_MANAGER_KEY_EVENT_LONG_PRESS ||
+             event == APP_MANAGER_KEY_EVENT_DOUBLE_CLICK)
+    {
+        if (s_home_worker_wake_generation == generation)
+        {
+            s_home_worker_wake_generation = 0U;
+        }
+        _app_manager_control_home_sequence_close(generation);
+    }
+    else if (event == APP_MANAGER_KEY_EVENT_CLICK &&
+             (_app_manager_control_home_sequence_is_wake(generation) ||
+              s_home_worker_wake_generation == generation ||
+              screen_off))
+    {
+        if (s_home_worker_wake_generation == generation)
+        {
+            s_home_worker_wake_generation = 0U;
+        }
+        uint32_t expected_generation = generation;
+        (void)atomic_compare_exchange_strong_explicit(
+            &s_home_pending_generation, &expected_generation, 0U,
+            memory_order_acq_rel, memory_order_acquire);
+        _app_manager_control_home_sequence_close(generation);
+        if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
+        {
+            app_manager_control_standby_generation_abort();
+        }
+        result = app_manager_control_handle_activity();
+        *handled = true;
+    }
+    else if (event == APP_MANAGER_KEY_EVENT_CLICK)
+    {
+        if (s_home_worker_wake_generation == generation)
+        {
+            s_home_worker_wake_generation = 0U;
+        }
+        _app_manager_control_home_sequence_close(generation);
+    }
+    return result;
+}
+
 esp_err_t app_manager_control_handle_input(app_manager_key_t key,
-        app_manager_key_event_t event)
+        app_manager_key_event_t event, uint32_t generation)
 {
     esp_err_t result = ESP_OK;
-    const bool screen_off = s_state == APP_MANAGER_PM_SCREEN_OFF ||
-                            s_state == APP_MANAGER_PM_STANDBY_PREPARING ||
-                            s_state == APP_MANAGER_PM_STANDBY;
+    const bool screen_off = app_manager_control_screen_needs_wake();
     if (key == APP_MANAGER_KEY_POWER)
     {
         bool handled = false;
@@ -586,10 +702,15 @@ esp_err_t app_manager_control_handle_input(app_manager_key_t key,
             return result;
         }
     }
-    if (key == APP_MANAGER_KEY_HOME && event == APP_MANAGER_KEY_EVENT_CLICK &&
-            s_state == APP_MANAGER_PM_STANDBY_PREPARING)
+    else if (key == APP_MANAGER_KEY_HOME)
     {
-        app_manager_control_standby_generation_abort();
+        bool handled = false;
+        result = _control_handle_home_input(event, generation,
+                                            screen_off, &handled);
+        if (handled)
+        {
+            return result;
+        }
     }
     result = app_manager_control_handle_activity();
     if (result != ESP_OK)

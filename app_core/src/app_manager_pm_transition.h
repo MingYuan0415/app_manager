@@ -16,10 +16,16 @@ void app_manager_control_state_set(app_manager_pm_state_t state);
 bool app_manager_control_screen_is_canonical_sleep(void);
 
 /**
- * @brief Report whether a pending power event must be treated as wake intent.
+ * @brief Report whether an input event must be treated as wake intent.
  * @return true when display recovery takes priority; false while active.
  */
-bool app_manager_control_power_event_is_wake(void);
+bool app_manager_control_screen_needs_wake(void);
+
+/**
+ * @brief Report a thread-safe input snapshot of display wake necessity.
+ * @return true when a producer must classify input as wake intent.
+ */
+bool app_manager_control_input_needs_wake(void);
 
 /**
  * @brief Establish a standby epoch without losing concurrent wake intent.
@@ -69,9 +75,10 @@ void app_manager_control_process_pending_home(void);
  * @brief Apply one typed key event to the PM and navigation state machines.
  * @param key identifies the logical key.
  * @param event identifies the key transition.
+ * @param generation identifies a HOME sequence or is zero for other keys.
  * @return ESP_OK on success, otherwise a transition or dispatch error.
  */
 esp_err_t app_manager_control_handle_input(app_manager_key_t key,
-        app_manager_key_event_t event);
+        app_manager_key_event_t event, uint32_t generation);
 
 #endif /* __APP_MANAGER_PM_TRANSITION_H__ */

@@ -8,6 +8,7 @@
 #include "app_manager_control.h"
 #include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
+#include "app_manager_pm_transition.h"
 
 #include <stdatomic.h>
 
@@ -34,6 +35,78 @@ esp_err_t app_manager_startup_commit(void)
     return result;
 }
 
+static esp_err_t _app_manager_input_inject_home(
+    app_manager_key_event_t event, control_command_t command)
+{
+    if (!app_manager_control_access_begin())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t generation = atomic_load_explicit(&s_home_sequence_state,
+                          memory_order_acquire) &
+                          HOME_SEQUENCE_GENERATION_MASK;
+    const bool input_needs_wake = app_manager_control_input_needs_wake();
+    if (event == APP_MANAGER_KEY_EVENT_DOWN ||
+            event == APP_MANAGER_KEY_EVENT_CLICK)
+    {
+        atomic_store_explicit(&s_standby_abort_pending, true,
+                              memory_order_release);
+    }
+    if (input_needs_wake &&
+            (event == APP_MANAGER_KEY_EVENT_DOWN ||
+             event == APP_MANAGER_KEY_EVENT_CLICK))
+    {
+        atomic_store_explicit(&s_wake_pending, true,
+                              memory_order_release);
+    }
+    if (event == APP_MANAGER_KEY_EVENT_DOWN)
+    {
+        generation = _app_manager_control_home_sequence_begin();
+        if (input_needs_wake)
+        {
+            _app_manager_control_home_sequence_mark_wake(generation);
+        }
+    }
+    command.data.input.generation = generation;
+
+    if (event == APP_MANAGER_KEY_EVENT_LONG_PRESS ||
+            event == APP_MANAGER_KEY_EVENT_DOUBLE_CLICK)
+    {
+        _app_manager_control_home_sequence_close(generation);
+    }
+    else if (event == APP_MANAGER_KEY_EVENT_CLICK)
+    {
+        if (input_needs_wake)
+        {
+            _app_manager_control_home_sequence_mark_wake(generation);
+        }
+        const bool wake_only =
+            _app_manager_control_home_sequence_is_wake(generation);
+        atomic_store_explicit(&s_wake_pending, true, memory_order_release);
+        if (wake_only)
+        {
+            _app_manager_control_home_sequence_close(generation);
+            command.type = CONTROL_WAKE_SIGNAL;
+            (void)xQueueSend(s_queue, &command, 0);
+            app_manager_control_access_end();
+            return ESP_OK;
+        }
+
+        uint32_t no_generation = 0U;
+        if (atomic_compare_exchange_strong_explicit(
+                    &s_home_pending_generation, &no_generation, generation,
+                    memory_order_acq_rel, memory_order_acquire))
+        {
+            (void)xQueueSend(s_queue, &command, 0);
+        }
+        app_manager_control_access_end();
+        return ESP_OK;
+    }
+    app_manager_control_access_end();
+    return app_manager_control_post(command);
+}
+
 esp_err_t app_manager_input_inject(app_manager_key_t key,
                                    app_manager_key_event_t event)
 {
@@ -49,19 +122,9 @@ esp_err_t app_manager_input_inject(app_manager_key_t key,
         .data.input = {.key = key, .event = event},
     };
 
-    if (key == APP_MANAGER_KEY_HOME && event == APP_MANAGER_KEY_EVENT_CLICK)
+    if (key == APP_MANAGER_KEY_HOME)
     {
-        if (!app_manager_control_access_begin())
-        {
-            return ESP_ERR_INVALID_STATE;
-        }
-        atomic_store(&s_wake_pending, true);
-        if (!atomic_exchange(&s_home_pending, true))
-        {
-            (void)xQueueSend(s_queue, &command, 0);
-        }
-        app_manager_control_access_end();
-        return ESP_OK;
+        return _app_manager_input_inject_home(event, command);
     }
     return app_manager_control_post(command);
 }
@@ -245,7 +308,10 @@ bool app_manager_pm_standby_prepare_guard(void)
                  !atomic_load_explicit(&s_power_pending_wake,
                                        memory_order_acquire) &&
                  !atomic_load_explicit(&s_wake_pending,
-                                       memory_order_acquire);
+                                       memory_order_acquire) &&
+                 !_app_manager_control_home_wake_is_pending() &&
+                 atomic_load_explicit(&s_home_pending_generation,
+                                      memory_order_acquire) == 0U;
     app_manager_control_access_end();
     return clear;
 }

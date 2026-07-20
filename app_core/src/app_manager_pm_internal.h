@@ -37,6 +37,10 @@
 
 /** @brief Encode one physical power-key event for the fallback bit mask. */
 #define POWER_PENDING_EVENT(event)       (1U << (unsigned)(event))
+/** @brief Wake-classification bit stored with the current HOME generation. */
+#define HOME_SEQUENCE_WAKE_MASK          (UINT32_C(1) << 31)
+/** @brief Generation bits stored in the HOME sequence state. */
+#define HOME_SEQUENCE_GENERATION_MASK    (HOME_SEQUENCE_WAKE_MASK - 1U)
 
 /** @brief NVS key storing the normal display brightness. */
 #define NVS_KEY_BRIGHTNESS               "brightness"
@@ -82,6 +86,7 @@ typedef struct control_command
         {
             app_manager_key_t key;         /**< Logical input key. */
             app_manager_key_event_t event; /**< Logical input event. */
+            uint32_t generation;           /**< HOME input sequence or zero. */
         } input;
         uint32_t touch_generation; /**< Touch-admission generation. */
         uint8_t brightness;        /**< Requested display brightness. */
@@ -124,7 +129,9 @@ extern atomic_uint s_touch_pending_generation;
 extern atomic_uint s_touch_generation;
 extern atomic_bool s_touch_activity_enabled;
 extern atomic_bool s_touch_restore_pending;
-extern atomic_bool s_home_pending;
+extern atomic_bool s_input_wake_required;
+extern atomic_uint s_home_sequence_state;
+extern atomic_uint s_home_pending_generation;
 extern atomic_bool s_home_inflight;
 extern atomic_uint s_brightness_temp_value;
 extern atomic_uint s_brightness_temp_generation;
@@ -132,6 +139,97 @@ extern atomic_bool s_brightness_temp_pending;
 extern atomic_bool s_control_admitted;
 extern bool s_power_wake_click_pending;
 extern bool s_power_long_press_seen;
+/** @brief Worker-owned wake classification for the queued HOME sequence. */
+extern uint32_t s_home_worker_wake_generation;
+
+/** @brief Start a new HOME input sequence and return its nonzero generation. */
+static inline uint32_t _app_manager_control_home_sequence_begin(void)
+{
+    uint32_t state = atomic_load_explicit(&s_home_sequence_state,
+                                          memory_order_acquire);
+    for (;;)
+    {
+        uint32_t generation = (state & HOME_SEQUENCE_GENERATION_MASK) + 1U;
+        if (generation > HOME_SEQUENCE_GENERATION_MASK)
+        {
+            generation = 1U;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                    &s_home_sequence_state, &state, generation,
+                    memory_order_acq_rel, memory_order_acquire))
+        {
+            return generation;
+        }
+    }
+}
+
+/** @brief Close a HOME sequence unless a newer sequence already replaced it. */
+static inline void _app_manager_control_home_sequence_close(
+    uint32_t generation)
+{
+    if (generation == 0U)
+    {
+        return;
+    }
+    uint32_t state = atomic_load_explicit(&s_home_sequence_state,
+                                          memory_order_acquire);
+    while ((state & HOME_SEQUENCE_GENERATION_MASK) == generation)
+    {
+        uint32_t next_generation = generation + 1U;
+        if (next_generation > HOME_SEQUENCE_GENERATION_MASK)
+        {
+            next_generation = 1U;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                    &s_home_sequence_state, &state, next_generation,
+                    memory_order_acq_rel, memory_order_acquire))
+        {
+            return;
+        }
+    }
+}
+
+/** @brief Mark a still-current HOME sequence as display wake input. */
+static inline void _app_manager_control_home_sequence_mark_wake(
+    uint32_t generation)
+{
+    if (generation == 0U)
+    {
+        return;
+    }
+    uint32_t state = atomic_load_explicit(&s_home_sequence_state,
+                                          memory_order_acquire);
+    while ((state & HOME_SEQUENCE_GENERATION_MASK) == generation &&
+            (state & HOME_SEQUENCE_WAKE_MASK) == 0U)
+    {
+        const uint32_t wake_state = state | HOME_SEQUENCE_WAKE_MASK;
+        if (atomic_compare_exchange_weak_explicit(
+                    &s_home_sequence_state, &state, wake_state,
+                    memory_order_acq_rel, memory_order_acquire))
+        {
+            return;
+        }
+    }
+}
+
+/** @brief Report whether one HOME generation was classified as wake input. */
+static inline bool _app_manager_control_home_sequence_is_wake(
+    uint32_t generation)
+{
+    const uint32_t state = atomic_load_explicit(&s_home_sequence_state,
+                           memory_order_acquire);
+    return generation != 0U &&
+           (state & HOME_SEQUENCE_GENERATION_MASK) == generation &&
+           (state & HOME_SEQUENCE_WAKE_MASK) != 0U;
+}
+
+/** @brief Report whether the current HOME sequence still represents wake. */
+static inline bool _app_manager_control_home_wake_is_pending(void)
+{
+    return (atomic_load_explicit(&s_home_sequence_state,
+                                 memory_order_acquire) &
+            HOME_SEQUENCE_WAKE_MASK) != 0U;
+}
 
 /** @brief Invalidate a temporary brightness preview before a final command. */
 static inline void _app_manager_control_clear_brightness_preview(void)

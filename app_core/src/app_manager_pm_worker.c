@@ -25,17 +25,22 @@ static void _control_discard_shutdown_pending(void)
                           memory_order_release);
     atomic_store_explicit(&s_standby_commit_pending, false,
                           memory_order_release);
-    atomic_store_explicit(&s_home_pending, false, memory_order_release);
+    atomic_store_explicit(&s_home_sequence_state, 1U,
+                          memory_order_release);
+    atomic_store_explicit(&s_home_pending_generation, 0U,
+                          memory_order_release);
     atomic_store_explicit(&s_brightness_temp_pending, false,
                           memory_order_release);
     s_power_wake_click_pending = false;
     s_power_long_press_seen = false;
+    s_home_worker_wake_generation = 0U;
 }
 
 static esp_err_t _control_execute_input(const control_command_t *command)
 {
     esp_err_t result = app_manager_control_handle_input(command->data.input.key,
-                       command->data.input.event);
+                       command->data.input.event,
+                       command->data.input.generation);
     if (command->data.input.key == APP_MANAGER_KEY_POWER)
     {
         atomic_fetch_and_explicit(
@@ -186,7 +191,7 @@ static bool _control_process_pending_power(void)
 
     const bool wake = atomic_exchange_explicit(&s_power_pending_wake, false,
                       memory_order_acq_rel);
-    if (wake || app_manager_control_power_event_is_wake())
+    if (wake || app_manager_control_screen_needs_wake())
     {
         if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
         {
@@ -210,7 +215,7 @@ static bool _control_process_pending_power(void)
     if ((events & POWER_PENDING_EVENT(APP_MANAGER_KEY_EVENT_CLICK)) != 0U)
     {
         (void)app_manager_control_handle_input(APP_MANAGER_KEY_POWER,
-                                               APP_MANAGER_KEY_EVENT_CLICK);
+                                               APP_MANAGER_KEY_EVENT_CLICK, 0U);
     }
     return true;
 }
@@ -519,7 +524,7 @@ esp_err_t app_manager_control_post(control_command_t command)
         atomic_fetch_or_explicit(&s_power_pending_events,
                                  POWER_PENDING_EVENT(command.data.input.event),
                                  memory_order_release);
-        if (app_manager_control_power_event_is_wake())
+        if (app_manager_control_input_needs_wake())
         {
             atomic_store_explicit(&s_power_pending_wake, true,
                                   memory_order_release);

@@ -496,6 +496,16 @@ static void _wait_for_count(atomic_int *counter, int expected)
     assert(atomic_load(counter) >= expected);
 }
 
+static void _wait_for_flag_clear(atomic_bool *flag)
+{
+    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(flag); i++)
+    {
+        usleep(1000);
+    }
+    assert(!atomic_load(flag));
+}
+
 static void _wait_for_suspended(bool expected)
 {
     for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
@@ -767,6 +777,42 @@ int main(void)
     assert(atomic_load(&s_ui_post_count) == 1);
     assert(atomic_load(&s_run_home_count) == 1);
 
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    const int home_before_wake = atomic_load(&s_run_home_count);
+    const int home_posts_before_wake = atomic_load(&s_ui_post_count);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
+    _wait_for_flag_clear(&s_wake_pending);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
+    assert(atomic_load(&s_run_home_count) == home_before_wake);
+    assert(atomic_load(&s_ui_post_count) == home_posts_before_wake);
+
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    _wait_for_flag_clear(&s_wake_pending);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
+    assert(atomic_load(&s_run_home_count) == home_before_wake);
+    assert(atomic_load(&s_ui_post_count) == home_posts_before_wake);
+
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_LONG_PRESS,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+
     atomic_store(&s_fail_ui_post, true);
     atomic_store(&s_block_failed_ui_post, true);
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
@@ -809,7 +855,7 @@ int main(void)
         usleep(1000);
     }
     assert(atomic_load(&s_failed_ui_post_entered));
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < APP_CONTROL_QUEUE_DEPTH; i++)
     {
         assert(app_manager_screen_set_brightness((uint8_t)(32 + i)) ==
                ESP_OK);
@@ -823,6 +869,24 @@ int main(void)
     assert(atomic_load(&s_screen_suspended));
     assert(app_manager_pm_notify_user_activity() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
+
+    atomic_store(&s_block_screen_suspend, true);
+    const int blocked_home_suspend = atomic_load(&s_screen_suspend_count) + 1;
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    _wait_for_count(&s_screen_suspend_count, blocked_home_suspend);
+    assert(atomic_load(&s_input_wake_required));
+    for (int i = 0; i < APP_CONTROL_QUEUE_DEPTH; i++)
+    {
+        assert(app_manager_screen_resume() == ESP_OK);
+    }
+    const int home_before_full_queue_wake = atomic_load(&s_run_home_count);
+    assert(app_manager_input_inject(APP_MANAGER_KEY_HOME,
+                                    APP_MANAGER_KEY_EVENT_CLICK) == ESP_OK);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
+    atomic_store(&s_block_screen_suspend, false);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    _wait_for_flag_clear(&s_wake_pending);
+    assert(atomic_load(&s_run_home_count) == home_before_full_queue_wake);
 
     int suspend_before_power = atomic_load(&s_screen_suspend_count);
     s_input_callback(APP_MANAGER_KEY_POWER, APP_MANAGER_KEY_EVENT_CLICK,
@@ -952,6 +1016,24 @@ int main(void)
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     _set_time_ms(38005);
+    wait_for_state(APP_MANAGER_PM_STANDBY_PREPARING);
+    const int home_before_standby_wake = atomic_load(&s_run_home_count);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    assert(!app_manager_pm_standby_commit_guard(
+               aborted_system_generation + 1U, NULL));
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
+    _wait_for_flag_clear(&s_wake_pending);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
+    assert(atomic_load(&s_run_home_count) == home_before_standby_wake);
+
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    _set_time_ms(39006);
     wait_for_state(APP_MANAGER_PM_STANDBY_PREPARING);
     app_manager_pm_standby_commit_callback(first_system_generation, NULL);
     usleep(150000);
@@ -1200,7 +1282,7 @@ int main(void)
            stale_touch_generation);
 
     assert(app_manager_pm_set_timeout_ms(45000) == ESP_OK);
-    _set_time_ms(53006);
+    _set_time_ms(54007);
     wait_for_state(APP_MANAGER_PM_DIM);
     int resume_before_dim_touch = atomic_load(&s_screen_resume_count);
     app_manager_control_touch_snapshot_pause_for_test(false);
@@ -1235,6 +1317,36 @@ int main(void)
     atomic_store(&s_fail_display_refresh, false);
     _wait_for_count(&s_display_refresh_count, successful_touch_restore);
     assert(app_manager_control_notify_touch_activity_from_isr());
+
+    /* A delayed DOWN from a completed wake sequence must not suppress the
+     * next independent ACTIVE sequence. */
+    atomic_store(&s_block_screen_suspend, true);
+    const int delayed_home_suspend = atomic_load(&s_screen_suspend_count) + 1;
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    _wait_for_count(&s_screen_suspend_count, delayed_home_suspend);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
+    atomic_store(&s_block_screen_suspend, false);
+    wait_for_state(APP_MANAGER_PM_ACTIVE);
+    _wait_for_flag_clear(&s_wake_pending);
+    assert(!_app_manager_control_home_wake_is_pending());
+
+    const int home_before_active_sequence = atomic_load(&s_run_home_count);
+    const int home_posts_before_active_sequence = atomic_load(&s_ui_post_count);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
+    _wait_for_count(&s_run_home_count, home_before_active_sequence + 1);
+    assert(atomic_load(&s_ui_post_count) ==
+           home_posts_before_active_sequence + 1);
 
     assert(app_manager_input_inject((app_manager_key_t)99,
                                     APP_MANAGER_KEY_EVENT_CLICK) == ESP_ERR_INVALID_ARG);
@@ -1277,7 +1389,8 @@ int main(void)
     atomic_store(&s_touch_pending, true);
     atomic_store(&s_brightness_temp_pending, true);
     atomic_store(&s_standby_commit_pending, true);
-    atomic_store(&s_home_pending, true);
+    atomic_store(&s_home_sequence_state, HOME_SEQUENCE_WAKE_MASK | 9U);
+    atomic_store(&s_home_pending_generation, 9U);
     const control_command_t queued_resume = {.type = CONTROL_RESUME};
     assert(xQueueSend(s_queue, &queued_resume, 0) == pdTRUE);
     usleep(250000);
@@ -1297,7 +1410,8 @@ int main(void)
     assert(!atomic_load(&s_touch_pending));
     assert(!atomic_load(&s_brightness_temp_pending));
     assert(!atomic_load(&s_standby_commit_pending));
-    assert(!atomic_load(&s_home_pending));
+    assert(atomic_load(&s_home_sequence_state) == 1U);
+    assert(atomic_load(&s_home_pending_generation) == 0U);
 
     atomic_store(&s_fail_screen_resume, false);
     assert(app_manager_control_deinit() == ESP_OK);

@@ -535,6 +535,8 @@ ACTIVE -> DIM -> SCREEN_OFF -> STANDBY_PREPARING -> STANDBY
 POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。standby guard 在
 系统提交点重新检查本地 epoch、显示规范休眠状态和 wake intent；commit callback 只做
 无阻塞原子记录，最终状态仍由 app-control 核对后发布。
+显示已休眠时，由物理按键开始的唤醒序列只恢复显示，其尾随 `UP/CLICK` 不再重放为
+导航或关屏操作；下一次在活动显示上开始的独立按键序列恢复正常语义。
 
 亮度寄存器和 LVGL color flush 共用 panel IO。所有正常亮度、临时亮度、DIM 和恢复亮度
 都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动

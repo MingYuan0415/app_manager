@@ -64,7 +64,9 @@ atomic_uint s_touch_pending_generation;
 atomic_uint s_touch_generation;
 atomic_bool s_touch_activity_enabled;
 atomic_bool s_touch_restore_pending;
-atomic_bool s_home_pending;
+atomic_bool s_input_wake_required;
+atomic_uint s_home_sequence_state;
+atomic_uint s_home_pending_generation;
 atomic_bool s_home_inflight;
 atomic_uint s_brightness_temp_value;
 atomic_uint s_brightness_temp_generation;
@@ -74,6 +76,7 @@ static bool s_input_registered;
 static atomic_flag s_deinit_busy = ATOMIC_FLAG_INIT;
 bool s_power_wake_click_pending;
 bool s_power_long_press_seen;
+uint32_t s_home_worker_wake_generation;
 
 typedef struct control_brightness_request
 {
@@ -288,7 +291,9 @@ static void _control_reset_runtime_state(void)
     atomic_store(&s_touch_generation, 1U);
     atomic_store(&s_touch_activity_enabled, true);
     atomic_store(&s_touch_restore_pending, false);
-    atomic_store(&s_home_pending, false);
+    atomic_store(&s_input_wake_required, false);
+    atomic_store(&s_home_sequence_state, 1U);
+    atomic_store(&s_home_pending_generation, 0U);
     atomic_store(&s_home_inflight, false);
     atomic_store(&s_brightness_temp_value, UINT8_MAX);
     atomic_store(&s_brightness_temp_generation, 0U);
@@ -297,6 +302,7 @@ static void _control_reset_runtime_state(void)
     s_input_registered = false;
     s_power_wake_click_pending = false;
     s_power_long_press_seen = false;
+    s_home_worker_wake_generation = 0U;
 }
 
 static esp_err_t _control_start_task(void)
