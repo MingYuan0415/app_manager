@@ -1,4 +1,5 @@
 #include "app_manager_presentation.h"
+#include "app_manager_display_diagnostics_priv.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -11,6 +12,7 @@ typedef struct app_manager_presentation_state
     bool deinitializing;
     bool running;
     bool load_event_seen;
+    bool diagnostics_started;
     uint32_t generation;
     uint32_t scheduled_generation;
     lv_display_t *display;
@@ -70,6 +72,11 @@ static void _presentation_remove_loaded_event(void)
 
 static void _presentation_reset_transition(void)
 {
+    if (s_presentation.diagnostics_started)
+    {
+        s_presentation.diagnostics_started = false;
+        app_manager_display_diagnostics_transition_cancelled();
+    }
     _presentation_remove_loaded_event();
     if (s_presentation.completion_timer != NULL)
     {
@@ -98,6 +105,11 @@ static void _presentation_complete(uint32_t generation)
 
     completion = s_presentation.completion;
     context = s_presentation.completion_context;
+    if (s_presentation.diagnostics_started)
+    {
+        s_presentation.diagnostics_started = false;
+        app_manager_display_diagnostics_transition_completed();
+    }
     _presentation_reset_transition();
     if (completion != NULL)
     {
@@ -487,6 +499,8 @@ esp_err_t app_manager_presentation_start(
     lv_screen_load_anim(to_screen, animation, duration_ms, 0U, false);
     if (lv_anim_get(to_screen, NULL) != NULL)
     {
+        s_presentation.diagnostics_started = true;
+        app_manager_display_diagnostics_transition_started(effect);
         return ESP_OK;
     }
 

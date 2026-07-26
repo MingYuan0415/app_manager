@@ -7,6 +7,7 @@
 #include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
+#include "app_manager_display_diagnostics_priv.h"
 #include "app_manager_display.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
@@ -20,10 +21,22 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
 #include "esp_lv_adapter.h"
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    #include "esp_timer.h"
+#endif
 #include <stdatomic.h>
 
 #define APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES (32U * 1024U)
-#define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT     20U
+#define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT \
+    ((uint32_t)CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT)
+
+#if CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED
+    #define APP_ADAPTER_COLOR_FORMAT      LV_COLOR_FORMAT_RGB565_SWAPPED
+    #define APP_ADAPTER_COLOR_FORMAT_NAME "RGB565_SWAPPED"
+#else
+    #define APP_ADAPTER_COLOR_FORMAT      LV_COLOR_FORMAT_RGB565
+    #define APP_ADAPTER_COLOR_FORMAT_NAME "RGB565"
+#endif
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE && !CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     #error "App manager FreeType integration requires the LVGL adapter filesystem"
@@ -84,12 +97,29 @@ static void _app_adapter_capture_refresh_error(esp_err_t result)
     }
 }
 
-static esp_err_t _app_adapter_submit_bitmap(esp_lcd_panel_handle_t panel,
+static esp_err_t _app_adapter_submit_bitmap(lv_display_t *display,
+        esp_lcd_panel_handle_t panel,
         int x_start, int y_start, int x_end, int y_end,
         const void *color_map)
 {
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    const int64_t start_us = esp_timer_get_time();
+    const uint32_t pixel_count = (uint32_t)(x_end - x_start) *
+                                 (uint32_t)(y_end - y_start);
+#else
+    (void)display;
+#endif
     esp_err_t result = esp_lcd_panel_draw_bitmap(panel, x_start, y_start,
                        x_end, y_end, color_map);
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    if (display != NULL)
+    {
+        app_manager_display_diagnostics_record_submit(display,
+                lv_display_flush_is_last(display),
+                pixel_count,
+                (uint32_t)(esp_timer_get_time() - start_us), result);
+    }
+#endif
     _app_adapter_capture_refresh_error(result);
     return result;
 }
@@ -102,7 +132,7 @@ static esp_err_t _app_adapter_panel_proxy_draw_bitmap(esp_lcd_panel_t *panel,
     {
         return ESP_ERR_INVALID_STATE;
     }
-    return _app_adapter_submit_bitmap(s_panel_proxy_delegate,
+    return _app_adapter_submit_bitmap(s_display, s_panel_proxy_delegate,
                                       x_start, y_start, x_end, y_end,
                                       color_map);
 }
@@ -118,8 +148,7 @@ static esp_err_t _app_adapter_draw_bitmap(lv_display_t *display,
         const void *color_map, void *user_ctx)
 {
     (void)user_ctx;
-    (void)display;
-    return _app_adapter_submit_bitmap(panel, x_start, y_start,
+    return _app_adapter_submit_bitmap(display, panel, x_start, y_start,
                                       x_end, y_end, color_map);
 }
 
@@ -788,7 +817,11 @@ static esp_err_t _app_adapter_cleanup(void)
         goto exit;
     }
 
-    result = _app_adapter_cleanup_services();
+    result = app_manager_display_diagnostics_stop();
+    if (result == ESP_OK)
+    {
+        result = _app_adapter_cleanup_services();
+    }
     if (result == ESP_OK && s_adapter_ready &&
             esp_lv_adapter_is_initialized())
     {
@@ -821,7 +854,9 @@ static bool _app_adapter_config_valid(const app_manager_config_t *config)
     return config != NULL && config->disp_port != NULL &&
            config->disp_port->panel != NULL &&
            config->disp_port->panel_io != NULL &&
-           config->disp_port->touch != NULL;
+           config->disp_port->touch != NULL &&
+           (config->disp_port->te.enabled ||
+            APP_ADAPTER_PARTIAL_BUFFER_HEIGHT <= config->disp_port->height);
 }
 
 static void _app_adapter_reset_runtime(void)
@@ -903,6 +938,8 @@ static esp_err_t _app_adapter_register_display(
     {
         return ESP_FAIL;
     }
+    lv_display_set_color_format(s_display, APP_ADAPTER_COLOR_FORMAT);
+    LOG_I("display color format: %s", APP_ADAPTER_COLOR_FORMAT_NAME);
 
     if (te_enabled)
     {
@@ -1063,7 +1100,12 @@ static esp_err_t _app_adapter_start_services(
     }
     s_gesture_ready = true;
     s_control_ready = true;
-    return app_manager_control_init(config);
+    result = app_manager_control_init(config);
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+    return app_manager_display_diagnostics_start(s_display);
 }
 
 esp_err_t app_manager_init(const struct app_manager_config *config)

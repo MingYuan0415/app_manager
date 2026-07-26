@@ -15,6 +15,9 @@ overwritten by generation setup. It verifies that startup input/PM admission sta
 brightness operations execute through the UI dispatcher, and a failed suspend rollback
 restarts the inactivity epoch instead of retrying every poll tick. Screen-off brightness
 updates, startup touch gating, and startup/deinit admission races are covered explicitly.
+The lifecycle suite is built twice and captures `stderr` to verify all seven lifecycle
+trace formats when `CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` is enabled and complete trace
+removal when it is disabled, while running the same behavioral assertions in both builds.
 
 The shim headers intentionally retain FreeRTOS and ESP-IDF function names so
 the production sources compile without test-only branches beyond `HOST_TEST`.

@@ -105,6 +105,7 @@ static atomic_uint s_paused_running_apps;
     static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
 #endif
 
+#if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
 static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_USER_END] =
 {
     [APP_MANAGER_MSG_ONSTART] = "START",
@@ -115,6 +116,7 @@ static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_USER_END] =
     [APP_MANAGER_MSG_ONSTOP] = "STOP",
     [APP_MANAGER_MSG_ONNEWINTENT] = "NEW_INTENT",
 };
+#endif
 
 static bool _lifecycle_topology_query_allowed(void);
 
@@ -286,8 +288,10 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
                  message, APP_MANAGER_LIFECYCLE_OBSERVER_BEFORE);
     }
 #endif
+#if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
     LOG_I("[%s][%s] ON %s", page->app->descriptor->name,
           page->descriptor->page_id, s_lifecycle_message_names[message]);
+#endif
     page->descriptor->handler(message, page->user_data);
 #ifdef HOST_TEST
     if (observer != NULL)

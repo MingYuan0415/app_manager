@@ -75,6 +75,25 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore);
 /** @brief Delete a host semaphore. */
 void vSemaphoreDelete(SemaphoreHandle_t semaphore);
 
+/** @brief Reset host semaphore fault injection and allocation counters. */
+void host_semaphore_test_reset(void);
+
+/**
+ * @brief Fail one host semaphore allocation by its 1-based create call.
+ *
+ * @param create_call is the call to fail, or zero to disable injection.
+ */
+void host_semaphore_fail_create_on(unsigned create_call);
+
+/** @brief Return host semaphore create attempts since the last test reset. */
+unsigned host_semaphore_create_count(void);
+
+/** @brief Return non-NULL host semaphore deletions since the last test reset. */
+unsigned host_semaphore_delete_count(void);
+
+/** @brief Return NULL host semaphore deletion attempts since the last reset. */
+unsigned host_semaphore_null_delete_count(void);
+
 /**
  * @brief Return the number of host semaphore waits that reached their deadline.
  *

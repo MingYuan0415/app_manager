@@ -8,7 +8,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define TEST_SCREEN_CAPACITY 4U
 #define TEST_TRACE_CAPACITY  96U
@@ -91,6 +93,66 @@ static page_state_t *const s_page_states[] =
 static trace_event_t s_trace[TEST_TRACE_CAPACITY];
 static size_t s_trace_count;
 static presentation_mock_t s_presentation;
+static FILE *s_lifecycle_log_output;
+static int s_saved_stderr = -1;
+
+static void _lifecycle_log_capture_begin(void)
+{
+    assert(s_lifecycle_log_output == NULL);
+    assert(s_saved_stderr < 0);
+    assert(fflush(stderr) == 0);
+    s_saved_stderr = dup(STDERR_FILENO);
+    assert(s_saved_stderr >= 0);
+    s_lifecycle_log_output = tmpfile();
+    assert(s_lifecycle_log_output != NULL);
+    assert(dup2(fileno(s_lifecycle_log_output), STDERR_FILENO) >= 0);
+}
+
+static void _lifecycle_log_capture_end(void)
+{
+    long output_bytes;
+    char *output;
+
+    assert(s_lifecycle_log_output != NULL);
+    assert(s_saved_stderr >= 0);
+    assert(fflush(stderr) == 0);
+    assert(dup2(s_saved_stderr, STDERR_FILENO) >= 0);
+    assert(close(s_saved_stderr) == 0);
+    s_saved_stderr = -1;
+
+    assert(fseek(s_lifecycle_log_output, 0L, SEEK_END) == 0);
+    output_bytes = ftell(s_lifecycle_log_output);
+    assert(output_bytes >= 0L);
+    assert(fseek(s_lifecycle_log_output, 0L, SEEK_SET) == 0);
+    output = malloc((size_t)output_bytes + 1U);
+    assert(output != NULL);
+    assert(fread(output, 1U, (size_t)output_bytes,
+                 s_lifecycle_log_output) == (size_t)output_bytes);
+    output[output_bytes] = '\0';
+
+#if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
+    static const char *const expected[] =
+    {
+        "[I][app_lifecycle] [A][root] ON START\n",
+        "[I][app_lifecycle] [A][root] ON MOUNT\n",
+        "[I][app_lifecycle] [A][root] ON RESUME\n",
+        "[I][app_lifecycle] [A][root] ON PAUSE\n",
+        "[I][app_lifecycle] [A][root] ON UNMOUNT\n",
+        "[I][app_lifecycle] [A][two] ON STOP\n",
+        "[I][app_lifecycle] [A][root] ON NEW_INTENT\n",
+    };
+    for (size_t i = 0U; i < sizeof(expected) / sizeof(expected[0]); ++i)
+    {
+        assert(strstr(output, expected[i]) != NULL);
+    }
+#else
+    assert(strstr(output, "[I][app_lifecycle] ") == NULL);
+#endif
+
+    free(output);
+    assert(fclose(s_lifecycle_log_output) == 0);
+    s_lifecycle_log_output = NULL;
+}
 
 void app_manager_back_gesture_navigation_begin(void)
 {
@@ -1231,6 +1293,7 @@ int main(void)
     assert(app_manager_lifecycle_init(12U * 64U) == ESP_OK);
     _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 
+    _lifecycle_log_capture_begin();
     _test_run_and_page_navigation();
     _test_presentation_start_failure_rollback();
     _test_forward_unmount_and_target_pause_failure();
@@ -1251,5 +1314,6 @@ int main(void)
     assert(app_manager_mailbox_shutdown_call(_deinit_on_ui, NULL) == ESP_OK);
     assert(app_manager_mailbox_deinit() == ESP_OK);
     assert(app_manager_builtin_registry_reset() == ESP_OK);
+    _lifecycle_log_capture_end();
     return 0;
 }

@@ -1,10 +1,10 @@
-# MicroTech App Manager 0.3.0
+# MicroTech App Manager 0.4.0
 
 `layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
 导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-0.3.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+0.4.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
 使用静态 descriptor；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
 同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
 Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
@@ -134,7 +134,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 builtin provider 实现 `find`、`enumerate`、`acquire` 和 `release`。运行实例持有
 value-owned lease，生命周期核心通过 lease 访问 App/Page descriptor，释放 App 时才
-归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.3.0 不提供公共 provider 注册、
+归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.4.0 不提供公共 provider 注册、
 动态模块 ABI 或脚本应用。
 
 ## 5. Typed Blob 与 New Intent
@@ -306,7 +306,7 @@ alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本
 - 当前页面存在合法返回目标；
 - 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
 
-0.3.0 的几何参数按显示分辨率计算并限制上下界：
+0.4.0 的几何参数按显示分辨率计算并限制上下界：
 
 | 参数 | 计算规则 |
 | --- | --- |
@@ -547,6 +547,27 @@ POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。st
 resume_commit`。面板显示和物理触摸只在完整恢复帧提交后启用，避免旧帧、触摸穿透和
 DMA 未完成。
 
+非 TE 显示路径的三个容量参数承担不同职责：App Manager 使用 60 行 PSRAM 双绘制缓冲，
+BSP 将每次 SPI DMA 传输限制为 10 行（7,360 B），并将传输队列深度限制为 2；因此 LVGL
+可以按较大条带渲染，同时内部 DMA bounce buffer 峰值限制为 14,720 B。该路径不启用
+PSRAM 直 DMA，也不依赖周期性 SPI fence。
+
+`CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS` 仅用于开发验收。启用后，低优先级 PSRAM 栈
+任务周期采样 adapter FPS、DMA/internal heap 和 PSRAM；LVGL display event 同时记录
+render、flush、flush-wait，panel 代理记录提交次数、像素、失败和同步调用耗时。
+presentation 只在 `lv_anim_get()` 确认真正启动后记录动画边界，并按具体 effect 汇总
+active duration、final-flush interval 的 P50/P95/P99/max、33,333 us 达标数以及连续超过
+41,667 us 的最大长度。adapter FPS 只作为观察信息；benchmark 的 `passed` 仅表示采样、
+DMA、panel 提交和动画统计完整性通过，具体帧率门槛由上板验收逻辑判定。停止诊断时先
+注销 display event，再确认任务退出并释放 PSRAM 栈，之后才允许销毁 LVGL adapter。
+characterization 的第一阶段固定为 display-only，第二阶段由
+`CONFIG_APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_*` 选择 full、audio-only
+或 tcp-only；STRESS 始终保持 audio+TCP full-load。
+
+`CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` 默认关闭。仅在调试生命周期顺序时启用；它统一
+输出 `START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT` 的 INFO trace。关闭时编译器会
+裁剪事件名表和日志调用，不影响 handler、observer 或状态迁移。
+
 ## 12. 应用模板
 
 ```c
@@ -638,7 +659,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 ## 13. 初始化配置
 
-`app_manager_config_t` 中与 0.3.0 导航直接相关的字段：
+`app_manager_config_t` 中与 0.4.0 导航直接相关的字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -754,7 +775,7 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 ## 15. 明确边界
 
-0.3.0 不包含：
+0.4.0 不包含：
 
 - 动态模块加载、公共 provider 插件 ABI 或脚本应用；
 - Page Screen 实时跟手返回、自定义 ZOOM 或全屏快照；边缘拖动只更新 Sys Layer

@@ -188,4 +188,13 @@ esp_err_t esp_lv_adapter_set_draw_bitmap_callbacks(
 /** @brief Notify a fake touch interrupt. */
 bool esp_lv_adapter_touch_notify_interrupt(lv_indev_t *touch);
 
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS
+    /** @brief Enable or disable fake display FPS statistics. */
+    esp_err_t esp_lv_adapter_fps_stats_enable(lv_display_t *display, bool enable);
+    /** @brief Read fake display FPS statistics. */
+    esp_err_t esp_lv_adapter_get_fps(lv_display_t *display, uint32_t *fps);
+    /** @brief Reset fake display FPS statistics. */
+    esp_err_t esp_lv_adapter_fps_stats_reset(lv_display_t *display);
+#endif
+
 #endif /* __HOST_ESP_LV_ADAPTER_H__ */

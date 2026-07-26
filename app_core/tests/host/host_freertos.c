@@ -38,6 +38,10 @@ typedef struct host_timer
 } host_timer_t;
 
 atomic_uint g_host_semaphore_timeout_count = ATOMIC_VAR_INIT(0U);
+static atomic_uint s_host_semaphore_create_count;
+static atomic_uint s_host_semaphore_delete_count;
+static atomic_uint s_host_semaphore_null_delete_count;
+static atomic_uint s_host_semaphore_fail_create_call;
 
 static struct timespec _host_deadline_after_ticks(TickType_t ticks)
 {
@@ -107,6 +111,12 @@ static bool _host_queue_wait_for_item(host_queue_t *queue,
 
 static SemaphoreHandle_t _host_semaphore_create(bool given)
 {
+    const unsigned create_call =
+        atomic_fetch_add(&s_host_semaphore_create_count, 1U) + 1U;
+    if (create_call == atomic_load(&s_host_semaphore_fail_create_call))
+    {
+        return NULL;
+    }
     host_semaphore_t *semaphore = calloc(1, sizeof(*semaphore));
     if (semaphore != NULL)
     {
@@ -181,6 +191,11 @@ static void *_host_timer_thread(void *argument)
 TaskHandle_t xTaskGetCurrentTaskHandle(void)
 {
     return (TaskHandle_t)(uintptr_t)pthread_self();
+}
+
+void vTaskDelay(TickType_t ticks)
+{
+    (void)usleep((useconds_t)ticks * 1000U);
 }
 
 QueueHandle_t xQueueCreate(uint32_t length, uint32_t item_size)
@@ -337,11 +352,41 @@ void vSemaphoreDelete(SemaphoreHandle_t handle)
     host_semaphore_t *semaphore = handle;
     if (semaphore == NULL)
     {
+        atomic_fetch_add(&s_host_semaphore_null_delete_count, 1U);
         return;
     }
     (void)pthread_mutex_destroy(&semaphore->mutex);
     (void)pthread_cond_destroy(&semaphore->condition);
     free(semaphore);
+    atomic_fetch_add(&s_host_semaphore_delete_count, 1U);
+}
+
+void host_semaphore_test_reset(void)
+{
+    atomic_store(&s_host_semaphore_create_count, 0U);
+    atomic_store(&s_host_semaphore_delete_count, 0U);
+    atomic_store(&s_host_semaphore_null_delete_count, 0U);
+    atomic_store(&s_host_semaphore_fail_create_call, 0U);
+}
+
+void host_semaphore_fail_create_on(unsigned create_call)
+{
+    atomic_store(&s_host_semaphore_fail_create_call, create_call);
+}
+
+unsigned host_semaphore_create_count(void)
+{
+    return atomic_load(&s_host_semaphore_create_count);
+}
+
+unsigned host_semaphore_delete_count(void)
+{
+    return atomic_load(&s_host_semaphore_delete_count);
+}
+
+unsigned host_semaphore_null_delete_count(void)
+{
+    return atomic_load(&s_host_semaphore_null_delete_count);
 }
 
 unsigned host_semaphore_timeout_count(void)

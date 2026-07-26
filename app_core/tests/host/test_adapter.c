@@ -9,12 +9,19 @@
 #include "app_manager_config.h"
 #include "app_manager_control.h"
 #include "app_manager_display.h"
+#include "app_manager_display_diagnostics_priv.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
 #include "app_manager_presentation.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
+
+#if CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED
+    #define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565_SWAPPED
+#else
+    #define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565
+#endif
 
 struct _lv_display_t
 {
@@ -177,6 +184,20 @@ static bool s_touch_gpio_irq_enabled;
 static bool s_touch_enabled_at_display_commit;
 static bool s_touch_irq_enabled_at_display_commit;
 static bool s_adapter_deinit_keeps_initialized;
+static unsigned s_color_format_calls;
+static lv_color_format_t s_color_format;
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    static bool s_diagnostics_ready;
+    static bool s_draw_during_display_registration;
+    static bool s_flush_is_last;
+    static unsigned s_flush_is_last_calls;
+    static unsigned s_diagnostics_record_calls;
+    static lv_display_t *s_diagnostics_record_display;
+    static bool s_diagnostics_record_final_flush;
+    static uint32_t s_diagnostics_record_pixel_count;
+    static esp_err_t s_diagnostics_record_result;
+    static int64_t s_diagnostics_time_us;
+#endif
 
 static struct _lv_display_t s_display_handle;
 static struct _lv_indev_t s_touch_handle;
@@ -289,6 +310,20 @@ static void _mock_reset(void)
     s_touch_enabled_at_display_commit = false;
     s_touch_irq_enabled_at_display_commit = false;
     s_adapter_deinit_keeps_initialized = false;
+    s_color_format_calls = 0;
+    s_color_format = LV_COLOR_FORMAT_UNKNOWN;
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    s_diagnostics_ready = false;
+    s_draw_during_display_registration = false;
+    s_flush_is_last = true;
+    s_flush_is_last_calls = 0U;
+    s_diagnostics_record_calls = 0U;
+    s_diagnostics_record_display = NULL;
+    s_diagnostics_record_final_flush = false;
+    s_diagnostics_record_pixel_count = 0U;
+    s_diagnostics_record_result = ESP_OK;
+    s_diagnostics_time_us = 0;
+#endif
 }
 
 static void _record_event(adapter_event_t event)
@@ -592,7 +627,8 @@ lv_display_t *esp_lv_adapter_register_display(
                                 config->profile.buffer_height ==
                                 s_display_port.height &&
                                 !config->profile.require_double_buffer :
-                                config->profile.buffer_height == 20 &&
+                                config->profile.buffer_height ==
+                                CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT &&
                                 config->profile.require_double_buffer);
     if (config == NULL || !panel_valid ||
             config->panel_io != s_display_port.panel_io ||
@@ -609,10 +645,21 @@ lv_display_t *esp_lv_adapter_register_display(
         s_registered_panel = config->panel;
         s_registered_tear_mode = config->tear_avoid_mode;
     }
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    if (s_draw_during_display_registration && config != NULL &&
+            s_display_port.te.enabled &&
+            esp_lcd_panel_draw_bitmap(config->panel, 0, 0, 16, 8, NULL) !=
+            ESP_OK)
+    {
+        s_contract_error = true;
+    }
+#endif
     if (_mock_should_fail(MOCK_REGISTER_DISPLAY))
     {
         return NULL;
     }
+    s_color_format_calls = 0;
+    s_color_format = LV_COLOR_FORMAT_UNKNOWN;
     s_live.display = 1;
     return &s_display_handle;
 }
@@ -623,7 +670,9 @@ lv_indev_t *esp_lv_adapter_register_touch(
     _mock_observe_initializing_or_deinitializing();
     if (config == NULL || config->disp != &s_display_handle ||
             config->handle != s_display_port.touch ||
-            config->callbacks.on_interrupt == NULL)
+            config->callbacks.on_interrupt == NULL ||
+            s_color_format_calls != 1U ||
+            s_color_format != EXPECTED_COLOR_FORMAT)
     {
         s_contract_error = true;
     }
@@ -638,6 +687,70 @@ lv_indev_t *esp_lv_adapter_register_touch(
         s_touch.config.int_gpio_num != GPIO_NUM_NC;
     return &s_touch_handle;
 }
+
+void lv_display_set_color_format(lv_display_t *display,
+                                 lv_color_format_t color_format)
+{
+    if (display != &s_display_handle || s_live.display == 0 ||
+            color_format != EXPECTED_COLOR_FORMAT)
+    {
+        s_contract_error = true;
+    }
+    s_color_format_calls++;
+    s_color_format = color_format;
+}
+
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+bool lv_display_flush_is_last(lv_display_t *display)
+{
+    if (display != &s_display_handle || s_live.display == 0)
+    {
+        s_contract_error = true;
+    }
+    s_flush_is_last_calls++;
+    return s_flush_is_last;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    s_diagnostics_time_us += 100;
+    return s_diagnostics_time_us;
+}
+
+esp_err_t app_manager_display_diagnostics_start(lv_display_t *display)
+{
+    if (display != &s_display_handle || s_live.display == 0 ||
+            s_diagnostics_ready)
+    {
+        s_contract_error = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_diagnostics_ready = true;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_display_diagnostics_stop(void)
+{
+    s_diagnostics_ready = false;
+    return ESP_OK;
+}
+
+void app_manager_display_diagnostics_record_submit(lv_display_t *display,
+        bool final_flush, uint32_t pixel_count, uint32_t wait_us,
+        esp_err_t result)
+{
+    (void)wait_us;
+    if (!s_diagnostics_ready)
+    {
+        return;
+    }
+    s_diagnostics_record_calls++;
+    s_diagnostics_record_display = display;
+    s_diagnostics_record_final_flush = final_flush;
+    s_diagnostics_record_pixel_count = pixel_count;
+    s_diagnostics_record_result = result;
+}
+#endif
 
 esp_err_t esp_lv_adapter_pause(int32_t timeout_ms)
 {
@@ -1466,6 +1579,9 @@ static void _check_clean_state(void)
     CHECK(s_gesture_suspended);
     CHECK(!s_touch_enabled);
     CHECK(!s_touch_gpio_irq_enabled);
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    CHECK(!s_diagnostics_ready);
+#endif
 }
 
 static void _init_then_deinit_successfully(void)
@@ -1547,6 +1663,8 @@ static void _test_disabled_te_uses_default_mode(void)
     CHECK(s_registered_panel == &s_panel);
     CHECK(s_registered_tear_mode ==
           ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT);
+    CHECK(s_color_format_calls == 1U);
+    CHECK(s_color_format == EXPECTED_COLOR_FORMAT);
     CHECK(s_draw_callback_registrations == 1U);
     s_draw_bitmap_result = ESP_FAIL;
     CHECK(app_manager_display_commit_initial() == ESP_FAIL);
@@ -1568,6 +1686,8 @@ static void _test_te_profile_uses_proxy_and_disables_startup_touch(void)
     CHECK(s_registered_panel != &s_panel);
     CHECK(s_registered_tear_mode ==
           ESP_LV_ADAPTER_TEAR_AVOID_MODE_TE_SYNC);
+    CHECK(s_color_format_calls == 1U);
+    CHECK(s_color_format == EXPECTED_COLOR_FORMAT);
     CHECK(s_draw_callback_registrations == 0U);
     CHECK(s_initial_touch_disable_calls == 1U);
     CHECK(s_gpio_disable_calls == 1U);
@@ -1591,6 +1711,45 @@ static void _test_te_register_failure_clears_proxy_after_deinit(void)
           ESP_ERR_INVALID_STATE);
     _check_clean_state();
 }
+
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+static void _test_diagnostics_bitmap_display_contract(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    s_draw_during_display_registration = true;
+
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(s_panel_draw_calls == 1U);
+    CHECK(s_flush_is_last_calls == 0U);
+    CHECK(s_diagnostics_record_calls == 0U);
+    CHECK(app_manager_display_commit_initial() == ESP_OK);
+    CHECK(s_flush_is_last_calls == 1U);
+    CHECK(s_diagnostics_record_calls == 1U);
+    CHECK(s_diagnostics_record_display == &s_display_handle);
+    CHECK(s_diagnostics_record_final_flush);
+    CHECK(s_diagnostics_record_pixel_count == 128U);
+    CHECK(s_diagnostics_record_result == ESP_OK);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    s_display_port.te.enabled = false;
+    s_flush_is_last = false;
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_display_commit_initial() == ESP_OK);
+    CHECK(s_flush_is_last_calls == 1U);
+    CHECK(s_diagnostics_record_calls == 1U);
+    CHECK(s_diagnostics_record_display == &s_display_handle);
+    CHECK(!s_diagnostics_record_final_flush);
+    CHECK(s_diagnostics_record_pixel_count == 128U);
+    CHECK(s_diagnostics_record_result == ESP_OK);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+    s_display_port.te.enabled = true;
+}
+#endif
 
 static void _test_polling_touch_skips_gpio_disable(void)
 {
@@ -2206,6 +2365,9 @@ int main(void)
     _test_disabled_te_uses_default_mode();
     _test_te_profile_uses_proxy_and_disables_startup_touch();
     _test_te_register_failure_clears_proxy_after_deinit();
+#if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
+    _test_diagnostics_bitmap_display_contract();
+#endif
     _test_polling_touch_skips_gpio_disable();
     _test_each_init_failure_rolls_back();
     _test_all_cleanup_failures_are_retryable();
