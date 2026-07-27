@@ -562,7 +562,8 @@ DMA、panel 提交和动画统计完整性通过，具体帧率门槛由上板�
 注销 display event，再确认任务退出并释放 PSRAM 栈，之后才允许销毁 LVGL adapter。
 characterization 的第一阶段固定为 display-only，第二阶段由
 `CONFIG_APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_*` 选择 full、audio-only
-或 tcp-only；STRESS 始终保持 audio+TCP full-load。
+或 tcp-only；STRESS 始终保持 audio+TCP full-load。STRESS 时长默认 1800 秒，开发固件
+可配置为最长 28,800 秒，用于连续 8 小时单板 soak。
 
 `CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` 默认关闭。仅在调试生命周期顺序时启用；它统一
 输出 `START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT` 的 INFO trace。关闭时编译器会

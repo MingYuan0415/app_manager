@@ -64,8 +64,12 @@ endchoice
 config APP_MANAGER_DISPLAY_BENCHMARK_DURATION_SEC
     int "Display benchmark duration (seconds)"
     depends on APP_MANAGER_DISPLAY_BENCHMARK_MODE_STRESS
-    range 10 3600
+    range 10 28800
     default 1800
+    help
+        Set the full-load stress duration. The 28,800-second upper bound
+        supports an eight-hour single-board soak; production builds keep the
+        benchmark disabled.
 
 config APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_DURATION_SEC
     int "Duration per effect and load profile (seconds)"
