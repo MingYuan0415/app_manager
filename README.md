@@ -1,10 +1,10 @@
-# MicroTech App Manager 0.4.0
+# MicroTech App Manager 0.5.0
 
 `layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
 导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-0.4.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+0.5.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
 使用静态 descriptor；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
 同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
 Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
@@ -37,7 +37,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_nav_model.c` | App/Page 固定槽、双向链表、arena 和模型不变量 |
 | `app_core/src/app_manager_navigation.c` | 24 槽 sync/async command gateway 和超时语义 |
 | `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
-| `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、LVGL 原生动画和触摸屏障 |
+| `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、全分辨率快照/Image 转场、原生回退和触摸屏障 |
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
@@ -134,7 +134,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 builtin provider 实现 `find`、`enumerate`、`acquire` 和 `release`。运行实例持有
 value-owned lease，生命周期核心通过 lease 访问 App/Page descriptor，释放 App 时才
-归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.4.0 不提供公共 provider 注册、
+归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.5.0 不提供公共 provider 注册、
 动态模块 ABI 或脚本应用。
 
 ## 5. Typed Blob 与 New Intent
@@ -210,8 +210,19 @@ ONSTART -> ONMOUNT -> ONRESUME -> ONPAUSE -> ONUNMOUNT -> ONSTOP
 
 presentation 初始化一个永久 neutral Screen。Page 在 MOUNT 前由框架创建独立
 LVGL Screen，在 UNMOUNT 后删除。稳定前台只有一个 Page Screen；后台页面没有
-LVGL 对象。所有 `lv_screen_load_anim()` 调用都使用 `auto_del=false`，Screen 的最终
-删除仍由 lifecycle 决定。
+LVGL 对象。默认 `RGB565` 配置为转场准备两张常驻的全分辨率 RGB565 PSRAM 快照：在
+368 x 448 面板上每张 329,728 B、合计 659,456 B（644 KiB）。它们由
+`CONFIG_APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION` 控制，不使用 internal/DMA heap。
+
+对有效的非 `NONE` 转场，后端先采集 source 与 target，再将两张 Image 放入 target Screen
+的全屏不透明 child overlay 并只动画 Image；target 因而在动画开始后保持 active，而其 live
+对象树被 overlay 覆盖。动画完成时先删除 overlay，随后才交付既有 lifecycle completion，
+避免 source 清理时仍有 Image 引用快照。快照模式只支持普通 `RGB565`，并依赖 PSRAM；
+`RGB565_SWAPPED` 实验配置、显式关闭功能或快照资源/采集/对象/动画失败时，自动回退
+`lv_screen_load_anim()` 原生路径。原生调用仍使用 `auto_del=false`，Screen 的最终删除继续由
+lifecycle 决定。非空 Page Screen 必须至少有一个覆盖全屏的不透明直接 child，整个对象树也
+不得设置 `LV_OBJ_FLAG_OVERFLOW_VISIBLE`；透明根或需要屏外绘制的页面会在该次转场回退
+原生动画。
 
 支持 14 种实际效果和一个配置占位值：
 
@@ -306,7 +317,7 @@ alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本
 - 当前页面存在合法返回目标；
 - 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
 
-0.4.0 的几何参数按显示分辨率计算并限制上下界：
+0.5.0 的几何参数按显示分辨率计算并限制上下界：
 
 | 参数 | 计算规则 |
 | --- | --- |
@@ -339,7 +350,8 @@ Home 始终没有手势返回入口，即使全局开关已启用。其他 App �
 `-64` 移到 `0`，右侧 X 从屏宽移到“屏宽减 64”；Canvas 尺寸、轮廓、不透明度和 Y
 锚点全程不变。`LV_SYMBOL_LEFT` Label 是 Canvas 子对象，仅在进入 ARMED 后显示，回撤
 解除 ARMED 后立即隐藏。Page Screen 的坐标、透明度、样式和 active 状态不随手指实时
-变化，也不创建全屏快照。释放前未达到阈值、方向错误、输入取消或状态被抢占时，只复位
+变化，也不创建全屏快照。`PRESSING` 阶段绝不采集快照；释放前未达到阈值、方向错误、输入
+取消或状态被抢占时，只复位
 indicator，不产生导航命令；达到阈值后提交一条既有异步 `BACK`，并由 Page/App 返回
 场景的默认动画完成实际 Screen 切换。
 
@@ -660,7 +672,7 @@ APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
 
 ## 13. 初始化配置
 
-`app_manager_config_t` 中与 0.4.0 导航直接相关的字段：
+`app_manager_config_t` 中与 0.5.0 导航直接相关的字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -741,10 +753,11 @@ ctest --test-dir /tmp/mt-integration --output-on-failure
 
 对应 sanitizer cache 变量为 `APPS_SANITIZER`、`MAIN_HOST_SANITIZER` 和
 `CROSS_LAYER_SANITIZER`，取值同样是 `address` 或 `thread`。跨层 `presentation` 测试
-覆盖 14 种效果、立即完成、正常完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
+覆盖 14 种效果、快照起始/中间/完成、原生回退、立即完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
 App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘手势。手势断言除
-导航结果外，还应检查稳定时一个 Page Screen、操作期间不创建快照、Page Screen 不随
-`PRESSING` 改变、Canvas 固定为 `64x144`、indicator Y 锚点固定、左右弧形互为镜像，
+导航结果外，还应检查稳定时一个 Page Screen、普通非 `NONE` 转场的 overlay/Image 在完成后
+释放、`PRESSING` 期间不创建快照、Page Screen 不随 `PRESSING` 改变、Canvas 固定为
+`64x144`、indicator Y 锚点固定、左右弧形互为镜像，
 以及 indicator、timer、订阅和活动会话在取消或完成后回到基线。A8 buffer 测试还应采样
 顶部、四分之一、中部和底部的 depth 与边缘 alpha，验证 Q15 曲线和 1 px 抗锯齿；
 368 px 屏宽下检查捕获条为 29 px、提交距离为 55 px，并分别检查左侧 X 为
@@ -776,11 +789,11 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 ## 15. 明确边界
 
-0.4.0 不包含：
+0.5.0 不包含：
 
 - 动态模块加载、公共 provider 插件 ABI 或脚本应用；
-- Page Screen 实时跟手返回、自定义 ZOOM 或全屏快照；边缘拖动只更新 Sys Layer
-  indicator，释放提交后仍播放既有 Page/App 返回动画；
+- Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后
+  才按普通 Page/App 返回动画决定是否创建全分辨率快照；
 - 静态 indicator 图片、LVGL Vector 或 ThorVG；弧形只由固定 A8 Canvas 程序化生成；
 - popup/overlay manager；
 - 多个 app-manager 实例；

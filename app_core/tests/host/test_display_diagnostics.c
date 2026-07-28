@@ -266,6 +266,17 @@ static void _exercise_single_frame_transition(
     _emit_frame_at(submit_us);
 }
 
+static void _record_snapshot_prepare(app_manager_transition_effect_t effect,
+                                     int64_t start_us, int64_t finish_us,
+                                     bool fallback)
+{
+    atomic_store(&s_manual_time, true);
+    atomic_store(&s_manual_time_us, start_us);
+    app_manager_display_diagnostics_snapshot_prepare_started(effect);
+    atomic_store(&s_manual_time_us, finish_us);
+    app_manager_display_diagnostics_snapshot_prepare_finished(fallback);
+}
+
 static void _wait_for_samples(uint32_t minimum_count)
 {
     for (unsigned index = 0U;
@@ -611,6 +622,55 @@ static void _test_passing_benchmark(void)
     assert(atomic_load(&s_fps_reset_calls) == 1U);
     assert(app_manager_display_diagnostics_end_benchmark(&report) ==
            ESP_ERR_INVALID_STATE);
+    assert(app_manager_display_diagnostics_stop() == ESP_OK);
+}
+
+static void _test_snapshot_prepare_metrics_are_informational(void)
+{
+    _reset();
+    assert(app_manager_display_diagnostics_start(&s_display) == ESP_OK);
+    assert(app_manager_display_diagnostics_begin_benchmark(30U, 14720U) ==
+           ESP_OK);
+    _wait_for_samples(1U);
+
+    _record_snapshot_prepare(APP_MANAGER_TRANSITION_FADE, 1000000,
+                             1010000, false);
+    _record_snapshot_prepare(APP_MANAGER_TRANSITION_FADE, 1020000,
+                             1060000, true);
+    _record_snapshot_prepare(APP_MANAGER_TRANSITION_PUSH_LEFT, 1070000,
+                             1180000, false);
+    app_manager_display_diagnostics_snapshot_prepare_finished(false);
+
+    const uint32_t interval_us = APP_MANAGER_DISPLAY_INTERVAL_TARGET_US;
+    _exercise_transition(APP_MANAGER_TRANSITION_FADE, &interval_us, 1U);
+
+    app_manager_display_benchmark_report_t report;
+    assert(app_manager_display_diagnostics_end_benchmark(&report) == ESP_OK);
+    assert(report.snapshot_prepare_count == 3U);
+    assert(report.snapshot_prepare_us == 160000U);
+    assert(report.maximum_snapshot_prepare_us == 110000U);
+    assert(report.snapshot_prepare_p95_us == 110000U);
+    assert(report.snapshot_fallback_count == 1U);
+    assert(report.snapshot_prepare_p95_us >
+           APP_MANAGER_DISPLAY_SNAPSHOT_PREPARE_TARGET_US);
+    assert(report.passed);
+
+    const app_manager_display_effect_benchmark_report_t *fade =
+        &report.effects[APP_MANAGER_TRANSITION_FADE -
+                        APP_MANAGER_TRANSITION_NONE];
+    assert(fade->snapshot_prepare_count == 2U);
+    assert(fade->snapshot_prepare_us == 50000U);
+    assert(fade->maximum_snapshot_prepare_us == 40000U);
+    assert(fade->snapshot_prepare_p95_us == 40000U);
+    assert(fade->snapshot_fallback_count == 1U);
+
+    const app_manager_display_effect_benchmark_report_t *push =
+        &report.effects[APP_MANAGER_TRANSITION_PUSH_LEFT -
+                        APP_MANAGER_TRANSITION_NONE];
+    assert(push->snapshot_prepare_count == 1U);
+    assert(push->snapshot_prepare_us == 110000U);
+    assert(push->snapshot_prepare_p95_us == 110000U);
+    assert(push->snapshot_fallback_count == 0U);
     assert(app_manager_display_diagnostics_stop() == ESP_OK);
 }
 
@@ -1282,6 +1342,7 @@ int main(void)
     _test_start_semaphore_failures_cleanup_and_retry();
     _test_start_sample_and_stop();
     _test_passing_benchmark();
+    _test_snapshot_prepare_metrics_are_informational();
     _test_completion_waits_for_successful_final_submit();
     _test_presentation_wait_blocks_until_final_submit();
     _test_presentation_wait_times_out_without_final_submit();

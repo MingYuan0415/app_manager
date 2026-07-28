@@ -59,7 +59,7 @@ lv_obj_t *app_manager_presentation_neutral_screen(void);
 esp_err_t app_manager_presentation_load_immediate(lv_obj_t *screen);
 
 /**
- * @brief Start a native LVGL screen transition.
+ * @brief Start a screen transition.
  *
  * @param from_screen is the currently active screen.
  * @param to_screen is the destination screen.
@@ -72,6 +72,9 @@ esp_err_t app_manager_presentation_load_immediate(lv_obj_t *screen);
  *         ESP-IDF error.
  *
  * @note NONE and zero-duration transitions load and complete synchronously.
+ *       When enabled for normal RGB565 output, animated transitions use
+ *       presentation-owned full-resolution snapshots; unavailable snapshot
+ *       resources automatically fall back to native LVGL screen animation.
  *       All other accepted transitions complete asynchronously.
  */
 esp_err_t app_manager_presentation_start(

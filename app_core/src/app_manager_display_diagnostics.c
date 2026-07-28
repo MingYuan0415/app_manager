@@ -75,6 +75,12 @@ typedef struct app_manager_display_benchmark_metrics
     atomic_uint transition_start_count;
     atomic_uint transition_complete_count;
     atomic_uint transition_cancel_count;
+    atomic_uint snapshot_prepare_count;
+    atomic_uint_fast64_t snapshot_prepare_us;
+    atomic_uint maximum_snapshot_prepare_us;
+    atomic_uint snapshot_fallback_count;
+    atomic_uint snapshot_prepare_histogram[
+        APP_MANAGER_DISPLAY_INTERVAL_BUCKET_COUNT];
     atomic_uint active_frame_count;
     atomic_uint_fast64_t active_duration_us;
     atomic_uint interval_count;
@@ -132,6 +138,7 @@ static atomic_uint s_consecutive_long_intervals;
 static app_manager_display_event_span_t s_render_span;
 static app_manager_display_event_span_t s_flush_span;
 static app_manager_display_event_span_t s_flush_wait_span;
+static app_manager_display_event_span_t s_snapshot_prepare_span;
 
 static bool _app_manager_display_diagnostics_api_enter(void)
 {
@@ -292,6 +299,27 @@ static void _app_manager_display_diagnostics_record_interval(
                               memory_order_relaxed);
 }
 
+static void _app_manager_display_diagnostics_record_snapshot_prepare(
+    app_manager_display_benchmark_metrics_t *metrics, uint32_t elapsed_us,
+    bool fallback)
+{
+    atomic_fetch_add_explicit(&metrics->snapshot_prepare_count, 1U,
+                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&metrics->snapshot_prepare_us, elapsed_us,
+                              memory_order_relaxed);
+    _app_manager_display_diagnostics_update_maximum_u32(
+        &metrics->maximum_snapshot_prepare_us, elapsed_us);
+    if (fallback)
+    {
+        atomic_fetch_add_explicit(&metrics->snapshot_fallback_count, 1U,
+                                  memory_order_relaxed);
+    }
+    const size_t bucket = _app_manager_display_diagnostics_interval_bucket(
+                              elapsed_us);
+    atomic_fetch_add_explicit(&metrics->snapshot_prepare_histogram[bucket],
+                              1U, memory_order_relaxed);
+}
+
 static void _app_manager_display_diagnostics_reset_timing(
     app_manager_display_timing_metrics_t *timing)
 {
@@ -321,6 +349,14 @@ static void _app_manager_display_diagnostics_reset_metrics(
                           memory_order_relaxed);
     atomic_store_explicit(&metrics->transition_cancel_count, 0U,
                           memory_order_relaxed);
+    atomic_store_explicit(&metrics->snapshot_prepare_count, 0U,
+                          memory_order_relaxed);
+    atomic_store_explicit(&metrics->snapshot_prepare_us, 0U,
+                          memory_order_relaxed);
+    atomic_store_explicit(&metrics->maximum_snapshot_prepare_us, 0U,
+                          memory_order_relaxed);
+    atomic_store_explicit(&metrics->snapshot_fallback_count, 0U,
+                          memory_order_relaxed);
     atomic_store_explicit(&metrics->active_frame_count, 0U,
                           memory_order_relaxed);
     atomic_store_explicit(&metrics->active_duration_us, 0U,
@@ -343,6 +379,8 @@ static void _app_manager_display_diagnostics_reset_metrics(
     {
         atomic_store_explicit(&metrics->interval_histogram[index], 0U,
                               memory_order_relaxed);
+        atomic_store_explicit(&metrics->snapshot_prepare_histogram[index], 0U,
+                              memory_order_relaxed);
     }
 }
 
@@ -361,6 +399,7 @@ static void _app_manager_display_diagnostics_reset_spans(void)
     _app_manager_display_diagnostics_reset_span(&s_render_span);
     _app_manager_display_diagnostics_reset_span(&s_flush_span);
     _app_manager_display_diagnostics_reset_span(&s_flush_wait_span);
+    _app_manager_display_diagnostics_reset_span(&s_snapshot_prepare_span);
 }
 
 static void _app_manager_display_diagnostics_reset_benchmark(void)
@@ -605,6 +644,63 @@ static void _app_manager_display_diagnostics_finish_transition(
     atomic_store_explicit(&s_last_final_submit_us, 0, memory_order_relaxed);
     atomic_store_explicit(&s_consecutive_long_intervals, 0U,
                           memory_order_relaxed);
+}
+
+void app_manager_display_diagnostics_snapshot_prepare_started(
+    app_manager_transition_effect_t effect)
+{
+    const int effect_index = _app_manager_display_diagnostics_effect_index(
+                                 effect);
+    if (effect_index < 0 ||
+            !_app_manager_display_diagnostics_writer_enter())
+    {
+        return;
+    }
+    atomic_store_explicit(&s_snapshot_prepare_span.effect_index, effect_index,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_snapshot_prepare_span.benchmark_generation,
+                          atomic_load_explicit(&s_benchmark_generation,
+                                  memory_order_relaxed),
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_snapshot_prepare_span.start_us,
+                          esp_timer_get_time(), memory_order_release);
+    _app_manager_display_diagnostics_writer_exit();
+}
+
+void app_manager_display_diagnostics_snapshot_prepare_finished(bool fallback)
+{
+    if (!_app_manager_display_diagnostics_writer_enter())
+    {
+        return;
+    }
+    const int64_t start_us = atomic_exchange_explicit(
+                                 &s_snapshot_prepare_span.start_us, 0,
+                                 memory_order_acq_rel);
+    if (start_us != 0)
+    {
+        const uint32_t generation = atomic_load_explicit(
+                                        &s_snapshot_prepare_span.benchmark_generation,
+                                        memory_order_relaxed);
+        if (generation != 0U && generation == atomic_load_explicit(
+                    &s_benchmark_generation, memory_order_acquire))
+        {
+            const uint32_t elapsed_us =
+                _app_manager_display_diagnostics_elapsed_us(start_us,
+                    esp_timer_get_time());
+            _app_manager_display_diagnostics_record_snapshot_prepare(
+                &s_total_metrics, elapsed_us, fallback);
+            const int effect_index = atomic_load_explicit(
+                                         &s_snapshot_prepare_span.effect_index,
+                                         memory_order_relaxed);
+            if (effect_index >= 0 &&
+                    effect_index < APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_COUNT)
+            {
+                _app_manager_display_diagnostics_record_snapshot_prepare(
+                    &s_effect_metrics[effect_index], elapsed_us, fallback);
+            }
+        }
+    }
+    _app_manager_display_diagnostics_writer_exit();
 }
 
 void app_manager_display_diagnostics_transition_started(
@@ -908,25 +1004,20 @@ static void _app_manager_display_diagnostics_task(void *arg)
     vTaskSuspend(NULL);
 }
 
-static uint32_t _app_manager_display_diagnostics_percentile_us(
-    const app_manager_display_benchmark_metrics_t *metrics,
+static uint32_t _app_manager_display_diagnostics_histogram_percentile_us(
+    const atomic_uint *histogram, uint32_t count, uint32_t maximum_us,
     uint32_t percentile)
 {
-    const uint32_t count = atomic_load_explicit(&metrics->interval_count,
-                           memory_order_relaxed);
     if (count == 0U)
     {
         return 0U;
     }
     const uint64_t rank = ((uint64_t)count * percentile + 99U) / 100U;
-    const uint32_t maximum_us = atomic_load_explicit(
-                                    &metrics->maximum_interval_us,
-                                    memory_order_relaxed);
     uint64_t cumulative = 0U;
     for (size_t index = 0U;
             index < APP_MANAGER_DISPLAY_INTERVAL_BUCKET_COUNT; ++index)
     {
-        cumulative += atomic_load_explicit(&metrics->interval_histogram[index],
+        cumulative += atomic_load_explicit(&histogram[index],
                                            memory_order_relaxed);
         if (cumulative >= rank)
         {
@@ -936,6 +1027,31 @@ static uint32_t _app_manager_display_diagnostics_percentile_us(
         }
     }
     return maximum_us;
+}
+
+static uint32_t _app_manager_display_diagnostics_interval_percentile_us(
+    const app_manager_display_benchmark_metrics_t *metrics,
+    uint32_t percentile)
+{
+    return _app_manager_display_diagnostics_histogram_percentile_us(
+               metrics->interval_histogram,
+               atomic_load_explicit(&metrics->interval_count,
+                                    memory_order_relaxed),
+               atomic_load_explicit(&metrics->maximum_interval_us,
+                                    memory_order_relaxed),
+               percentile);
+}
+
+static uint32_t _app_manager_display_diagnostics_snapshot_prepare_p95_us(
+    const app_manager_display_benchmark_metrics_t *metrics)
+{
+    return _app_manager_display_diagnostics_histogram_percentile_us(
+               metrics->snapshot_prepare_histogram,
+               atomic_load_explicit(&metrics->snapshot_prepare_count,
+                                    memory_order_relaxed),
+               atomic_load_explicit(&metrics->maximum_snapshot_prepare_us,
+                                    memory_order_relaxed),
+               95U);
 }
 
 static void _app_manager_display_diagnostics_copy_metrics(
@@ -951,6 +1067,19 @@ static void _app_manager_display_diagnostics_copy_metrics(
     report->transition_cancel_count = atomic_load_explicit(
                                           &metrics->transition_cancel_count,
                                           memory_order_relaxed);
+    report->snapshot_prepare_count = atomic_load_explicit(
+                                         &metrics->snapshot_prepare_count,
+                                         memory_order_relaxed);
+    report->snapshot_prepare_us = atomic_load_explicit(
+                                      &metrics->snapshot_prepare_us,
+                                      memory_order_relaxed);
+    report->maximum_snapshot_prepare_us = atomic_load_explicit(
+            &metrics->maximum_snapshot_prepare_us, memory_order_relaxed);
+    report->snapshot_prepare_p95_us =
+        _app_manager_display_diagnostics_snapshot_prepare_p95_us(metrics);
+    report->snapshot_fallback_count = atomic_load_explicit(
+                                          &metrics->snapshot_fallback_count,
+                                          memory_order_relaxed);
     report->active_frame_count = atomic_load_explicit(
                                      &metrics->active_frame_count,
                                      memory_order_relaxed);
@@ -964,11 +1093,11 @@ static void _app_manager_display_diagnostics_copy_metrics(
     report->maximum_consecutive_long_intervals = atomic_load_explicit(
             &metrics->maximum_consecutive_long_intervals, memory_order_relaxed);
     report->interval_p50_us =
-        _app_manager_display_diagnostics_percentile_us(metrics, 50U);
+        _app_manager_display_diagnostics_interval_percentile_us(metrics, 50U);
     report->interval_p95_us =
-        _app_manager_display_diagnostics_percentile_us(metrics, 95U);
+        _app_manager_display_diagnostics_interval_percentile_us(metrics, 95U);
     report->interval_p99_us =
-        _app_manager_display_diagnostics_percentile_us(metrics, 99U);
+        _app_manager_display_diagnostics_interval_percentile_us(metrics, 99U);
     report->maximum_interval_us = atomic_load_explicit(
                                       &metrics->maximum_interval_us,
                                       memory_order_relaxed);
@@ -1476,6 +1605,12 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
     report->transition_start_count = aggregate.transition_start_count;
     report->transition_complete_count = aggregate.transition_complete_count;
     report->transition_cancel_count = aggregate.transition_cancel_count;
+    report->snapshot_prepare_count = aggregate.snapshot_prepare_count;
+    report->snapshot_prepare_us = aggregate.snapshot_prepare_us;
+    report->maximum_snapshot_prepare_us =
+        aggregate.maximum_snapshot_prepare_us;
+    report->snapshot_prepare_p95_us = aggregate.snapshot_prepare_p95_us;
+    report->snapshot_fallback_count = aggregate.snapshot_fallback_count;
     report->active_frame_count = aggregate.active_frame_count;
     report->active_duration_us = aggregate.active_duration_us;
     report->interval_count = aggregate.interval_count;

@@ -20,6 +20,8 @@ extern "C" {
 #define APP_MANAGER_DISPLAY_INTERVAL_TARGET_US 33333U
 /** @brief Final-frame interval treated as a long-frame run. */
 #define APP_MANAGER_DISPLAY_INTERVAL_LONG_US   41667U
+/** @brief Maximum accepted P95 snapshot preparation duration. */
+#define APP_MANAGER_DISPLAY_SNAPSHOT_PREPARE_TARGET_US 100000U
 
 /** @brief Number of concrete transition effects represented in a report. */
 enum
@@ -35,6 +37,11 @@ typedef struct app_manager_display_effect_benchmark_report
     uint32_t transition_start_count;        /**< Animations that really started. */
     uint32_t transition_complete_count;     /**< Animations finally presented. */
     uint32_t transition_cancel_count;       /**< Started animations then cancelled. */
+    uint32_t snapshot_prepare_count;         /**< Attempted snapshot preparations. */
+    uint64_t snapshot_prepare_us;            /**< Sum of snapshot preparation time. */
+    uint32_t maximum_snapshot_prepare_us;    /**< Longest snapshot preparation. */
+    uint32_t snapshot_prepare_p95_us;        /**< Histogram-derived 95th percentile. */
+    uint32_t snapshot_fallback_count;        /**< Preparations falling back to native LVGL. */
     uint32_t active_frame_count;            /**< Successful final flushes while active. */
     uint64_t active_duration_us;            /**< Sum of active animation durations. */
     uint32_t interval_count;                /**< Start-to-submit intervals covering active time. */
@@ -82,6 +89,11 @@ typedef struct app_manager_display_benchmark_report
     uint32_t transition_start_count;       /**< Animations that really started. */
     uint32_t transition_complete_count;    /**< Animations finally presented. */
     uint32_t transition_cancel_count;      /**< Started animations then cancelled. */
+    uint32_t snapshot_prepare_count;        /**< Attempted snapshot preparations. */
+    uint64_t snapshot_prepare_us;           /**< Sum of snapshot preparation time. */
+    uint32_t maximum_snapshot_prepare_us;   /**< Longest snapshot preparation. */
+    uint32_t snapshot_prepare_p95_us;       /**< Histogram-derived 95th percentile. */
+    uint32_t snapshot_fallback_count;       /**< Preparations falling back to native LVGL. */
     uint32_t active_frame_count;           /**< Successful final flushes while active. */
     uint64_t active_duration_us;           /**< Sum of active animation durations. */
     uint32_t interval_count;               /**< Start-to-submit active intervals. */

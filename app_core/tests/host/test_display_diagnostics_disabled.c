@@ -14,6 +14,9 @@ int main(void)
             ESP_OK);
     app_manager_display_diagnostics_transition_started(
         APP_MANAGER_TRANSITION_FADE);
+    app_manager_display_diagnostics_snapshot_prepare_started(
+        APP_MANAGER_TRANSITION_FADE);
+    app_manager_display_diagnostics_snapshot_prepare_finished(false);
     app_manager_display_diagnostics_transition_completed();
     app_manager_display_diagnostics_transition_cancelled();
     assert(app_manager_display_diagnostics_stop() == ESP_OK);

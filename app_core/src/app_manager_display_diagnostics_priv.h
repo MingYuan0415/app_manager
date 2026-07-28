@@ -25,6 +25,22 @@ void app_manager_display_diagnostics_transition_started(
     app_manager_transition_effect_t effect);
 
 /**
+ * @brief Start timing a snapshot animation preparation attempt.
+ *
+ * Call this after the presentation input blocker is enabled and before either
+ * source or target screen is captured.
+ */
+void app_manager_display_diagnostics_snapshot_prepare_started(
+    app_manager_transition_effect_t effect);
+
+/**
+ * @brief Complete one snapshot animation preparation attempt.
+ *
+ * @param fallback is true when presentation must use native LVGL animation.
+ */
+void app_manager_display_diagnostics_snapshot_prepare_finished(bool fallback);
+
+/**
  * @brief Mark the active animation complete and awaiting final presentation.
  *
  * The transition remains active until its next successful final panel submit.
@@ -38,6 +54,18 @@ static inline void app_manager_display_diagnostics_transition_started(
     app_manager_transition_effect_t effect)
 {
     (void)effect;
+}
+
+static inline void app_manager_display_diagnostics_snapshot_prepare_started(
+    app_manager_transition_effect_t effect)
+{
+    (void)effect;
+}
+
+static inline void app_manager_display_diagnostics_snapshot_prepare_finished(
+    bool fallback)
+{
+    (void)fallback;
 }
 
 static inline void app_manager_display_diagnostics_transition_completed(void)

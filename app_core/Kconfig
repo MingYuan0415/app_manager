@@ -25,6 +25,19 @@ config APP_MANAGER_LVGL_RGB565_SWAPPED
         controlled display performance comparisons; the default preserves the
         existing RGB565 rendering and adapter-side byte swap behavior.
 
+config APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION
+    bool "Enable full-resolution snapshot screen transitions"
+    depends on SPIRAM && !APP_MANAGER_LVGL_RGB565_SWAPPED
+    default y
+    select LV_USE_IMAGE
+    select LV_USE_SNAPSHOT
+    help
+        Capture source and destination screens into two persistent RGB565
+        PSRAM buffers, then animate their Image widgets. This avoids drawing
+        the live screen trees during animated transitions at a cost of two
+        full-screen snapshots. Native LVGL screen animations remain the
+        automatic fallback when snapshot resources or capture are unavailable.
+
 config APP_MANAGER_DISPLAY_DIAGNOSTICS
     bool "Enable display performance diagnostics"
     depends on SPIRAM
