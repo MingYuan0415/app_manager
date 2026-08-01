@@ -362,8 +362,9 @@ const lv_font_t *app_manager_get_font(app_theme_font_id_t id);
  * @param aid is the stable application identifier.
  * @param root_id identifies the application's static root page.
  * @param app_flags is a bitwise app_manager_app_flag_t value.
+ * @param routes is the application's static page-route array.
  */
-#define APP_MANAGER_APP_EXPORT(n, icn, aid, root_id, app_flags) \
+#define APP_MANAGER_APP_EXPORT(n, icn, aid, root_id, app_flags, routes) \
     __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
     static const app_manager_app_desc_t _app_manager_app_##n = \
     { \
@@ -371,28 +372,9 @@ const lv_font_t *app_manager_get_font(app_theme_font_id_t id);
         .icon = (const void *)(icn), \
         .id = (aid), \
         .root_page_id = (root_id), \
+        .page_routes = (routes), \
+        .page_route_count = sizeof(routes) / sizeof((routes)[0]), \
         .flags = (app_flags), \
-        .type = APP_MANAGER_APP_BUILTIN, \
-    }
-
-/**
- * @brief Export one static page descriptor.
- * @param n is a unique descriptor symbol suffix.
- * @param aid identifies the owning application.
- * @param pid identifies the page within its application.
- * @param cb receives page lifecycle messages.
- * @param data is stable handler user data, or NULL.
- * @param bytes is the required private-memory size.
- */
-#define APP_MANAGER_PAGE_EXPORT(n, aid, pid, cb, data, bytes) \
-    __attribute__((section(".app_manager_pages"), used, aligned(sizeof(void *)))) \
-    static const app_manager_page_desc_t _app_manager_page_##n = \
-    { \
-        .app_id = (aid), \
-        .page_id = (pid), \
-        .handler = (cb), \
-        .user_data = (data), \
-        .memory_size = (bytes), \
     }
 
 #ifdef __cplusplus

@@ -13,6 +13,7 @@
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
+#include "app_manager_page_arena.h"
 #include "app_manager_presentation.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
@@ -86,7 +87,6 @@ typedef enum
     MOCK_LIFECYCLE_DEINIT,
     MOCK_GESTURE_DEINIT,
     MOCK_PRESENTATION_DEINIT,
-    MOCK_REGISTRY_RESET,
     MOCK_MAILBOX_DEINIT,
     MOCK_ADAPTER_LOCK,
     MOCK_ADAPTER_DEINIT,
@@ -161,6 +161,7 @@ static bool s_lifecycle_admission_closed;
 static bool s_gesture_accepting;
 static bool s_gesture_suspended;
 static char s_expected_drive_letter;
+static size_t s_expected_page_arena_bytes;
 static unsigned s_lvgl_lock_depth;
 static unsigned s_mmap_del_failures_remaining;
 static unsigned s_checks;
@@ -289,6 +290,7 @@ static void _mock_reset(void)
     s_gesture_accepting = false;
     s_gesture_suspended = true;
     s_expected_drive_letter = 'F';
+    s_expected_page_arena_bytes = 0U;
     s_lvgl_lock_depth = 0;
     s_mmap_del_failures_remaining = 0;
     memset(&s_touch_callbacks, 0, sizeof(s_touch_callbacks));
@@ -1044,7 +1046,7 @@ esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
 {
     _mock_observe_initializing_or_deinitializing();
     if (max_page_memory_size !=
-            ((32U * 1024U / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U) ||
+            app_manager_page_arena_stride(s_expected_page_arena_bytes) ||
             s_live.mailbox == 0 ||
             s_live.registry != 0)
     {
@@ -1058,7 +1060,7 @@ esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
     return ESP_OK;
 }
 
-esp_err_t app_manager_builtin_registry_reset(void)
+void app_manager_builtin_registry_reset(void)
 {
     _mock_observe_initializing_or_deinitializing();
     if (s_live.lifecycle != 0 || s_live.presentation != 0 ||
@@ -1066,12 +1068,7 @@ esp_err_t app_manager_builtin_registry_reset(void)
     {
         s_contract_error = true;
     }
-    if (_mock_should_fail(MOCK_REGISTRY_RESET))
-    {
-        return s_failure.result;
-    }
     s_live.registry = 0;
-    return ESP_OK;
 }
 
 esp_err_t app_manager_presentation_init(void)
@@ -1128,7 +1125,7 @@ esp_err_t app_manager_lifecycle_configure(
 esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (arena_bytes != 0 || s_live.registry == 0 ||
+    if (arena_bytes != s_expected_page_arena_bytes || s_live.registry == 0 ||
             s_live.presentation == 0)
     {
         s_contract_error = true;
@@ -1653,6 +1650,19 @@ static void _test_resource_drive_letter_is_forwarded(void)
     _check_clean_state();
 }
 
+static void _test_custom_page_arena_stride_is_forwarded(void)
+{
+    _mock_reset();
+    app_manager_config_t config = _make_config();
+    config.page_memory_bytes = APP_MANAGER_MAX_PAGE_INSTANCES * 65U + 7U;
+    s_expected_page_arena_bytes = config.page_memory_bytes;
+
+    CHECK(app_manager_page_arena_stride(config.page_memory_bytes) == 64U);
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+}
+
 static void _test_disabled_te_uses_default_mode(void)
 {
     _mock_reset();
@@ -1850,7 +1860,6 @@ static void _test_all_cleanup_failures_are_retryable(void)
         MOCK_LIFECYCLE_DEINIT,
         MOCK_GESTURE_DEINIT,
         MOCK_PRESENTATION_DEINIT,
-        MOCK_REGISTRY_RESET,
         MOCK_MAILBOX_DEINIT,
         MOCK_ADAPTER_LOCK,
         MOCK_ADAPTER_PAUSE,
@@ -2362,6 +2371,7 @@ int main(void)
 {
     _test_invalid_config_and_ready_state();
     _test_resource_drive_letter_is_forwarded();
+    _test_custom_page_arena_stride_is_forwarded();
     _test_disabled_te_uses_default_mode();
     _test_te_profile_uses_proxy_and_disables_startup_touch();
     _test_te_register_failure_clears_proxy_after_deinit();

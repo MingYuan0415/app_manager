@@ -12,6 +12,7 @@
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
+#include "app_manager_page_arena.h"
 #include "app_manager_presentation.h"
 #include "app_theme.h"
 #include "driver/gpio.h"
@@ -26,7 +27,6 @@
 #endif
 #include <stdatomic.h>
 
-#define APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES (32U * 1024U)
 #define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT \
     ((uint32_t)CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT)
 
@@ -683,11 +683,7 @@ static esp_err_t _app_adapter_cleanup_services(void)
     }
     if (s_registry_ready)
     {
-        result = app_manager_builtin_registry_reset();
-        if (result != ESP_OK)
-        {
-            return result;
-        }
+        app_manager_builtin_registry_reset();
         s_registry_ready = false;
     }
     if (s_mailbox_ready)
@@ -1037,11 +1033,8 @@ static esp_err_t _app_adapter_initialize_resources(
 static esp_err_t _app_adapter_start_services(
     const app_manager_config_t *config)
 {
-    const size_t arena_bytes = config->page_memory_bytes == 0U ?
-                               APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES :
-                               config->page_memory_bytes;
     const size_t page_memory_bytes =
-        (arena_bytes / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U;
+        app_manager_page_arena_stride(config->page_memory_bytes);
     esp_err_t result = esp_lv_adapter_start();
     if (result != ESP_OK)
     {
@@ -1157,9 +1150,8 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     atomic_store(&s_state, APP_ADAPTER_READY);
     LOG_I("initialized: %ux%u, mailbox=24, page_arena=%u",
           s_display_port->width, s_display_port->height,
-          (unsigned)(config->page_memory_bytes == 0 ?
-                     APP_MANAGER_DEFAULT_PAGE_MEMORY_BYTES :
-                     config->page_memory_bytes));
+          (unsigned)app_manager_page_arena_resolve_bytes(
+              config->page_memory_bytes));
     return ESP_OK;
 
 fail:

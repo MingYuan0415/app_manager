@@ -1,4 +1,5 @@
 #include "app_manager_nav_model.h"
+#include "app_manager_page_arena.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -11,37 +12,41 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     (void)user_data;
 }
 
-static const app_manager_app_desc_t s_apps[APP_MANAGER_MAX_RESIDENT_APPS] =
+static const app_manager_page_definition_t s_page_definition =
 {
-    {.name = "a0", .id = "a0", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a1", .id = "a1", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a2", .id = "a2", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a3", .id = "a3", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a4", .id = "a4", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a5", .id = "a5", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a6", .id = "a6", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-    {.name = "a7", .id = "a7", .root_page_id = "root", .type = APP_MANAGER_APP_BUILTIN},
-};
-
-static const app_manager_page_desc_t s_root_pages[
-    APP_MANAGER_MAX_RESIDENT_APPS] =
-{
-    {.app_id = "a0", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a1", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a2", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a3", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a4", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a5", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a6", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-    {.app_id = "a7", .page_id = "root", .handler = _page_handler, .memory_size = 16U},
-};
-
-static const app_manager_page_desc_t s_child_page =
-{
-    .app_id = "a0",
-    .page_id = "child",
     .handler = _page_handler,
     .memory_size = 16U,
+};
+
+static const app_manager_page_route_t s_root_routes[
+    APP_MANAGER_MAX_RESIDENT_APPS] =
+{
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+    {.page_id = "root", .definition = &s_page_definition},
+};
+
+static const app_manager_app_desc_t s_apps[APP_MANAGER_MAX_RESIDENT_APPS] =
+{
+    {.name = "a0", .id = "a0", .root_page_id = "root", .page_routes = &s_root_routes[0], .page_route_count = 1U},
+    {.name = "a1", .id = "a1", .root_page_id = "root", .page_routes = &s_root_routes[1], .page_route_count = 1U},
+    {.name = "a2", .id = "a2", .root_page_id = "root", .page_routes = &s_root_routes[2], .page_route_count = 1U},
+    {.name = "a3", .id = "a3", .root_page_id = "root", .page_routes = &s_root_routes[3], .page_route_count = 1U},
+    {.name = "a4", .id = "a4", .root_page_id = "root", .page_routes = &s_root_routes[4], .page_route_count = 1U},
+    {.name = "a5", .id = "a5", .root_page_id = "root", .page_routes = &s_root_routes[5], .page_route_count = 1U},
+    {.name = "a6", .id = "a6", .root_page_id = "root", .page_routes = &s_root_routes[6], .page_route_count = 1U},
+    {.name = "a7", .id = "a7", .root_page_id = "root", .page_routes = &s_root_routes[7], .page_route_count = 1U},
+};
+
+static const app_manager_page_route_t s_child_route =
+{
+    .page_id = "child",
+    .definition = &s_page_definition,
 };
 
 static uint32_t _random_next(uint32_t *state)
@@ -85,17 +90,16 @@ static app_manager_app_node_t *_create_app(app_manager_nav_model_t *model,
     {
         return NULL;
     }
-    app_manager_page_node_t *page = app_manager_nav_model_alloc_page(model,
-                                    16U);
+    app_manager_page_node_t *page = app_manager_nav_model_alloc_page(
+                                        model, &s_root_routes[descriptor_index]);
     if (page == NULL)
     {
         app_manager_nav_model_free_app(app);
         return NULL;
     }
     app->descriptor = &s_apps[descriptor_index];
-    page->descriptor = &s_root_pages[descriptor_index];
     page->started = true;
-    memset(page->private_memory, 0xA5, page->private_memory_size);
+    memset(page->private_memory, 0xA5, s_page_definition.memory_size);
     app_manager_nav_model_link_page(app, page);
     if (model->active_app != NULL)
     {
@@ -137,14 +141,13 @@ static void _push_child(app_manager_nav_model_t *model)
     {
         return;
     }
-    app_manager_page_node_t *page = app_manager_nav_model_alloc_page(model,
-                                    16U);
+    app_manager_page_node_t *page = app_manager_nav_model_alloc_page(
+                                        model, &s_child_route);
     if (page == NULL)
     {
         return;
     }
     _set_page_foreground(app->current_page, false);
-    page->descriptor = &s_child_page;
     page->started = true;
     app_manager_nav_model_link_page(app, page);
     _set_page_foreground(page, true);
@@ -238,7 +241,7 @@ static void _test_random_model_commands(void)
                 {
                     (void)fprintf(stderr,
                                   "page[%zu] id=%s active=%d mounted=%d screen=%p app=%p\n",
-                                  index, page->descriptor->page_id,
+                                  index, page->route->page_id,
                                   page->active, page->mounted,
                                   (void *)page->screen, (void *)page->app);
                 }
@@ -258,22 +261,52 @@ static void _test_random_model_commands(void)
 
 static void _test_memory_capacity_and_scrub(void)
 {
+    static const app_manager_page_definition_t full_definition =
+    {
+        .handler = _page_handler,
+        .memory_size = 64U,
+    };
+    static const app_manager_page_definition_t oversized_definition =
+    {
+        .handler = _page_handler,
+        .memory_size = 65U,
+    };
+    static const app_manager_page_definition_t small_definition =
+    {
+        .handler = _page_handler,
+        .memory_size = 1U,
+    };
+    static const app_manager_page_route_t full_route =
+    {
+        .page_id = "full",
+        .definition = &full_definition,
+    };
+    static const app_manager_page_route_t oversized_route =
+    {
+        .page_id = "oversized",
+        .definition = &oversized_definition,
+    };
+    static const app_manager_page_route_t small_route =
+    {
+        .page_id = "small",
+        .definition = &small_definition,
+    };
     app_manager_nav_model_t model;
     assert(app_manager_nav_model_init(
                &model, APP_MANAGER_MAX_PAGE_INSTANCES * 64U) == ESP_OK);
-    assert(app_manager_nav_model_alloc_page(&model, 65U) == NULL);
+    assert(app_manager_nav_model_alloc_page(&model, &oversized_route) == NULL);
 
     app_manager_page_node_t *pages[APP_MANAGER_MAX_PAGE_INSTANCES];
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
     {
-        pages[index] = app_manager_nav_model_alloc_page(&model, 64U);
+        pages[index] = app_manager_nav_model_alloc_page(&model, &full_route);
         assert(pages[index] != NULL);
     }
-    assert(app_manager_nav_model_alloc_page(&model, 1U) == NULL);
+    assert(app_manager_nav_model_alloc_page(&model, &small_route) == NULL);
     memset(pages[3]->private_memory, 0xFF, 64U);
     void *memory = pages[3]->private_memory;
     app_manager_nav_model_free_page(&model, pages[3]);
-    pages[3] = app_manager_nav_model_alloc_page(&model, 64U);
+    pages[3] = app_manager_nav_model_alloc_page(&model, &full_route);
     assert(pages[3] != NULL);
     assert(pages[3]->private_memory == memory);
     const uint8_t *bytes = pages[3]->private_memory;
@@ -281,6 +314,24 @@ static void _test_memory_capacity_and_scrub(void)
     {
         assert(bytes[index] == 0U);
     }
+    app_manager_nav_model_deinit(&model);
+}
+
+static void _test_page_arena_stride_resolution(void)
+{
+    const size_t uneven_arena_bytes =
+        APP_MANAGER_MAX_PAGE_INSTANCES * 65U + 7U;
+    assert(app_manager_page_arena_resolve_bytes(0U) ==
+           APP_MANAGER_PAGE_ARENA_DEFAULT_BYTES);
+    assert(app_manager_page_arena_stride(0U) == 2728U);
+    assert(app_manager_page_arena_resolve_bytes(uneven_arena_bytes) ==
+           uneven_arena_bytes);
+    assert(app_manager_page_arena_stride(uneven_arena_bytes) == 64U);
+
+    app_manager_nav_model_t model;
+    assert(app_manager_nav_model_init(&model, uneven_arena_bytes) == ESP_OK);
+    assert(model.page_stride ==
+           app_manager_page_arena_stride(uneven_arena_bytes));
     app_manager_nav_model_deinit(&model);
 }
 
@@ -306,9 +357,8 @@ static void _test_paused_and_cleanup_owned_nodes(void)
     active->current_page->screen = NULL;
 
     app_manager_page_node_t *detached = app_manager_nav_model_alloc_page(
-                                            &model, 16U);
+                                            &model, &s_child_route);
     assert(detached != NULL);
-    detached->descriptor = &s_child_page;
     detached->app = active;
     detached->started = true;
     detached->cleanup_pending = true;
@@ -322,11 +372,10 @@ static void _test_paused_and_cleanup_owned_nodes(void)
 
     app_manager_app_node_t *orphan = app_manager_nav_model_alloc_app(&model);
     app_manager_page_node_t *orphan_page = app_manager_nav_model_alloc_page(
-            &model, 16U);
+            &model, &s_root_routes[1]);
     assert(orphan != NULL && orphan_page != NULL);
     orphan->descriptor = &s_apps[1];
     orphan->cleanup_pending = true;
-    orphan_page->descriptor = &s_root_pages[1];
     orphan_page->started = true;
     app_manager_nav_model_link_page(orphan, orphan_page);
     assert(app_manager_nav_model_invariants(&model));
@@ -352,6 +401,7 @@ int main(void)
 {
     _test_random_model_commands();
     _test_memory_capacity_and_scrub();
+    _test_page_arena_stride_resolution();
     _test_paused_and_cleanup_owned_nodes();
     return 0;
 }

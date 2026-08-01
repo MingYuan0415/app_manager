@@ -82,13 +82,6 @@ typedef enum
  */
 typedef void (*app_page_msg_cb_t)(app_manager_msg_type_t msg, void *param);
 
-/** @brief Supported application registration classes. */
-typedef enum
-{
-    APP_MANAGER_APP_BUILTIN = 0, /**< Linker-discovered static application. */
-    APP_MANAGER_APP_DYNAMIC,     /**< Runtime-managed application. */
-} app_manager_app_type_t;
-
 /** @brief Flags attached to an application descriptor. */
 typedef enum
 {
@@ -97,26 +90,32 @@ typedef enum
     APP_MANAGER_APP_FLAG_HIDDEN = 1U << 1, /**< Omit from normal launchers. */
 } app_manager_app_flag_t;
 
-/** @brief Linker-discoverable application descriptor. */
+/** @brief Immutable implementation shared by one or more application routes. */
+typedef struct app_manager_page_definition
+{
+    app_page_msg_cb_t handler; /**< Lifecycle handler. */
+    uint32_t memory_size;      /**< Zeroed private bytes required per instance. */
+} app_manager_page_definition_t;
+
+/** @brief Application-owned route to an immutable page definition. */
+typedef struct app_manager_page_route
+{
+    const char *page_id; /**< Stable page identifier within the owning app. */
+    const app_manager_page_definition_t *definition; /**< Shared implementation. */
+    void *user_data; /**< Stable route-specific handler user data, or NULL. */
+} app_manager_page_route_t;
+
+/** @brief Linker-discoverable builtin application descriptor. */
 typedef struct app_manager_app_desc
 {
     const char *name;             /**< Human-readable application name. */
     const void *icon;             /**< Optional application icon resource. */
     const char *id;               /**< Stable application identifier. */
     const char *root_page_id;     /**< ID of the statically described root page. */
+    const app_manager_page_route_t *page_routes; /**< Owned static route array. */
+    size_t page_route_count;      /**< Number of entries in page_routes. */
     uint32_t flags;               /**< Bitwise app_manager_app_flag_t values. */
-    app_manager_app_type_t type;  /**< Provider and ownership class. */
 } app_manager_app_desc_t;
-
-/** @brief Linker-discoverable static page descriptor. */
-typedef struct app_manager_page_desc
-{
-    const char *app_id;           /**< Owning application identifier. */
-    const char *page_id;          /**< Stable page identifier within the app. */
-    app_page_msg_cb_t handler;    /**< Lifecycle handler. */
-    void *user_data;              /**< Stable handler user data, or NULL. */
-    uint32_t memory_size;         /**< Zeroed private bytes required by the page. */
-} app_manager_page_desc_t;
 
 /** @brief Native screen-transition effects. */
 typedef enum

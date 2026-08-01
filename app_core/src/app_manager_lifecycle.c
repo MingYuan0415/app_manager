@@ -72,7 +72,6 @@ typedef struct lifecycle_transition_state
     bool target_resumed;
     bool source_unmounted;
     bool source_stopped;
-    bool provider_released;
     lifecycle_transition_kind_t kind;
     lifecycle_transition_phase_t phase;
     app_manager_app_node_t *source_app;
@@ -267,8 +266,9 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
     esp_err_t cleanup_error;
     uint32_t generation;
 
-    if (page == NULL || !page->in_use || page->descriptor == NULL ||
-            page->descriptor->handler == NULL)
+    if (page == NULL || !page->in_use || page->route == NULL ||
+            page->route->definition == NULL ||
+            page->route->definition->handler == NULL)
     {
         return ESP_ERR_INVALID_STATE;
     }
@@ -284,19 +284,19 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
     app_manager_lifecycle_observer_t observer = atomic_load(&s_host_observer);
     if (observer != NULL)
     {
-        observer(page->app->descriptor->id, page->descriptor->page_id,
+        observer(page->app->descriptor->id, page->route->page_id,
                  message, APP_MANAGER_LIFECYCLE_OBSERVER_BEFORE);
     }
 #endif
 #if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
     LOG_I("[%s][%s] ON %s", page->app->descriptor->name,
-          page->descriptor->page_id, s_lifecycle_message_names[message]);
+          page->route->page_id, s_lifecycle_message_names[message]);
 #endif
-    page->descriptor->handler(message, page->user_data);
+    page->route->definition->handler(message, page->route->user_data);
 #ifdef HOST_TEST
     if (observer != NULL)
     {
-        observer(page->app->descriptor->id, page->descriptor->page_id,
+        observer(page->app->descriptor->id, page->route->page_id,
                  message, APP_MANAGER_LIFECYCLE_OBSERVER_AFTER);
     }
 #endif
@@ -348,9 +348,10 @@ static esp_err_t _lifecycle_start_page(app_manager_page_node_t *page)
     {
         return ESP_OK;
     }
-    if (page->private_memory != NULL && page->private_memory_size > 0U)
+    const size_t memory_size = page->route->definition->memory_size;
+    if (page->private_memory != NULL && memory_size > 0U)
     {
-        memset(page->private_memory, 0, page->private_memory_size);
+        memset(page->private_memory, 0, memory_size);
     }
     return _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTART);
 }
@@ -541,7 +542,7 @@ static void _lifecycle_activate_app(app_manager_app_node_t *app)
     app->active = true;
 }
 
-static esp_err_t _lifecycle_release_and_free_app(app_manager_app_node_t *app)
+static esp_err_t _lifecycle_free_app(app_manager_app_node_t *app)
 {
     esp_err_t result = ESP_OK;
     for (app_manager_page_node_t *page = app->current_page;
@@ -559,11 +560,6 @@ static esp_err_t _lifecycle_release_and_free_app(app_manager_app_node_t *app)
                 return result;
             }
         }
-    }
-    result = app_manager_builtin_release(&app->lease);
-    if (result != ESP_OK)
-    {
-        return result;
     }
     while (app->current_page != NULL)
     {
@@ -603,7 +599,7 @@ static esp_err_t _lifecycle_destroy_background_app(app_manager_app_node_t *app)
     esp_err_t result = _lifecycle_stop_all_app_pages(app);
     if (result == ESP_OK)
     {
-        result = _lifecycle_release_and_free_app(app);
+        result = _lifecycle_free_app(app);
     }
     return result;
 }
@@ -723,19 +719,17 @@ static void _lifecycle_copy_arguments(app_manager_app_node_t *app,
 }
 
 static esp_err_t _lifecycle_create_page(app_manager_app_node_t *app,
-                                        const app_manager_page_desc_t *descriptor,
+                                        const app_manager_page_route_t *route,
                                         const app_manager_nav_request_t *request,
                                         bool link_page,
                                         app_manager_page_node_t **out_page)
 {
     app_manager_page_node_t *page = app_manager_nav_model_alloc_page(
-                                        &s_model, descriptor->memory_size);
+                                        &s_model, route);
     if (page == NULL)
     {
         return ESP_ERR_NO_MEM;
     }
-    page->descriptor = descriptor;
-    page->user_data = descriptor->user_data;
     page->app = app;
     if (link_page)
     {
@@ -761,10 +755,29 @@ static esp_err_t _lifecycle_create_app(const char *app_id,
     app_manager_app_node_t *app = NULL;
     app_manager_page_node_t *root = NULL;
     app_manager_page_node_t *target = NULL;
+    const app_manager_app_desc_t *descriptor =
+        app_manager_builtin_find_by_id(app_id);
 
-    if (app_manager_builtin_find_by_id(app_id) == NULL)
+    if (descriptor == NULL)
     {
         return ESP_ERR_NOT_FOUND;
+    }
+    const app_manager_page_route_t *root_route =
+        app_manager_builtin_find_page(descriptor, descriptor->root_page_id);
+    if (root_route == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const app_manager_page_route_t *target_route = root_route;
+    if (target_page_id != NULL &&
+            strcmp(target_page_id, root_route->page_id) != 0)
+    {
+        target_route = app_manager_builtin_find_page(descriptor,
+                       target_page_id);
+        if (target_route == NULL)
+        {
+            return ESP_ERR_NOT_FOUND;
+        }
     }
     result = _lifecycle_make_resident_space();
     if (result != ESP_OK)
@@ -776,44 +789,17 @@ static esp_err_t _lifecycle_create_app(const char *app_id,
     {
         return ESP_ERR_NO_MEM;
     }
-    result = app_manager_builtin_acquire(app_id, &app->lease);
-    if (result != ESP_OK)
-    {
-        app_manager_nav_model_free_app(app);
-        return result;
-    }
-    app->descriptor = app_manager_builtin_lease_app(&app->lease);
-    if (app->descriptor == NULL)
-    {
-        result = ESP_ERR_INVALID_STATE;
-        goto fail_app;
-    }
-    const app_manager_page_desc_t *root_descriptor =
-        app_manager_builtin_lease_find_page(&app->lease,
-                                            app->descriptor->root_page_id);
-    if (root_descriptor == NULL)
-    {
-        result = ESP_ERR_INVALID_STATE;
-        goto fail_app;
-    }
-    result = _lifecycle_create_page(app, root_descriptor, request, true,
+    app->descriptor = descriptor;
+    result = _lifecycle_create_page(app, root_route, request, true,
                                     &root);
     if (result != ESP_OK)
     {
         goto fail_app;
     }
     target = root;
-    if (target_page_id != NULL &&
-            strcmp(target_page_id, root_descriptor->page_id) != 0)
+    if (target_route != root_route)
     {
-        const app_manager_page_desc_t *target_descriptor =
-            app_manager_builtin_lease_find_page(&app->lease, target_page_id);
-        if (target_descriptor == NULL)
-        {
-            result = ESP_ERR_NOT_FOUND;
-            goto fail_pages;
-        }
-        result = _lifecycle_create_page(app, target_descriptor, request, true,
+        result = _lifecycle_create_page(app, target_route, request, true,
                                         &target);
         if (result != ESP_OK)
         {
@@ -840,16 +826,7 @@ fail_pages:
 fail_app:
     if (app->current_page == NULL)
     {
-        const esp_err_t release_result = app_manager_builtin_release(
-                                             &app->lease);
-        if (release_result == ESP_OK)
-        {
-            app_manager_nav_model_free_app(app);
-        }
-        else
-        {
-            app->cleanup_pending = true;
-        }
+        app_manager_nav_model_free_app(app);
     }
     return result;
 }
@@ -1004,7 +981,7 @@ static void _lifecycle_commit_target(void)
             !s_transition.target_app_created &&
             app_manager_nav_model_find_page(
                 s_transition.target_app,
-                s_transition.target_page->descriptor->page_id) !=
+                s_transition.target_page->route->page_id) !=
             s_transition.target_page)
     {
         s_transition.target_page->cleanup_pending = false;
@@ -1217,7 +1194,7 @@ static esp_err_t _lifecycle_retry_target_recovery(void)
     app_manager_app_node_t *app = s_model.active_app;
     app_manager_page_node_t *page = app != NULL ? app->current_page : NULL;
     if (app == NULL || page == NULL || !app->in_use || !page->in_use ||
-            app->descriptor == NULL || page->descriptor == NULL)
+            app->descriptor == NULL || page->route == NULL)
     {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1354,12 +1331,11 @@ static esp_err_t _lifecycle_finalize_back_app(void)
         goto rollback;
     }
     s_transition.source_stopped = true;
-    result = _lifecycle_release_and_free_app(s_transition.source_app);
+    result = _lifecycle_free_app(s_transition.source_app);
     if (result != ESP_OK)
     {
         goto rollback;
     }
-    s_transition.provider_released = true;
     _lifecycle_commit_target();
     return result;
 
@@ -1558,7 +1534,10 @@ static esp_err_t _lifecycle_open_page(
             &s_model, request->app_id);
     app_manager_page_node_t *target_page = NULL;
 
-    if (app_manager_builtin_find_page(request->app_id,
+    const app_manager_app_desc_t *target_descriptor = target_app != NULL ?
+        target_app->descriptor :
+        app_manager_builtin_find_by_id(request->app_id);
+    if (app_manager_builtin_find_page(target_descriptor,
                                       request->page_id) == NULL)
     {
         return ESP_ERR_NOT_FOUND;
@@ -1597,14 +1576,14 @@ static esp_err_t _lifecycle_open_page(
         }
         else
         {
-            const app_manager_page_desc_t *descriptor =
-                app_manager_builtin_lease_find_page(&target_app->lease,
-                                                    request->page_id);
-            if (descriptor == NULL)
+            const app_manager_page_route_t *route =
+                app_manager_builtin_find_page(target_app->descriptor,
+                                              request->page_id);
+            if (route == NULL)
             {
                 return ESP_ERR_NOT_FOUND;
             }
-            result = _lifecycle_create_page(target_app, descriptor, request,
+            result = _lifecycle_create_page(target_app, route, request,
                                             false,
                                             &target_page);
             page_created = result == ESP_OK;
@@ -1823,7 +1802,7 @@ static esp_err_t _lifecycle_remove_page(
     }
     if (app->current_page == NULL)
     {
-        result = _lifecycle_release_and_free_app(app);
+        result = _lifecycle_free_app(app);
         if (result != ESP_OK)
         {
             return result;
@@ -2000,12 +1979,6 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
     {
         goto fail;
     }
-    result = app_manager_builtin_registry_validate(s_model.page_stride);
-    if (result != ESP_OK)
-    {
-        app_manager_nav_model_deinit(&s_model);
-        goto fail;
-    }
     if (app_manager_presentation_neutral_screen() == NULL)
     {
         result = ESP_ERR_INVALID_STATE;
@@ -2046,13 +2019,6 @@ static void _lifecycle_force_release_nodes(void)
             page->mounted = false;
             page->active = false;
             (void)_lifecycle_delete_unmounted_screen(page);
-        }
-    }
-    for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
-    {
-        if (s_model.apps[index].in_use)
-        {
-            (void)app_manager_builtin_release(&s_model.apps[index].lease);
         }
     }
 }
@@ -2528,7 +2494,8 @@ void *app_manager_this_page_memory(void)
 
 void *app_manager_this_page_userdata(void)
 {
-    return s_handler_page != NULL ? s_handler_page->user_data : NULL;
+    return s_handler_page != NULL && s_handler_page->route != NULL ?
+           s_handler_page->route->user_data : NULL;
 }
 
 lv_obj_t *app_manager_this_page_screen(void)

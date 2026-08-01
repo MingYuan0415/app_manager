@@ -5,7 +5,7 @@
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
 0.5.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
-使用静态 descriptor；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
+使用静态 App descriptor 和 App 私有路由；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
 同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
 Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
 
@@ -18,7 +18,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 3. 稳定前台只挂载一个 Page Screen；动画期间临时同时保留 source 和 target。
 4. 后台 App 保留导航和私有状态，但不保留 Screen、timer、订阅、输入或活动会话。
 5. `ONPAUSE` 或 `ONSTOP` 清理失败时保留实例、句柄和 cleanup ownership，以便重试。
-6. provider descriptor 只能在有效 lease 下被导航核心持有。
+6. App descriptor、Page route 和 Page definition 均为固件全生命周期 immutable 对象。
 7. 动画、生命周期和必要清理完成后，导航命令才完成。
 8. 屏幕休眠和 deinit 会先快进当前动画，再进入稳定页面状态并关闭新准入。
 9. PM generation/commit、mailbox 超时和显示 DMA fence 语义保持独立有效。
@@ -33,7 +33,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/include/app_manager_types.h` | descriptor、Typed Blob、导航、动画、生命周期和硬件端口类型 |
 | `app_core/include/app_manager.h` | 应用、导航、查询、UI dispatcher、显示和 PM 公共 API |
 | `app_core/include/app_manager_config.h` | 装配层使用的 BSP、资源、驻留策略和默认动画配置 |
-| `app_core/src/app_manager_builtin.c` | 静态 registry 和 builtin provider lease |
+| `app_core/src/app_manager_builtin.c` | 静态 App registry、路由校验和查询 |
 | `app_core/src/app_manager_nav_model.c` | App/Page 固定槽、双向链表、arena 和模型不变量 |
 | `app_core/src/app_manager_navigation.c` | 24 槽 sync/async command gateway 和超时语义 |
 | `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
@@ -42,7 +42,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
-| `app_core/linker.lf` | 保留 App/Page 两个 descriptor 链接段 |
+| `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
 | `app_theme/` | 六档语义字体角色 |
 
@@ -63,7 +63,7 @@ ordinary task / UI callback / lifecycle callback / Sys Layer gesture
     lifecycle    nav model    presentation
         |                         |
         v                         v
- builtin lease             LVGL Page Screens
+ static app routes         LVGL Page Screens
 ```
 
 `app-control` 是显示、亮度、输入和 standby 策略的独立串行域。它通过 mailbox 请求
@@ -90,7 +90,7 @@ settings:     root <-> power <-> about
                                   ^ current_page
 ```
 
-页面 arena 在初始化时分成 12 个等大的 8 字节对齐槽。descriptor 的
+页面 arena 在初始化时分成 12 个等大的 8 字节对齐槽。Page definition 的
 `memory_size` 必须不大于单槽大小；页面分配和释放时只清零该页面声明的范围。
 `app_manager_this_page_memory()` 只在当前 handler 调用期间有效，页面成功释放后
 不得继续保存该指针。
@@ -104,38 +104,51 @@ settings:     root <-> power <-> about
 HOME 操作默认只把已有 HOME 实例提到前台。需要释放其他后台 App 时提交
 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
-## 4. 静态 Registry 与 Provider Lease
+## 4. 静态 Registry 与 App-owned Routes
 
-App 和 Page 由两个静态 descriptor 链接段提供，根页也必须静态描述：
+Page 实现由 immutable definition 描述，App 通过私有 route 表显式选择可导航页面：
 
 ```c
-APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
-                       APP_MANAGER_APP_FLAG_NONE);
+static const app_manager_page_definition_t s_example_root_definition =
+{
+    .handler = _example_page_handler,
+    .memory_size = sizeof(example_page_state_t),
+};
 
-APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
-                        _example_page_handler, NULL,
-                        sizeof(example_page_state_t));
+static const app_manager_page_route_t s_example_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_example_root_definition,
+        .user_data = NULL,
+    },
+};
+
+APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
+                       APP_MANAGER_APP_FLAG_NONE, s_example_routes);
 ```
 
-`APP_MANAGER_APP_EXPORT` 写入 `.app_manager_apps`，`APP_MANAGER_PAGE_EXPORT` 写入
-`.app_manager_pages`。`app_core/linker.lf` 对两个段执行 `KEEP()` 并生成首尾符号。
-宿主测试没有 ESP-IDF linker fragment，因此内部 fixture 可通过
-`app_manager_builtin.h` 中的 `app_manager_register_builtin_descriptors()` 安装生命周期内
-有效的 fallback 数组；该函数不是公共 provider 注册 ABI。
+只有 App descriptor 写入 `.app_manager_apps`；`app_core/linker.lf` 对该段执行
+`KEEP()` 并生成首尾符号。definition 和 route 表是普通 `const` 对象，通过 App
+descriptor 可达，不存在独立 Page 链接段。宿主测试没有 ESP-IDF linker fragment，
+因此内部 fixture 可通过 `app_manager_builtin.h` 中的
+`app_manager_register_builtin_descriptors()` 安装固件生命周期内有效的 App 数组；
+该函数不是运行时注册 API。
 
-初始化会一次性校验：
+初始化按实际 arena stride 一次性校验：
 
 - App ID、Page ID 非空且长度合法；
-- App ID 不重复，同一 App 内 Page ID 不重复；
-- App 类型、flags 合法；
-- 每个 App 都存在声明的根页面；
-- 每个 Page 都属于已知 App，handler 非空；
-- `memory_size` 不超过配置后的单页 arena 槽。
+- App ID 全局不重复，同一 App 内 Page ID 不重复；
+- flags 合法，route 数组与数量一致且非空；
+- 每个 App 的根 Page 恰好存在于自己的 route 表；
+- route 的 definition 和 handler 非空；
+- definition 的 `memory_size` 不超过单页 arena 槽。
 
-builtin provider 实现 `find`、`enumerate`、`acquire` 和 `release`。运行实例持有
-value-owned lease，生命周期核心通过 lease 访问 App/Page descriptor，释放 App 时才
-归还 lease。`APP_MANAGER_APP_DYNAMIC` 仍是保留类型；0.5.0 不提供公共 provider 注册、
-动态模块 ABI 或脚本应用。
+同一 Page ID 可存在于不同 App；同一 definition 也可由多个 App route 引用。每个 route
+拥有独立的 `page_id` 和稳定、非托管 `user_data`，每次页面实例仍获得独立私有内存和
+导航栈。公共页面必须由目标 App 显式 opt-in；未绑定 route 时 `(app_id, page_id)` 查询
+返回 `ESP_ERR_NOT_FOUND`。所有 descriptor、route 和 definition 生命周期覆盖整个固件
+运行期，不提供动态 App、provider、lease、运行时裸 handler 创建或自由挂载接口。
 
 ## 5. Typed Blob 与 New Intent
 
@@ -203,7 +216,7 @@ ONSTART -> ONMOUNT -> ONRESUME -> ONPAUSE -> ONUNMOUNT -> ONSTOP
   不得提前销毁 UI 或假定 source 已恢复。
 - 不得用 `lv_screen_active()` 作为页面根节点；它在动画期间并不表示当前 handler 的
   所有者。
-- handler、`this_page_*` 返回值和 descriptor `user_data` 不提供跨任务 UI 所有权。
+- handler、`this_page_*` 返回值和 route `user_data` 不提供跨任务 UI 所有权。
 - 清理错误只允许从 `ONPAUSE` 或 `ONSTOP` 报告。
 
 ## 7. 独立 Screen 与转换引擎
@@ -285,8 +298,8 @@ RESUME source。动画结束后的 source `STOP` 失败也使用相同补偿顺�
 命令。target 补偿 PAUSE 失败时不得 UNMOUNT target 或 RESUME source；框架保留 target
 的 Screen 和活动资源并提交为前台，以原始错误完成命令。source 根据转换类型保留为
 `UNMOUNT_ONLY`、`DESTROY_PAGE` 或 `DESTROY_APP` cleanup owner；后续导航先重试该动作，
-避免两个页面同时持有前台会话。`UNMOUNT_ONLY` 不会 STOP 后台驻留 Page，
-`DESTROY_APP` 在 provider release 成功前始终保留 lease。
+避免两个页面同时持有前台会话。`UNMOUNT_ONLY` 不会 STOP 后台驻留 Page；
+`DESTROY_APP` 只销毁页面、Screen 和运行节点，静态 descriptor 始终有效。
 
 `BACK_TO` 只在起点和最终目标之间播放一次动画；中间页面按栈顶到栈底执行 STOP/free，
 清理失败前已经成功移除的页面属于允许的部分提交。
@@ -473,19 +486,17 @@ state->subscription = EVENT_BUS_SUB_HANDLE_INVALID;
 框架只记录当前回调报告的第一个非 `ESP_OK` 错误：
 
 - PAUSE 失败时页面仍保持 active，不继续 UNMOUNT/STOP；
-- STOP 失败时实例、私有内存、provider lease 和未释放句柄继续归原 owner；
+- STOP 失败时实例、私有内存和未释放句柄继续归原 owner；
 - 未提交 target 已经 RESUME 时，回滚必须先执行 target PAUSE，再 UNMOUNT target 和
   RESUME source；应用应把它视为正常的补偿性生命周期配对；
 - target 的补偿 PAUSE 失败时保留 target 的 Screen、活动资源和 recovery ownership，
   不得继续 UNMOUNT target 或 RESUME source；
 - 返回/退出的 STOP 失败会在 target 补偿成功后恢复 source Page，而不是提交半个前台；
-- STOP 已成功但 provider release 失败时，source 以新的 START epoch 恢复，框架会先清零
-  该 Page 声明的私有内存；
 - 后台清理、驻留淘汰和 deinit 可再次执行同一清理；
 - 释放失败后不得提前清空 handle，否则框架无法替业务代码恢复所有权证据。
 
 `ONMOUNT/ONUNMOUNT` 不提供 cleanup error 通道。LVGL Screen 创建、删除或动画启动失败
-由 presentation/lifecycle 自身回滚。任何失败路径都不得丢失 Page slot、Screen、lease
+由 presentation/lifecycle 自身回滚。任何失败路径都不得丢失 Page slot、Screen
 或 cleanup ownership。
 
 ## 10. Screen Suspend、Resume 与 Deinit
@@ -525,7 +536,7 @@ running-count 快照；其余 active/present 查询返回 `false` 或 `NULL`。
 1. app-control 停止生产者，注销输入并取消 standby；
 2. navigation 停止准入，排空命令并快进最后动画；
 3. lifecycle 置 CLOSED，等待已准入访问退出；
-4. UI worker 执行 PAUSE/UNMOUNT/STOP、删除 Screen 并释放 lease；
+4. UI worker 执行 PAUSE/UNMOUNT/STOP、删除 Screen 并释放运行节点；
 5. presentation 删除 neutral Screen、屏障和 completion timer；
 6. 关闭 mailbox，pause/fence/deinit LVGL adapter；
 7. 释放字体、主题和资源映射。
@@ -655,11 +666,23 @@ static void _example_page_handler(app_manager_msg_type_t message, void *param)
     }
 }
 
+static const app_manager_page_definition_t s_example_root_definition =
+{
+    .handler = _example_page_handler,
+    .memory_size = sizeof(example_page_state_t),
+};
+
+static const app_manager_page_route_t s_example_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_example_root_definition,
+        .user_data = NULL,
+    },
+};
+
 APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
-                       APP_MANAGER_APP_FLAG_NONE);
-APP_MANAGER_PAGE_EXPORT(example_root, "example", "root",
-                        _example_page_handler, NULL,
-                        sizeof(example_page_state_t));
+                       APP_MANAGER_APP_FLAG_NONE, s_example_routes);
 ```
 
 实际实现可参考：
@@ -791,7 +814,7 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 0.5.0 不包含：
 
-- 动态模块加载、公共 provider 插件 ABI 或脚本应用；
+- 动态 App、provider 插件 ABI、运行时 Page 挂载、裸 handler 创建或脚本应用；
 - Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后
   才按普通 Page/App 返回动画决定是否创建全分辨率快照；
 - 静态 indicator 图片、LVGL Vector 或 ThorVG；弧形只由固定 A8 Canvas 程序化生成；

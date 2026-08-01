@@ -21,10 +21,8 @@ struct app_manager_page_node
     bool mounted;
     bool active;
     uint32_t generation;
-    const app_manager_page_desc_t *descriptor;
-    void *user_data;
+    const app_manager_page_route_t *route;
     void *private_memory;
-    size_t private_memory_size;
     app_manager_typed_blob_t arguments;
     bool has_arguments;
     lv_obj_t *screen;
@@ -39,7 +37,6 @@ struct app_manager_app_node
     bool cleanup_pending;
     bool active;
     const app_manager_app_desc_t *descriptor;
-    app_manager_builtin_lease_t lease;
     app_manager_typed_blob_t arguments;
     bool has_arguments;
     app_manager_page_node_t *current_page;
@@ -67,7 +64,8 @@ app_manager_page_node_t *app_manager_nav_model_find_page(
 app_manager_app_node_t *app_manager_nav_model_alloc_app(
     app_manager_nav_model_t *model);
 app_manager_page_node_t *app_manager_nav_model_alloc_page(
-    app_manager_nav_model_t *model, size_t memory_size);
+    app_manager_nav_model_t *model,
+    const app_manager_page_route_t *route);
 void app_manager_nav_model_free_app(app_manager_app_node_t *app);
 void app_manager_nav_model_free_page(app_manager_nav_model_t *model,
                                      app_manager_page_node_t *page);

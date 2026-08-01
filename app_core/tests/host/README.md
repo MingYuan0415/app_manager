@@ -1,13 +1,13 @@
 # App Manager Host Tests
 
-These tests compile the production registry/provider, navigation model, command gateway,
+These tests compile the production static registry, navigation model, command gateway,
 mailbox, lifecycle, control, and LVGL adapter sources with only the FreeRTOS/LVGL/hardware
 port surface replaced by host shims.
 
-The suites cover descriptor and lease validation, randomized model invariants, the fixed
+The suites cover app-owned route and shared-definition validation, randomized model invariants, the fixed
 24-slot navigation pool, value-copy semantics, callback reentrancy, both timeout paths,
 seven-stage lifecycle order, new intent delivery, resident eviction, detached cleanup,
-Screen rollback, suspend/resume, and retryable PAUSE/STOP/release failures. The adapter test
+Screen rollback, suspend/resume, and retryable PAUSE/STOP failures. The adapter test
 enables its filesystem and FreeType paths and injects failures at every initialization and
 cleanup boundary to verify reverse rollback and retry behavior. The control suite also
 injects activity at the standby boundary to ensure an accepted wake request cannot be

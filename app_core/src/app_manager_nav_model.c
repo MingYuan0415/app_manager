@@ -5,10 +5,9 @@
 #endif
 
 #include "app_manager_nav_model.h"
+#include "app_manager_page_arena.h"
 
 #include <string.h>
-
-#define APP_MANAGER_DEFAULT_ARENA_BYTES (32U * 1024U)
 
 esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
                                      size_t arena_bytes)
@@ -18,12 +17,7 @@ esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
         return ESP_ERR_INVALID_ARG;
     }
     memset(model, 0, sizeof(*model));
-    if (arena_bytes == 0)
-    {
-        arena_bytes = APP_MANAGER_DEFAULT_ARENA_BYTES;
-    }
-    model->page_stride =
-        (arena_bytes / APP_MANAGER_MAX_PAGE_INSTANCES) & ~(size_t)7U;
+    model->page_stride = app_manager_page_arena_stride(arena_bytes);
     if (model->page_stride == 0)
     {
         return ESP_ERR_INVALID_SIZE;
@@ -90,8 +84,8 @@ app_manager_page_node_t *app_manager_nav_model_find_page(
     for (app_manager_page_node_t *page = app->current_page;
             page != NULL; page = page->previous)
     {
-        if (!page->cleanup_pending && page->descriptor != NULL &&
-                strcmp(page->descriptor->page_id, page_id) == 0)
+        if (!page->cleanup_pending && page->route != NULL &&
+                strcmp(page->route->page_id, page_id) == 0)
         {
             return page;
         }
@@ -119,12 +113,15 @@ app_manager_app_node_t *app_manager_nav_model_alloc_app(
 }
 
 app_manager_page_node_t *app_manager_nav_model_alloc_page(
-    app_manager_nav_model_t *model, size_t memory_size)
+    app_manager_nav_model_t *model,
+    const app_manager_page_route_t *route)
 {
-    if (model == NULL || memory_size > model->page_stride)
+    if (model == NULL || route == NULL || route->definition == NULL ||
+            route->definition->memory_size > model->page_stride)
     {
         return NULL;
     }
+    const size_t memory_size = route->definition->memory_size;
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
     {
         if (!model->pages[index].in_use)
@@ -133,7 +130,7 @@ app_manager_page_node_t *app_manager_nav_model_alloc_page(
             memset(&model->pages[index], 0, sizeof(model->pages[index]));
             model->pages[index].in_use = true;
             model->pages[index].generation = generation;
-            model->pages[index].private_memory_size = memory_size;
+            model->pages[index].route = route;
             if (memory_size > 0)
             {
                 model->pages[index].private_memory =
@@ -163,10 +160,13 @@ void app_manager_nav_model_free_page(app_manager_nav_model_t *model,
     }
     size_t index = (size_t)(page - model->pages);
     uint32_t generation = page->generation;
-    if (page->private_memory != NULL && page->private_memory_size > 0)
+    const size_t memory_size = page->route != NULL &&
+                               page->route->definition != NULL ?
+                               page->route->definition->memory_size : 0U;
+    if (page->private_memory != NULL && memory_size > 0U)
     {
         memset(&model->page_arena[index * model->page_stride], 0,
-               page->private_memory_size);
+               memory_size);
     }
     memset(page, 0, sizeof(*page));
     page->generation = generation;
@@ -328,7 +328,8 @@ bool app_manager_nav_model_invariants(const app_manager_nav_model_t *model)
             continue;
         }
         retained_page_count++;
-        valid = page->descriptor != NULL && page->app != NULL &&
+        valid = page->route != NULL && page->route->definition != NULL &&
+                page->app != NULL &&
                 page->app >= model->apps &&
                 page->app < model->apps + APP_MANAGER_MAX_RESIDENT_APPS &&
                 page->app->in_use && (!page->mounted || page->screen != NULL) &&

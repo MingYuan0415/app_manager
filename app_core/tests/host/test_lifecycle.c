@@ -25,6 +25,7 @@ struct _lv_obj_t
 typedef struct page_state
 {
     const char *name;
+    const char *app_id;
     unsigned messages[APP_MANAGER_MSG_USER_END];
     unsigned pause_failures;
     unsigned stop_failures;
@@ -34,6 +35,7 @@ typedef struct page_state
     bool has_arguments;
     app_manager_typed_blob_t arguments;
     lv_obj_t *last_screen;
+    void *instance_memory;
 } page_state_t;
 
 typedef struct trace_event
@@ -77,11 +79,11 @@ typedef struct presentation_mock
     uint32_t last_duration_ms;
 } presentation_mock_t;
 
-static page_state_t s_a_root = {.name = "a/root"};
-static page_state_t s_a_one = {.name = "a/one"};
-static page_state_t s_a_two = {.name = "a/two"};
-static page_state_t s_b_root = {.name = "b/root"};
-static page_state_t s_c_root = {.name = "c/root"};
+static page_state_t s_a_root = {.name = "a/root", .app_id = "a"};
+static page_state_t s_a_one = {.name = "a/one", .app_id = "a"};
+static page_state_t s_a_two = {.name = "a/two", .app_id = "a"};
+static page_state_t s_b_root = {.name = "b/root", .app_id = "b"};
+static page_state_t s_c_root = {.name = "c/root", .app_id = "c"};
 static page_state_t *const s_page_states[] =
 {
     &s_a_root,
@@ -95,6 +97,7 @@ static size_t s_trace_count;
 static presentation_mock_t s_presentation;
 static FILE *s_lifecycle_log_output;
 static int s_saved_stderr = -1;
+static const char *s_callback_owner_app_id;
 
 static void _lifecycle_log_capture_begin(void)
 {
@@ -162,11 +165,32 @@ void app_manager_back_gesture_navigation_settled(void)
 {
 }
 
+static void _lifecycle_observer(
+    const char *app_id, const char *page_id, app_manager_msg_type_t message,
+    app_manager_lifecycle_observer_phase_t phase)
+{
+    (void)page_id;
+    (void)message;
+    if (phase == APP_MANAGER_LIFECYCLE_OBSERVER_BEFORE)
+    {
+        assert(s_callback_owner_app_id == NULL);
+        s_callback_owner_app_id = app_id;
+    }
+    else
+    {
+        assert(s_callback_owner_app_id != NULL);
+        assert(strcmp(s_callback_owner_app_id, app_id) == 0);
+        s_callback_owner_app_id = NULL;
+    }
+}
+
 static void _page_handler(app_manager_msg_type_t message, void *user_data)
 {
     page_state_t *state = user_data;
     bool pause_failed = false;
     assert(state != NULL);
+    assert(s_callback_owner_app_id != NULL);
+    assert(strcmp(s_callback_owner_app_id, state->app_id) == 0);
     assert(app_manager_this_page_userdata() == user_data);
     assert(message < APP_MANAGER_MSG_USER_END);
     assert(s_trace_count < TEST_TRACE_CAPACITY);
@@ -185,6 +209,7 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     case APP_MANAGER_MSG_ONSTART:
         assert(screen == NULL);
         assert(memory[0] == 0U);
+        state->instance_memory = memory;
         memory[0] = 0xA5U;
         break;
     case APP_MANAGER_MSG_ONMOUNT:
@@ -263,50 +288,72 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     }
 }
 
+static const app_manager_page_definition_t s_shared_page_definition =
+{
+    .handler = _page_handler,
+    .memory_size = 16U,
+};
+
+static const app_manager_page_route_t s_a_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_shared_page_definition,
+        .user_data = &s_a_root,
+    },
+    {
+        .page_id = "one",
+        .definition = &s_shared_page_definition,
+        .user_data = &s_a_one,
+    },
+    {
+        .page_id = "two",
+        .definition = &s_shared_page_definition,
+        .user_data = &s_a_two,
+    },
+};
+
+static const app_manager_page_route_t s_b_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_shared_page_definition,
+        .user_data = &s_b_root,
+    },
+};
+
+static const app_manager_page_route_t s_c_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_shared_page_definition,
+        .user_data = &s_c_root,
+    },
+};
+
 static const app_manager_app_desc_t s_apps[] =
 {
     {
         .name = "A",
         .id = "a",
         .root_page_id = "root",
+        .page_routes = s_a_routes,
+        .page_route_count = sizeof(s_a_routes) / sizeof(s_a_routes[0]),
         .flags = APP_MANAGER_APP_FLAG_PINNED,
-        .type = APP_MANAGER_APP_BUILTIN,
     },
     {
         .name = "B",
         .id = "b",
         .root_page_id = "root",
-        .type = APP_MANAGER_APP_BUILTIN,
+        .page_routes = s_b_routes,
+        .page_route_count = sizeof(s_b_routes) / sizeof(s_b_routes[0]),
     },
     {
         .name = "C",
         .id = "c",
         .root_page_id = "root",
-        .type = APP_MANAGER_APP_BUILTIN,
-    },
-};
-
-static const app_manager_page_desc_t s_pages[] =
-{
-    {
-        .app_id = "a", .page_id = "root", .handler = _page_handler,
-        .user_data = &s_a_root, .memory_size = 16U,
-    },
-    {
-        .app_id = "a", .page_id = "one", .handler = _page_handler,
-        .user_data = &s_a_one, .memory_size = 16U,
-    },
-    {
-        .app_id = "a", .page_id = "two", .handler = _page_handler,
-        .user_data = &s_a_two, .memory_size = 16U,
-    },
-    {
-        .app_id = "b", .page_id = "root", .handler = _page_handler,
-        .user_data = &s_b_root, .memory_size = 16U,
-    },
-    {
-        .app_id = "c", .page_id = "root", .handler = _page_handler,
-        .user_data = &s_c_root, .memory_size = 16U,
+        .page_routes = s_c_routes,
+        .page_route_count = sizeof(s_c_routes) / sizeof(s_c_routes[0]),
     },
 };
 
@@ -876,34 +923,16 @@ static void _test_forward_unmount_and_target_pause_failure(void)
     assert(app_page_is_actived("a", "root"));
 }
 
-static void _test_release_and_target_pause_rollback(void)
+static void _test_shared_definition_and_target_pause_rollback(void)
 {
     nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
     assert(_navigate(&call) == ESP_OK);
-
-    app_manager_builtin_host_fail_releases(1U);
-    call = _request(APP_MANAGER_NAV_OP_EXIT, "b", NULL);
-    _trace_reset();
-    assert(_navigate(&call) == ESP_FAIL);
-    const trace_event_t release_fail_expected[] =
-    {
-        EVENT(&s_a_root, APP_MANAGER_MSG_ONMOUNT),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONPAUSE),
-        EVENT(&s_a_root, APP_MANAGER_MSG_ONRESUME),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONUNMOUNT),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONSTOP),
-        EVENT(&s_a_root, APP_MANAGER_MSG_ONPAUSE),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONSTART),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONMOUNT),
-        EVENT(&s_b_root, APP_MANAGER_MSG_ONRESUME),
-        EVENT(&s_a_root, APP_MANAGER_MSG_ONUNMOUNT),
-    };
-    _expect_trace(release_fail_expected,
-                  sizeof(release_fail_expected) /
-                  sizeof(release_fail_expected[0]));
-    _expect_start_handoff_complete();
-    assert(app_manager_is_actived("b"));
-    assert(_live_screen_count() == 1U);
+    assert(s_a_routes[0].definition == s_b_routes[0].definition);
+    assert(s_a_root.instance_memory != NULL);
+    assert(s_b_root.instance_memory != NULL);
+    assert(s_a_root.instance_memory != s_b_root.instance_memory);
+    assert(app_manager_is_page_present("a", "root"));
+    assert(app_manager_is_page_present("b", "root"));
 
     s_b_root.stop_failures = 1U;
     s_a_root.pause_failures = 1U;
@@ -1052,11 +1081,6 @@ static void _test_resident_eviction_and_cleanup(void)
     assert(!app_manager_is_page_present("c", "root"));
     assert(app_manager_get_running_apps() == 1U);
 
-    app_manager_builtin_host_fail_releases(1U);
-    call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
-    assert(_navigate(&call) == ESP_FAIL);
-    assert(app_manager_is_actived("a"));
-    assert(app_manager_get_running_apps() == 1U);
     call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
     assert(app_manager_is_all_closed());
@@ -1262,6 +1286,8 @@ static void _test_validation_and_final_exit(void)
 
     call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "missing");
     assert(_navigate(&call) == ESP_ERR_NOT_FOUND);
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "c", "one");
+    assert(_navigate(&call) == ESP_ERR_NOT_FOUND);
     call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
     assert(app_manager_is_all_closed());
@@ -1287,10 +1313,11 @@ int main(void)
     _presentation_reset();
     _test_configuration_validation();
     assert(app_manager_register_builtin_descriptors(
-               s_apps, sizeof(s_apps) / sizeof(s_apps[0]),
-               s_pages, sizeof(s_pages) / sizeof(s_pages[0])) == ESP_OK);
+               s_apps, sizeof(s_apps) / sizeof(s_apps[0])) == ESP_OK);
+    assert(app_manager_builtin_registry_validate(64U) == ESP_OK);
     assert(app_manager_mailbox_init() == ESP_OK);
     assert(app_manager_lifecycle_init(12U * 64U) == ESP_OK);
+    app_manager_lifecycle_host_set_observer(_lifecycle_observer);
     _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 
     _lifecycle_log_capture_begin();
@@ -1298,7 +1325,7 @@ int main(void)
     _test_presentation_start_failure_rollback();
     _test_forward_unmount_and_target_pause_failure();
     _test_pause_and_stop_rollback();
-    _test_release_and_target_pause_rollback();
+    _test_shared_definition_and_target_pause_rollback();
     _test_uncommitted_cleanup_ownership();
     _test_async_transition_queries();
     _test_resident_eviction_and_cleanup();
@@ -1312,8 +1339,10 @@ int main(void)
     assert(app_manager_lifecycle_shutdown_begin_and_wait() == ESP_OK);
     assert(app_manager_mailbox_shutdown_call(_deinit_on_ui, NULL) == ESP_FAIL);
     assert(app_manager_mailbox_shutdown_call(_deinit_on_ui, NULL) == ESP_OK);
+    assert(s_callback_owner_app_id == NULL);
+    app_manager_lifecycle_host_set_observer(NULL);
     assert(app_manager_mailbox_deinit() == ESP_OK);
-    assert(app_manager_builtin_registry_reset() == ESP_OK);
+    app_manager_builtin_registry_reset();
     _lifecycle_log_capture_end();
     return 0;
 }
