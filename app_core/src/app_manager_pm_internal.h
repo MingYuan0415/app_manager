@@ -17,11 +17,9 @@
 #include <stdatomic.h>
 
 /** @brief Maximum number of commands held by app-control. */
-#define APP_CONTROL_QUEUE_DEPTH          16
+#define APP_CONTROL_QUEUE_DEPTH          CONFIG_APP_MANAGER_CONTROL_QUEUE_DEPTH
 /** @brief Stack size of the app-control task in bytes. */
-#define APP_CONTROL_TASK_STACK           4096
-/** @brief Priority assigned to the app-control task. */
-#define APP_CONTROL_TASK_PRIORITY        5
+#define APP_CONTROL_TASK_STACK           CONFIG_APP_MANAGER_CONTROL_TASK_STACK
 /** @brief Poll and retry period in milliseconds. */
 #define APP_CONTROL_POLL_MS              100
 /** @brief Maximum startup wait for the app-control task. */

@@ -9,6 +9,11 @@
 
 #include <string.h>
 
+_Static_assert(APP_MANAGER_MAX_RESIDENT_APPS <= UINT8_MAX,
+               "resident indexes must fit in uint8_t");
+_Static_assert(APP_MANAGER_MAX_PAGE_INSTANCES <= UINT8_MAX,
+               "page indexes must fit in uint8_t");
+
 esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
                                      size_t arena_bytes)
 {

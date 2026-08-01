@@ -32,6 +32,7 @@ typedef struct app_manager_config
     app_manager_transition_t  app_back_transition; /**< Zero selects FADE, 220 ms. */
     app_manager_transition_t  page_forward_transition; /**< Zero selects PUSH_LEFT, 220 ms. */
     app_manager_transition_t  page_back_transition; /**< Zero selects PUSH_RIGHT, 220 ms. */
+    uint32_t                  control_task_priority; /**< App-control worker priority. */
 } app_manager_config_t;
 
 #ifdef __cplusplus

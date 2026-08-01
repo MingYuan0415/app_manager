@@ -626,6 +626,7 @@ int main(void)
             .cancel_standby = _standby_cancel,
             .is_standby_allowed = _standby_is_allowed,
         },
+        .control_task_priority = 5U,
     };
 
     assert(app_manager_control_init(&config) == ESP_OK);

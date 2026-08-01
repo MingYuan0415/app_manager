@@ -24,6 +24,7 @@ static void _control_release_primitives(void);
 app_manager_screen_ctrl_ops_t s_screen_ops;
 static app_manager_input_ops_t s_input_ops;
 app_manager_standby_ops_t s_standby_ops;
+static uint32_t s_task_priority;
 QueueHandle_t s_queue;
 SemaphoreHandle_t s_call_lock;
 SemaphoreHandle_t s_call_done;
@@ -215,7 +216,9 @@ static bool _control_config_valid(const app_manager_config_t *config)
            config->input_ops.register_handler != NULL &&
            config->input_ops.unregister_handler != NULL &&
            config->standby_ops.request_standby != NULL &&
-           config->standby_ops.cancel_standby != NULL;
+           config->standby_ops.cancel_standby != NULL &&
+           config->control_task_priority > 0U &&
+           config->control_task_priority < configMAX_PRIORITIES;
 }
 
 static bool _control_create_primitives(void)
@@ -308,7 +311,7 @@ static void _control_reset_runtime_state(void)
 static esp_err_t _control_start_task(void)
 {
     if (xTaskCreate(app_manager_control_task, "app_control", APP_CONTROL_TASK_STACK,
-                    NULL, APP_CONTROL_TASK_PRIORITY, &s_task) != pdPASS)
+                    NULL, s_task_priority, &s_task) != pdPASS)
     {
         return ESP_ERR_NO_MEM;
     }
@@ -343,6 +346,7 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
     s_screen_ops = config->screen_ops;
     s_input_ops = config->input_ops;
     s_standby_ops = config->standby_ops;
+    s_task_priority = config->control_task_priority;
     if (!_control_create_primitives())
     {
         _control_release_primitives();
@@ -497,6 +501,7 @@ static void _control_clear_runtime(void)
     memset(&s_screen_ops, 0, sizeof(s_screen_ops));
     memset(&s_input_ops, 0, sizeof(s_input_ops));
     memset(&s_standby_ops, 0, sizeof(s_standby_ops));
+    s_task_priority = 0U;
     atomic_store(&s_wake_pending, false);
     atomic_store(&s_power_pending_events, 0U);
     atomic_store(&s_power_pending_wake, false);

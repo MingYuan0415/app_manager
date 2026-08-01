@@ -583,10 +583,11 @@ active duration、final-flush interval 的 P50/P95/P99/max、33,333 us 达标数
 41,667 us 的最大长度。adapter FPS 只作为观察信息；benchmark 的 `passed` 仅表示采样、
 DMA、panel 提交和动画统计完整性通过，具体帧率门槛由上板验收逻辑判定。停止诊断时先
 注销 display event，再确认任务退出并释放 PSRAM 栈，之后才允许销毁 LVGL adapter。
-characterization 的第一阶段固定为 display-only，第二阶段由
-`CONFIG_APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_*` 选择 full、audio-only
-或 tcp-only；STRESS 始终保持 audio+TCP full-load。STRESS 时长默认 1800 秒，开发固件
-可配置为最长 28,800 秒，用于连续 8 小时单板 soak。
+characterization 的第一阶段固定为 display-only，第二阶段的 full、audio-only 或
+tcp-only 由根 benchmark 运行时 profile 选择；STRESS 使用 profile 中的 load。campaign
+模式、时长、IPv4 host、port 和 rate 不属于 App Manager Kconfig，由
+`tests/display/profiles/*.json` 生成的类型化配置传给 `display_benchmark_start()`。
+App Manager Kconfig 只保留 diagnostics 和显示静态资源/功能 gate。
 
 `CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` 默认关闭。仅在调试生命周期顺序时启用；它统一
 输出 `START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT` 的 INFO trace。关闭时编译器会

@@ -6,6 +6,8 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+#define configMAX_PRIORITIES 25U
 #include <stdio.h>
 #include <unistd.h>
 

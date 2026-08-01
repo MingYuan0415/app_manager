@@ -29,15 +29,16 @@ extern "C" {
 /** Current typed-blob envelope version. */
 #define APP_MANAGER_TYPED_BLOB_VERSION               1U
 /** Fixed navigation-command pool capacity. */
-#define APP_MANAGER_NAV_COMMAND_CAPACITY              24U
+#define APP_MANAGER_NAV_COMMAND_CAPACITY \
+    CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY
 /** Maximum supported transition duration. */
 #define APP_MANAGER_TRANSITION_MAX_DURATION_MS        2000U
 /** Built-in duration used when a configured duration is zero. */
 #define APP_MANAGER_TRANSITION_DEFAULT_DURATION_MS    220U
 /** Physical running-application capacity. */
-#define APP_MANAGER_MAX_RESIDENT_APPS                 8U
+#define APP_MANAGER_MAX_RESIDENT_APPS CONFIG_APP_MANAGER_MAX_RESIDENT_APPS
 /** Physical retained-page capacity. */
-#define APP_MANAGER_MAX_PAGE_INSTANCES                12U
+#define APP_MANAGER_MAX_PAGE_INSTANCES CONFIG_APP_MANAGER_MAX_PAGE_INSTANCES
 
 /** @brief Versioned, value-owned navigation arguments. */
 typedef struct app_manager_typed_blob

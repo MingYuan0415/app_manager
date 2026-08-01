@@ -22,10 +22,13 @@
 #include <stdbool.h>
 #include <string.h>
 
-#define APP_MANAGER_MAILBOX_SLOTS          24
+#define APP_MANAGER_MAILBOX_SLOTS CONFIG_APP_MANAGER_MAILBOX_CAPACITY
 #define APP_MANAGER_MAILBOX_PERIOD_MS      5
 #define APP_MANAGER_MAILBOX_DRAIN_LIMIT    8
 #define APP_MANAGER_MAILBOX_READY_MS       1000
+
+_Static_assert(APP_MANAGER_MAILBOX_SLOTS <= UINT8_MAX,
+               "mailbox indexes must fit in uint8_t");
 
 typedef enum
 {

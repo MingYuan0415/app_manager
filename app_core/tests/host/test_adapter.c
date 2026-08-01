@@ -435,6 +435,7 @@ static app_manager_config_t _make_config(void)
             .cancel_standby = _standby_request,
         },
         .page_memory_bytes = 0,
+        .control_task_priority = 5U,
     };
     return config;
 }
@@ -1634,6 +1635,9 @@ static void _test_invalid_config_and_ready_state(void)
     unsigned init_calls = s_calls[MOCK_THEME_INIT];
     CHECK(app_manager_init(&config) == ESP_OK);
     CHECK(s_calls[MOCK_THEME_INIT] == init_calls);
+    ++config.control_task_priority;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_STATE);
+    --config.control_task_priority;
     CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
 }

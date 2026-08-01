@@ -71,6 +71,8 @@ static bool s_lifecycle_ready;
 static bool s_navigation_ready;
 static bool s_gesture_ready;
 static bool s_control_ready;
+static bool s_active_config_valid;
+static app_manager_config_t s_active_config;
 static bsp_display_port_t s_display_port_storage;
 static const bsp_display_port_t *s_display_port;
 static lv_display_t *s_display;
@@ -855,6 +857,78 @@ static bool _app_adapter_config_valid(const app_manager_config_t *config)
             APP_ADAPTER_PARTIAL_BUFFER_HEIGHT <= config->disp_port->height);
 }
 
+static bool _app_adapter_display_port_equal(const bsp_display_port_t *left,
+        const bsp_display_port_t *right)
+{
+    return left != NULL && right != NULL && left->width == right->width &&
+           left->height == right->height && left->panel == right->panel &&
+           left->panel_io == right->panel_io && left->touch == right->touch &&
+           left->touch_io == right->touch_io &&
+           left->te.enabled == right->te.enabled &&
+           left->te.gpio_num == right->te.gpio_num &&
+           left->te.bus_freq_hz == right->te.bus_freq_hz &&
+           left->te.data_lines == right->te.data_lines &&
+           left->te.bits_per_pixel == right->te.bits_per_pixel &&
+           left->te.intr_type == right->te.intr_type;
+}
+
+static bool _app_adapter_transition_equal(
+    const app_manager_transition_t *left,
+    const app_manager_transition_t *right)
+{
+    return left->effect == right->effect &&
+           left->duration_ms == right->duration_ms &&
+           left->reserved == right->reserved;
+}
+
+static bool _app_adapter_config_equal(const app_manager_config_t *config)
+{
+    const app_manager_config_t *active = &s_active_config;
+    return s_active_config_valid && config != NULL &&
+           _app_adapter_display_port_equal(config->disp_port,
+                                           active->disp_port) &&
+           config->font_sizes == active->font_sizes &&
+           config->font_count == active->font_count &&
+           config->res_fs_letter == active->res_fs_letter &&
+           config->screen_ops.suspend == active->screen_ops.suspend &&
+           config->screen_ops.resume_prepare ==
+           active->screen_ops.resume_prepare &&
+           config->screen_ops.resume_commit ==
+           active->screen_ops.resume_commit &&
+           config->screen_ops.is_suspended ==
+           active->screen_ops.is_suspended &&
+           config->screen_ops.is_suspend_committed ==
+           active->screen_ops.is_suspend_committed &&
+           config->screen_ops.set_brightness ==
+           active->screen_ops.set_brightness &&
+           config->screen_ops.set_brightness_temp ==
+           active->screen_ops.set_brightness_temp &&
+           config->screen_ops.get_brightness ==
+           active->screen_ops.get_brightness &&
+           config->input_ops.register_handler ==
+           active->input_ops.register_handler &&
+           config->input_ops.unregister_handler ==
+           active->input_ops.unregister_handler &&
+           config->standby_ops.request_standby ==
+           active->standby_ops.request_standby &&
+           config->standby_ops.cancel_standby ==
+           active->standby_ops.cancel_standby &&
+           config->standby_ops.is_standby_allowed ==
+           active->standby_ops.is_standby_allowed &&
+           config->page_memory_bytes == active->page_memory_bytes &&
+           config->max_resident_apps == active->max_resident_apps &&
+           config->resident_policy == active->resident_policy &&
+           _app_adapter_transition_equal(&config->app_forward_transition,
+                                         &active->app_forward_transition) &&
+           _app_adapter_transition_equal(&config->app_back_transition,
+                                         &active->app_back_transition) &&
+           _app_adapter_transition_equal(&config->page_forward_transition,
+                                         &active->page_forward_transition) &&
+           _app_adapter_transition_equal(&config->page_back_transition,
+                                         &active->page_back_transition) &&
+           config->control_task_priority == active->control_task_priority;
+}
+
 static void _app_adapter_reset_runtime(void)
 {
     s_theme_ready = false;
@@ -866,6 +940,11 @@ static void _app_adapter_reset_runtime(void)
     s_navigation_ready = false;
     s_gesture_ready = false;
     s_control_ready = false;
+    s_active_config_valid = false;
+    s_active_config = (app_manager_config_t)
+    {
+        0
+    };
     s_display_port = NULL;
     s_display_port_storage = (bsp_display_port_t)
     {
@@ -1107,7 +1186,8 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     int state = atomic_load(&s_state);
     if (state == APP_ADAPTER_READY)
     {
-        return ESP_OK;
+        return _app_adapter_config_equal(config) ? ESP_OK :
+               ESP_ERR_INVALID_STATE;
     }
     int expected = APP_ADAPTER_UNINITIALIZED;
     if (!atomic_compare_exchange_strong(&s_state, &expected,
@@ -1147,6 +1227,9 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
         goto fail;
     }
 
+    s_active_config = *config;
+    s_active_config.disp_port = &s_display_port_storage;
+    s_active_config_valid = true;
     atomic_store(&s_state, APP_ADAPTER_READY);
     LOG_I("initialized: %ux%u, mailbox=24, page_arena=%u",
           s_display_port->width, s_display_port->height,

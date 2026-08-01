@@ -20,6 +20,7 @@ function(configure_host_test target)
         "${APP_CORE_DIR}/../app_theme/include"
     )
     target_compile_options(${target} PRIVATE
+        -include "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.h"
         -Wall -Wextra -Werror -Wpedantic -Wno-variadic-macros
     )
     target_link_libraries(${target} PRIVATE Threads::Threads)

@@ -8,6 +8,36 @@ config APP_MANAGER_LIFECYCLE_DEBUG_LOG
         lifecycle handler dispatches. Keep disabled in production to remove
         the event-name table, format strings, and per-dispatch logging cost.
 
+config APP_MANAGER_MAX_RESIDENT_APPS
+    int "Resident application capacity"
+    range 1 16
+    default 8
+
+config APP_MANAGER_MAX_PAGE_INSTANCES
+    int "Page instance capacity"
+    range 1 32
+    default 12
+
+config APP_MANAGER_NAV_COMMAND_CAPACITY
+    int "Navigation command capacity"
+    range 1 64
+    default 24
+
+config APP_MANAGER_MAILBOX_CAPACITY
+    int "Mailbox command capacity"
+    range 1 64
+    default 24
+
+config APP_MANAGER_CONTROL_QUEUE_DEPTH
+    int "App-control queue depth"
+    range 1 64
+    default 16
+
+config APP_MANAGER_CONTROL_TASK_STACK
+    int "App-control task stack size"
+    range 2048 16384
+    default 4096
+
 config APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT
     int "LVGL partial draw buffer height"
     range 1 448
@@ -47,85 +77,5 @@ config APP_MANAGER_DISPLAY_DIAGNOSTICS
         Periodically log display FPS and DMA/internal plus PSRAM heap
         availability. This creates one low-priority PSRAM-stack task and is
         intended for on-device performance validation.
-
-config APP_MANAGER_DISPLAY_BENCHMARK
-    bool "Enable automated display performance benchmark"
-    depends on APP_MANAGER_DISPLAY_DIAGNOSTICS && SYSTEM_PM_DEVELOPMENT_MODE
-    default n
-    help
-        Enable the development-only runtime benchmark that drives display
-        transitions with a configured concurrent workload.
-
-if APP_MANAGER_DISPLAY_BENCHMARK
-
-choice APP_MANAGER_DISPLAY_BENCHMARK_MODE
-    prompt "Display benchmark mode"
-    default APP_MANAGER_DISPLAY_BENCHMARK_MODE_STRESS
-    help
-        Stress runs the production transition mix with audio and TCP for the
-        configured duration. Characterization measures five effects first
-        display-only and then under the selected second-stage load.
-
-config APP_MANAGER_DISPLAY_BENCHMARK_MODE_STRESS
-    bool "Full-load stability stress"
-
-config APP_MANAGER_DISPLAY_BENCHMARK_MODE_CHARACTERIZATION
-    bool "Transition characterization matrix"
-
-endchoice
-
-config APP_MANAGER_DISPLAY_BENCHMARK_DURATION_SEC
-    int "Display benchmark duration (seconds)"
-    depends on APP_MANAGER_DISPLAY_BENCHMARK_MODE_STRESS
-    range 10 28800
-    default 1800
-    help
-        Set the full-load stress duration. The 28,800-second upper bound
-        supports an eight-hour single-board soak; production builds keep the
-        benchmark disabled.
-
-config APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_DURATION_SEC
-    int "Duration per effect and load profile (seconds)"
-    depends on APP_MANAGER_DISPLAY_BENCHMARK_MODE_CHARACTERIZATION
-    range 5 300
-    default 30
-    help
-        Run fade, push-left, push-right, cover-left, and reveal-right for this
-        duration under display-only and the selected second-stage profile.
-
-choice APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD
-    prompt "Characterization second-stage load"
-    depends on APP_MANAGER_DISPLAY_BENCHMARK_MODE_CHARACTERIZATION
-    default APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_FULL
-    help
-        Select the workload used by the second characterization stage. The
-        first stage remains display-only and stress mode remains full-load.
-
-config APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_FULL
-    bool "Audio and TCP"
-
-config APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_AUDIO_ONLY
-    bool "Audio only"
-
-config APP_MANAGER_DISPLAY_BENCHMARK_CHARACTERIZATION_LOAD_TCP_ONLY
-    bool "TCP only"
-
-endchoice
-
-config APP_MANAGER_DISPLAY_BENCHMARK_TCP_HOST
-    string "TCP echo server IPv4 address"
-    default "192.168.0.205"
-
-config APP_MANAGER_DISPLAY_BENCHMARK_TCP_PORT
-    int "TCP echo server port"
-    range 1 65535
-    default 5001
-
-config APP_MANAGER_DISPLAY_BENCHMARK_TCP_RATE_KBIT_S
-    int "TCP echo traffic rate per direction (kbit/s)"
-    range 64 20000
-    default 2048
-
-endif
 
 endmenu
