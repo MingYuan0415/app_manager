@@ -220,7 +220,7 @@ int main(void)
     app_manager_mailbox_host_timer_pause(true);
     usleep(15000);
     atomic_store(&s_callback_count, 0);
-    for (int i = 0; i < 20; i++)
+    for (int i = 0; i < CONFIG_APP_MANAGER_MAILBOX_CAPACITY; i++)
     {
         assert(app_manager_ui_post(_count_callback, NULL) == ESP_OK);
     }
@@ -229,20 +229,18 @@ int main(void)
     app_manager_mailbox_host_timer_step();
     _wait_for_count(8);
     app_manager_mailbox_host_timer_step();
-    _wait_for_count(16);
-    app_manager_mailbox_host_timer_step();
-    _wait_for_count(20);
+    _wait_for_count(CONFIG_APP_MANAGER_MAILBOX_CAPACITY);
     app_manager_mailbox_host_timer_pause(false);
 
     atomic_store(&s_callback_count, 0);
     _start_blocking_worker();
-    for (int i = 0; i < 23; i++)
+    for (int i = 0; i < CONFIG_APP_MANAGER_MAILBOX_CAPACITY - 1; i++)
     {
         assert(app_manager_ui_post(_count_callback, NULL) == ESP_OK);
     }
     assert(app_manager_ui_post(_count_callback, NULL) == ESP_ERR_NO_MEM);
     _release_blocking_worker();
-    _wait_for_count(23);
+    _wait_for_count(CONFIG_APP_MANAGER_MAILBOX_CAPACITY - 1);
 
     atomic_store(&s_callback_count, 0);
     _start_blocking_worker();

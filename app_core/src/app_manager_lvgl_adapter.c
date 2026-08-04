@@ -1254,8 +1254,11 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
     s_active_config.disp_port = &s_display_port_storage;
     s_active_config_valid = true;
     atomic_store(&s_state, APP_ADAPTER_READY);
-    LOG_I("initialized: %ux%u, mailbox=24, page_arena=%u",
+    LOG_I("initialized: %ux%u, navigation=%u, mailbox=%u, "
+          "page_arena=%u",
           s_display_port->width, s_display_port->height,
+          (unsigned)CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY,
+          (unsigned)CONFIG_APP_MANAGER_MAILBOX_CAPACITY,
           (unsigned)app_manager_page_arena_resolve_bytes(
               config->page_memory_bytes));
     return ESP_OK;

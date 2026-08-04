@@ -3,12 +3,15 @@
 
 #ifndef HOST_TEST
     #include "mt_log.h"
+    #include "esp_attr.h"
     #include "freertos/FreeRTOS.h"
     #include "freertos/task.h"
+    #define APP_MANAGER_EXT_BSS EXT_RAM_BSS_ATTR
 #else
     #include <stdio.h>
     #include <unistd.h>
     #define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+    #define APP_MANAGER_EXT_BSS
 #endif
 
 #include "app_manager.h"
@@ -99,10 +102,12 @@ static atomic_bool s_accepting;
 static atomic_bool s_policy_enabled;
 static atomic_uint s_api_users;
 
-LV_DRAW_BUF_DEFINE_STATIC(s_indicator_draw_buf,
-                          APP_MANAGER_GESTURE_INDICATOR_WIDTH,
-                          APP_MANAGER_GESTURE_INDICATOR_HEIGHT,
-                          LV_COLOR_FORMAT_A8);
+static _Alignas(LV_DRAW_BUF_ALIGN) APP_MANAGER_EXT_BSS uint8_t
+s_indicator_draw_buf_data[
+    LV_DRAW_BUF_SIZE(APP_MANAGER_GESTURE_INDICATOR_WIDTH,
+                     APP_MANAGER_GESTURE_INDICATOR_HEIGHT,
+                     LV_COLOR_FORMAT_A8)];
+static lv_draw_buf_t s_indicator_draw_buf;
 
 static void _back_gesture_refresh(void);
 
@@ -617,7 +622,17 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
     {
         return ESP_ERR_NO_MEM;
     }
-    LV_DRAW_BUF_INIT_STATIC(s_indicator_draw_buf);
+    lv_draw_buf_init(&s_indicator_draw_buf,
+                     APP_MANAGER_GESTURE_INDICATOR_WIDTH,
+                     APP_MANAGER_GESTURE_INDICATOR_HEIGHT,
+                     LV_COLOR_FORMAT_A8,
+                     LV_DRAW_BUF_STRIDE(APP_MANAGER_GESTURE_INDICATOR_WIDTH,
+                                        LV_COLOR_FORMAT_A8),
+                     s_indicator_draw_buf_data,
+                     sizeof(s_indicator_draw_buf_data));
+#ifndef HOST_TEST
+    lv_draw_buf_set_flag(&s_indicator_draw_buf, LV_IMAGE_FLAGS_MODIFIABLE);
+#endif
     lv_canvas_set_draw_buf(s_gesture.indicator, &s_indicator_draw_buf);
     lv_obj_remove_style_all(s_gesture.indicator);
     lv_obj_set_size(s_gesture.indicator,
