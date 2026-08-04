@@ -18,11 +18,7 @@
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 
-#if CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED
-    #define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565_SWAPPED
-#else
-    #define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565
-#endif
+#define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565
 
 struct _lv_display_t
 {
@@ -398,12 +394,19 @@ static bsp_display_port_t s_display_port =
     .panel = &s_panel,
     .panel_io = &s_panel_io,
     .touch = &s_touch,
+    .transport = {
+        .kind = BSP_DISPLAY_TRANSPORT_QSPI,
+        .clock_hz = 40000000U,
+        .max_transfer_lines = 10U,
+        .dma_max_full_lines = 44U,
+        .transaction_queue_depth = 2U,
+        .data_lines = 4U,
+        .bits_per_pixel = 16U,
+        .psram_dma_direct = false,
+    },
     .te = {
         .enabled = true,
         .gpio_num = 13,
-        .bus_freq_hz = 60000000U,
-        .data_lines = 4U,
-        .bits_per_pixel = 16U,
         .intr_type = 1,
     },
 };
@@ -610,11 +613,11 @@ lv_display_t *esp_lv_adapter_register_display(
                                  config->te_sync.time_tvdh_ms ==
                                  ESP_LV_ADAPTER_TE_TVDH_DEFAULT_MS &&
                                  config->te_sync.bus_freq_hz ==
-                                 s_display_port.te.bus_freq_hz &&
+                                 s_display_port.transport.clock_hz &&
                                  config->te_sync.data_lines ==
-                                 s_display_port.te.data_lines &&
+                                 s_display_port.transport.data_lines &&
                                  config->te_sync.bits_per_pixel ==
-                                 s_display_port.te.bits_per_pixel &&
+                                 s_display_port.transport.bits_per_pixel &&
                                  config->te_sync.intr_type ==
                                  s_display_port.te.intr_type &&
                                  config->te_sync.refresh_window_percent ==
@@ -1622,6 +1625,21 @@ static void _test_invalid_config_and_ready_state(void)
     CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
     bad_port = *valid_port;
     bad_port.touch = NULL;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    bad_port = *valid_port;
+    bad_port.transport.kind = BSP_DISPLAY_TRANSPORT_UNKNOWN;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    bad_port = *valid_port;
+    bad_port.transport.dma_max_full_lines = 0U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    bad_port = *valid_port;
+    bad_port.transport.max_transfer_lines = 45U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    bad_port = *valid_port;
+    bad_port.transport.bits_per_pixel = 24U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    bad_port = *valid_port;
+    bad_port.te.gpio_num = -1;
     CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
     CHECK(s_calls[MOCK_THEME_INIT] == 0);
     _check_clean_state();

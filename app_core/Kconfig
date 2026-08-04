@@ -82,18 +82,9 @@ config APP_MANAGER_LVGL_WORKER_CORE_ID
     default 1 if APP_MANAGER_LVGL_WORKER_AFFINITY_CPU1
     default -1
 
-config APP_MANAGER_LVGL_RGB565_SWAPPED
-    bool "Render display buffers as byte-swapped RGB565"
-    default n
-    select LV_DRAW_SW_SUPPORT_RGB565_SWAPPED
-    help
-        Render RGB565 pixels directly in panel byte order. Enable only for
-        controlled display performance comparisons; the default preserves the
-        existing RGB565 rendering and adapter-side byte swap behavior.
-
 config APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION
     bool "Enable full-resolution snapshot screen transitions"
-    depends on SPIRAM && !APP_MANAGER_LVGL_RGB565_SWAPPED
+    depends on SPIRAM
     default y
     select LV_USE_IMAGE
     select LV_USE_SNAPSHOT

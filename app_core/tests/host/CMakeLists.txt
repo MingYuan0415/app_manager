@@ -114,7 +114,7 @@ configure_host_test(test_control)
 add_host_test(control test_control)
 set_tests_properties(control PROPERTIES TIMEOUT 30)
 
-function(add_adapter_test name target buffer_height swapped diagnostics os_none)
+function(add_adapter_test name target buffer_height diagnostics os_none)
     if(os_none)
         set(worker_stack_size 32768)
         set(worker_core_id 1)
@@ -137,7 +137,6 @@ function(add_adapter_test name target buffer_height swapped diagnostics os_none)
         CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE=1
         CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS=${diagnostics}
         CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT=${buffer_height}
-        CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED=${swapped}
         CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE=${worker_stack_size}
         CONFIG_APP_MANAGER_LVGL_WORKER_CORE_ID=${worker_core_id}
         CONFIG_LV_OS_NONE=${os_none}
@@ -145,13 +144,12 @@ function(add_adapter_test name target buffer_height swapped diagnostics os_none)
     add_host_test(${name} ${target})
 endfunction()
 
-add_adapter_test(adapter test_adapter 60 0 0 0)
-add_adapter_test(adapter_swapped test_adapter_swapped 60 1 0 0)
-add_adapter_test(adapter_height_120 test_adapter_height_120 120 0 0 0)
-add_adapter_test(adapter_height_240 test_adapter_height_240 240 0 0 0)
-add_adapter_test(adapter_height_448 test_adapter_height_448 448 0 0 0)
-add_adapter_test(adapter_diagnostics test_adapter_diagnostics 60 0 1 0)
-add_adapter_test(adapter_os_none test_adapter_os_none 60 0 0 1)
+add_adapter_test(adapter test_adapter 60 0 0)
+add_adapter_test(adapter_height_120 test_adapter_height_120 120 0 0)
+add_adapter_test(adapter_height_240 test_adapter_height_240 240 0 0)
+add_adapter_test(adapter_height_448 test_adapter_height_448 448 0 0)
+add_adapter_test(adapter_diagnostics test_adapter_diagnostics 60 1 0)
+add_adapter_test(adapter_os_none test_adapter_os_none 60 0 1)
 
 add_executable(test_display_diagnostics_disabled
     test_display_diagnostics_disabled.c

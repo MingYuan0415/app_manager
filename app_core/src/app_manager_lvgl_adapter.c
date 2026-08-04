@@ -30,13 +30,8 @@
 #define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT \
     ((uint32_t)CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT)
 
-#if CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED
-    #define APP_ADAPTER_COLOR_FORMAT      LV_COLOR_FORMAT_RGB565_SWAPPED
-    #define APP_ADAPTER_COLOR_FORMAT_NAME "RGB565_SWAPPED"
-#else
-    #define APP_ADAPTER_COLOR_FORMAT      LV_COLOR_FORMAT_RGB565
-    #define APP_ADAPTER_COLOR_FORMAT_NAME "RGB565"
-#endif
+#define APP_ADAPTER_COLOR_FORMAT      LV_COLOR_FORMAT_RGB565
+#define APP_ADAPTER_COLOR_FORMAT_NAME "RGB565"
 
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE && !CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
     #error "App manager FreeType integration requires the LVGL adapter filesystem"
@@ -853,6 +848,20 @@ static bool _app_adapter_config_valid(const app_manager_config_t *config)
            config->disp_port->panel != NULL &&
            config->disp_port->panel_io != NULL &&
            config->disp_port->touch != NULL &&
+           config->disp_port->transport.kind !=
+           BSP_DISPLAY_TRANSPORT_UNKNOWN &&
+           config->disp_port->transport.clock_hz > 0U &&
+           config->disp_port->transport.max_transfer_lines > 0U &&
+           config->disp_port->transport.max_transfer_lines <=
+           config->disp_port->height &&
+           config->disp_port->transport.dma_max_full_lines > 0U &&
+           config->disp_port->transport.max_transfer_lines <=
+           config->disp_port->transport.dma_max_full_lines &&
+           config->disp_port->transport.transaction_queue_depth > 0U &&
+           config->disp_port->transport.data_lines > 0U &&
+           config->disp_port->transport.bits_per_pixel == 16U &&
+           (!config->disp_port->te.enabled ||
+            config->disp_port->te.gpio_num >= 0) &&
            (config->disp_port->te.enabled ||
             APP_ADAPTER_PARTIAL_BUFFER_HEIGHT <= config->disp_port->height);
 }
@@ -864,11 +873,21 @@ static bool _app_adapter_display_port_equal(const bsp_display_port_t *left,
            left->height == right->height && left->panel == right->panel &&
            left->panel_io == right->panel_io && left->touch == right->touch &&
            left->touch_io == right->touch_io &&
+           left->transport.kind == right->transport.kind &&
+           left->transport.clock_hz == right->transport.clock_hz &&
+           left->transport.max_transfer_lines ==
+           right->transport.max_transfer_lines &&
+           left->transport.dma_max_full_lines ==
+           right->transport.dma_max_full_lines &&
+           left->transport.transaction_queue_depth ==
+           right->transport.transaction_queue_depth &&
+           left->transport.data_lines == right->transport.data_lines &&
+           left->transport.bits_per_pixel ==
+           right->transport.bits_per_pixel &&
+           left->transport.psram_dma_direct ==
+           right->transport.psram_dma_direct &&
            left->te.enabled == right->te.enabled &&
            left->te.gpio_num == right->te.gpio_num &&
-           left->te.bus_freq_hz == right->te.bus_freq_hz &&
-           left->te.data_lines == right->te.data_lines &&
-           left->te.bits_per_pixel == right->te.bits_per_pixel &&
            left->te.intr_type == right->te.intr_type;
 }
 
@@ -1000,9 +1019,9 @@ static esp_err_t _app_adapter_register_display(
             .gpio_num = display_port->te.gpio_num,
             .time_tvdl_ms = ESP_LV_ADAPTER_TE_TVDL_DEFAULT_MS,
             .time_tvdh_ms = ESP_LV_ADAPTER_TE_TVDH_DEFAULT_MS,
-            .bus_freq_hz = display_port->te.bus_freq_hz,
-            .data_lines = display_port->te.data_lines,
-            .bits_per_pixel = display_port->te.bits_per_pixel,
+            .bus_freq_hz = display_port->transport.clock_hz,
+            .data_lines = display_port->transport.data_lines,
+            .bits_per_pixel = display_port->transport.bits_per_pixel,
             .intr_type = display_port->te.intr_type,
             .refresh_window_percent =
                 ESP_LV_ADAPTER_TE_WINDOW_PERCENT_DEFAULT,
