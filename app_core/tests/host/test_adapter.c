@@ -488,7 +488,9 @@ esp_err_t app_theme_set_font(app_theme_font_id_t id, const lv_font_t *font)
 esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (config == NULL || !config->stack_in_psram)
+    if (config == NULL || !config->stack_in_psram ||
+            config->task_stack_size !=
+            CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE)
     {
         s_contract_error = true;
     }

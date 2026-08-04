@@ -46,6 +46,16 @@ config APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT
         Number of RGB565 display rows in each non-TE LVGL draw buffer.
         The display transport independently limits each SPI DMA submission.
 
+config APP_MANAGER_LVGL_WORKER_STACK_SIZE
+    int
+    range 8192 32768
+    default 32768 if LV_OS_NONE
+    default 8192
+    help
+        Stack size of the esp_lvgl_adapter worker. Synchronous LVGL drawing
+        executes FreeType rendering on this PSRAM-backed task, so LV_OS_NONE
+        retains the conservative 32 KiB font-rendering budget.
+
 config APP_MANAGER_LVGL_RGB565_SWAPPED
     bool "Render display buffers as byte-swapped RGB565"
     default n

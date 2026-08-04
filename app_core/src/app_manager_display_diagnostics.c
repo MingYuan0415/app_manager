@@ -7,6 +7,7 @@
 #if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
 #include "esp_heap_caps.h"
 #include "esp_lv_adapter.h"
+#include "esp_memory_utils.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -30,6 +31,8 @@
         ((int64_t)APP_MANAGER_DISPLAY_BENCHMARK_INTERVAL_MS * 1000LL)
 #define APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_STACK_CAPS \
         (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERNAL_CAPS \
+        (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define APP_MANAGER_DISPLAY_DIAGNOSTICS_DMA_CAPS \
         (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define APP_MANAGER_DISPLAY_DIAGNOSTICS_PSRAM_CAPS \
@@ -122,7 +125,12 @@ static atomic_uint s_fps_read_error_count;
 static atomic_uint s_maximum_fps_lock_wait_us;
 static atomic_uint s_minimum_fps;
 static atomic_uint s_fps_failure_count;
+static atomic_size_t s_minimum_internal_free;
+static atomic_size_t s_minimum_internal_largest;
+static atomic_size_t s_minimum_dma_free;
 static atomic_size_t s_minimum_dma_largest;
+static atomic_size_t s_minimum_psram_free;
+static atomic_size_t s_minimum_psram_largest;
 static atomic_uint s_dma_failure_count;
 static atomic_uint s_minimum_fps_target;
 static atomic_size_t s_minimum_dma_largest_target;
@@ -414,7 +422,17 @@ static void _app_manager_display_diagnostics_reset_benchmark(void)
                           memory_order_relaxed);
     atomic_store_explicit(&s_minimum_fps, UINT_MAX, memory_order_relaxed);
     atomic_store_explicit(&s_fps_failure_count, 0U, memory_order_relaxed);
+    atomic_store_explicit(&s_minimum_internal_free, SIZE_MAX,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_minimum_internal_largest, SIZE_MAX,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_minimum_dma_free, SIZE_MAX,
+                          memory_order_relaxed);
     atomic_store_explicit(&s_minimum_dma_largest, SIZE_MAX,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_minimum_psram_free, SIZE_MAX,
+                          memory_order_relaxed);
+    atomic_store_explicit(&s_minimum_psram_largest, SIZE_MAX,
                           memory_order_relaxed);
     atomic_store_explicit(&s_dma_failure_count, 0U, memory_order_relaxed);
     _app_manager_display_diagnostics_reset_metrics(&s_total_metrics);
@@ -813,6 +831,10 @@ static void _app_manager_display_diagnostics_sample(lv_display_t *display,
         fps_result = esp_lv_adapter_get_fps(display, &fps);
         esp_lv_adapter_unlock();
     }
+    const size_t internal_free = heap_caps_get_free_size(
+                                     APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERNAL_CAPS);
+    const size_t internal_largest = heap_caps_get_largest_free_block(
+                                        APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERNAL_CAPS);
     const size_t dma_free = heap_caps_get_free_size(
                                 APP_MANAGER_DISPLAY_DIAGNOSTICS_DMA_CAPS);
     const size_t dma_largest = heap_caps_get_largest_free_block(
@@ -860,7 +882,17 @@ static void _app_manager_display_diagnostics_sample(lv_display_t *display,
                 }
             }
             _app_manager_display_diagnostics_update_minimum_size(
+                &s_minimum_internal_free, internal_free);
+            _app_manager_display_diagnostics_update_minimum_size(
+                &s_minimum_internal_largest, internal_largest);
+            _app_manager_display_diagnostics_update_minimum_size(
+                &s_minimum_dma_free, dma_free);
+            _app_manager_display_diagnostics_update_minimum_size(
                 &s_minimum_dma_largest, dma_largest);
+            _app_manager_display_diagnostics_update_minimum_size(
+                &s_minimum_psram_free, psram_free);
+            _app_manager_display_diagnostics_update_minimum_size(
+                &s_minimum_psram_largest, psram_largest);
             if (dma_largest < atomic_load_explicit(
                         &s_minimum_dma_largest_target,
                         memory_order_relaxed))
@@ -882,21 +914,26 @@ static void _app_manager_display_diagnostics_sample(lv_display_t *display,
     }
     if (benchmark_committed)
     {
-        LOG_I("benchmark fps=%u lock_result=0x%x fps_result=0x%x lock_wait_us=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u",
+        LOG_I("benchmark fps=%u lock_result=0x%x fps_result=0x%x lock_wait_us=%u internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u",
               (unsigned)fps, (unsigned)lock_result, (unsigned)fps_result,
               (unsigned)lock_wait_us,
+              (unsigned)internal_free, (unsigned)internal_largest,
               (unsigned)dma_free, (unsigned)dma_largest,
               (unsigned)psram_free, (unsigned)psram_largest);
     }
     else if (!benchmark_requested)
     {
-        LOG_I("fps=%u lock_result=0x%x fps_result=0x%x lock_wait_us=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u",
+        LOG_I("fps=%u lock_result=0x%x fps_result=0x%x lock_wait_us=%u internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u",
               (unsigned)fps, (unsigned)lock_result, (unsigned)fps_result,
-              (unsigned)lock_wait_us, (unsigned)dma_free,
+              (unsigned)lock_wait_us,
+              (unsigned)internal_free, (unsigned)internal_largest,
+              (unsigned)dma_free,
               (unsigned)dma_largest,
               (unsigned)psram_free, (unsigned)psram_largest);
     }
     (void)fps;
+    (void)internal_free;
+    (void)internal_largest;
     (void)dma_free;
     (void)dma_largest;
     (void)psram_free;
@@ -918,6 +955,31 @@ static bool _app_manager_display_diagnostics_benchmark_snapshot(
         (void)xSemaphoreGive(s_benchmark_lock);
     }
     return active;
+}
+
+static void _app_manager_display_diagnostics_read_render_task(
+    app_manager_display_benchmark_report_t *report)
+{
+#if CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT == 1
+#if defined(CONFIG_LV_OS_NONE) && CONFIG_LV_OS_NONE
+    const char *task_name = "lvgl";
+#else
+    const char *task_name = "swdraw";
+#endif
+    TaskHandle_t render_task = xTaskGetHandle(task_name);
+    if (render_task == NULL)
+    {
+        return;
+    }
+    report->render_task_found = true;
+    report->minimum_render_stack_high_water =
+        (uint32_t)uxTaskGetStackHighWaterMark(render_task);
+    const StackType_t *stack_start = xTaskGetStackStart(render_task);
+    report->render_task_stack_in_psram = stack_start != NULL &&
+                                         esp_ptr_external_ram(stack_start);
+#else
+    (void)report;
+#endif
 }
 
 static TickType_t _app_manager_display_diagnostics_wait_ticks(
@@ -1584,11 +1646,34 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
                                            memory_order_relaxed);
     report->fps_failure_count = atomic_load_explicit(&s_fps_failure_count,
                                 memory_order_relaxed);
+    const size_t minimum_internal_free = atomic_load_explicit(
+            &s_minimum_internal_free, memory_order_relaxed);
+    report->minimum_internal_free = minimum_internal_free == SIZE_MAX ? 0U :
+                                    minimum_internal_free;
+    const size_t minimum_internal_largest = atomic_load_explicit(
+            &s_minimum_internal_largest, memory_order_relaxed);
+    report->minimum_internal_largest = minimum_internal_largest == SIZE_MAX ?
+                                       0U : minimum_internal_largest;
+    const size_t minimum_dma_free = atomic_load_explicit(
+                                        &s_minimum_dma_free,
+                                        memory_order_relaxed);
+    report->minimum_dma_free = minimum_dma_free == SIZE_MAX ? 0U :
+                               minimum_dma_free;
     const size_t minimum_dma_largest = atomic_load_explicit(
                                            &s_minimum_dma_largest,
                                            memory_order_relaxed);
     report->minimum_dma_largest = minimum_dma_largest == SIZE_MAX ? 0U :
                                   minimum_dma_largest;
+    const size_t minimum_psram_free = atomic_load_explicit(
+                                          &s_minimum_psram_free,
+                                          memory_order_relaxed);
+    report->minimum_psram_free = minimum_psram_free == SIZE_MAX ? 0U :
+                                 minimum_psram_free;
+    const size_t minimum_psram_largest = atomic_load_explicit(
+            &s_minimum_psram_largest, memory_order_relaxed);
+    report->minimum_psram_largest = minimum_psram_largest == SIZE_MAX ? 0U :
+                                    minimum_psram_largest;
+    _app_manager_display_diagnostics_read_render_task(report);
     report->dma_failure_count = atomic_load_explicit(&s_dma_failure_count,
                                 memory_order_relaxed);
     app_manager_display_effect_benchmark_report_t aggregate = {0};

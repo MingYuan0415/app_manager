@@ -109,7 +109,12 @@ configure_host_test(test_control)
 add_host_test(control test_control)
 set_tests_properties(control PROPERTIES TIMEOUT 30)
 
-function(add_adapter_test name target buffer_height swapped diagnostics)
+function(add_adapter_test name target buffer_height swapped diagnostics os_none)
+    if(os_none)
+        set(worker_stack_size 32768)
+    else()
+        set(worker_stack_size 8192)
+    endif()
     add_executable(${target}
         test_adapter.c
         "${APP_CORE_DIR}/src/app_manager_lvgl_adapter.c"
@@ -126,16 +131,19 @@ function(add_adapter_test name target buffer_height swapped diagnostics)
         CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS=${diagnostics}
         CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT=${buffer_height}
         CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED=${swapped}
+        CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE=${worker_stack_size}
+        CONFIG_LV_OS_NONE=${os_none}
     )
     add_host_test(${name} ${target})
 endfunction()
 
-add_adapter_test(adapter test_adapter 60 0 0)
-add_adapter_test(adapter_swapped test_adapter_swapped 60 1 0)
-add_adapter_test(adapter_height_120 test_adapter_height_120 120 0 0)
-add_adapter_test(adapter_height_240 test_adapter_height_240 240 0 0)
-add_adapter_test(adapter_height_448 test_adapter_height_448 448 0 0)
-add_adapter_test(adapter_diagnostics test_adapter_diagnostics 60 0 1)
+add_adapter_test(adapter test_adapter 60 0 0 0)
+add_adapter_test(adapter_swapped test_adapter_swapped 60 1 0 0)
+add_adapter_test(adapter_height_120 test_adapter_height_120 120 0 0 0)
+add_adapter_test(adapter_height_240 test_adapter_height_240 240 0 0 0)
+add_adapter_test(adapter_height_448 test_adapter_height_448 448 0 0 0)
+add_adapter_test(adapter_diagnostics test_adapter_diagnostics 60 0 1 0)
+add_adapter_test(adapter_os_none test_adapter_os_none 60 0 0 1)
 
 add_executable(test_display_diagnostics_disabled
     test_display_diagnostics_disabled.c
@@ -144,16 +152,31 @@ add_executable(test_display_diagnostics_disabled
 configure_host_test(test_display_diagnostics_disabled)
 add_host_test(display_diagnostics_disabled test_display_diagnostics_disabled)
 
-add_executable(test_display_diagnostics
-    test_display_diagnostics.c
-    host_display_diagnostics_port.c
-    "${APP_CORE_DIR}/src/app_manager_display_diagnostics.c"
-)
-configure_host_test(test_display_diagnostics)
-target_compile_definitions(test_display_diagnostics PRIVATE
-    CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS=1
-    CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS=1
-    APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERVAL_MS=50
-    APP_MANAGER_DISPLAY_BENCHMARK_INTERVAL_MS=5
-)
-add_host_test(display_diagnostics test_display_diagnostics)
+function(add_display_diagnostics_test name target draw_units os_none
+         render_task_expected render_task_psram render_task_name)
+    add_executable(${target}
+        test_display_diagnostics.c
+        host_display_diagnostics_port.c
+        "${APP_CORE_DIR}/src/app_manager_display_diagnostics.c"
+    )
+    configure_host_test(${target})
+    target_compile_definitions(${target} PRIVATE
+        CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS=1
+        CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS=1
+        CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=${draw_units}
+        CONFIG_LV_OS_NONE=${os_none}
+        TEST_RENDER_TASK_EXPECTED=${render_task_expected}
+        TEST_RENDER_TASK_PSRAM=${render_task_psram}
+        TEST_RENDER_TASK_NAME="${render_task_name}"
+        APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERVAL_MS=50
+        APP_MANAGER_DISPLAY_BENCHMARK_INTERVAL_MS=5
+    )
+    add_host_test(${name} ${target})
+endfunction()
+
+add_display_diagnostics_test(display_diagnostics
+    test_display_diagnostics 2 0 0 0 unused)
+add_display_diagnostics_test(display_diagnostics_freertos_single
+    test_display_diagnostics_freertos_single 1 0 1 0 swdraw)
+add_display_diagnostics_test(display_diagnostics_os_none
+    test_display_diagnostics_os_none 1 1 1 1 lvgl)

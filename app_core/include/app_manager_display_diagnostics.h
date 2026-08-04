@@ -78,7 +78,15 @@ typedef struct app_manager_display_benchmark_report
     uint32_t maximum_fps_lock_wait_us;     /**< Longest outer FPS-lock wait. */
     uint32_t minimum_fps;                  /**< Lowest sampled adapter FPS. */
     uint32_t fps_failure_count;            /**< Samples below the FPS target. */
+    size_t minimum_internal_free;          /**< Lowest internal 8-bit free heap. */
+    size_t minimum_internal_largest;       /**< Lowest internal 8-bit free block. */
+    size_t minimum_dma_free;               /**< Lowest DMA-capable internal heap. */
     size_t minimum_dma_largest;            /**< Lowest active DMA free block. */
+    size_t minimum_psram_free;             /**< Lowest external 8-bit free heap. */
+    size_t minimum_psram_largest;          /**< Lowest external 8-bit free block. */
+    uint32_t minimum_render_stack_high_water; /**< Render-task minimum free stack. */
+    bool render_task_found;                /**< True when the unique render task exists. */
+    bool render_task_stack_in_psram;       /**< True when its stack starts in PSRAM. */
     uint32_t dma_failure_count;            /**< Samples below the DMA target. */
     uint32_t frame_submit_count;           /**< Final LVGL flush submissions. */
     uint32_t panel_submit_count;           /**< All panel draw submissions. */

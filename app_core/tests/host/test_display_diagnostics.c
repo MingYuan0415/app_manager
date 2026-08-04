@@ -1,12 +1,14 @@
 #include "app_manager_display_diagnostics_priv.h"
 #include "esp_heap_caps.h"
 #include "esp_lv_adapter.h"
+#include "esp_memory_utils.h"
 #include "host_display_diagnostics_port.h"
 
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -61,7 +63,17 @@ static atomic_bool s_fail_event_add;
 static atomic_uint s_heap_free_calls;
 static atomic_uint s_heap_largest_calls;
 static atomic_uint s_fps_value;
+static atomic_size_t s_internal_free;
+static atomic_size_t s_internal_largest;
+static atomic_size_t s_dma_free;
 static atomic_size_t s_dma_largest;
+static atomic_size_t s_psram_free;
+static atomic_size_t s_psram_largest;
+static atomic_bool s_render_task_available;
+static atomic_uint s_render_stack_high_water;
+static int s_render_task_marker;
+static StackType_t s_internal_stack_marker;
+static StackType_t s_psram_stack_marker;
 static atomic_int s_fps_enable_result;
 static atomic_int s_fps_sample_result;
 static atomic_int s_fps_reset_result;
@@ -117,7 +129,14 @@ static void _reset(void)
     atomic_store(&s_heap_free_calls, 0U);
     atomic_store(&s_heap_largest_calls, 0U);
     atomic_store(&s_fps_value, 42U);
+    atomic_store(&s_internal_free, 180000U);
+    atomic_store(&s_internal_largest, 90000U);
+    atomic_store(&s_dma_free, 120000U);
     atomic_store(&s_dma_largest, 64000U);
+    atomic_store(&s_psram_free, 6000000U);
+    atomic_store(&s_psram_largest, 5900000U);
+    atomic_store(&s_render_task_available, TEST_RENDER_TASK_EXPECTED != 0);
+    atomic_store(&s_render_stack_high_water, 8192U);
     atomic_store(&s_fps_enable_result, ESP_OK);
     atomic_store(&s_fps_sample_result, ESP_OK);
     atomic_store(&s_fps_reset_result, ESP_OK);
@@ -477,18 +496,58 @@ static void _wait_for_begin_conflict(benchmark_begin_call_t *call,
 
 size_t heap_caps_get_free_size(uint32_t caps)
 {
-    assert(caps == (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
+    assert(caps == (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
+           caps == (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
            caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     atomic_fetch_add(&s_heap_free_calls, 1U);
-    return caps & MALLOC_CAP_DMA ? 120000U : 6000000U;
+    if ((caps & MALLOC_CAP_SPIRAM) != 0U)
+    {
+        return atomic_load(&s_psram_free);
+    }
+    return (caps & MALLOC_CAP_DMA) != 0U ? atomic_load(&s_dma_free) :
+           atomic_load(&s_internal_free);
 }
 
 size_t heap_caps_get_largest_free_block(uint32_t caps)
 {
-    assert(caps == (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
+    assert(caps == (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
+           caps == (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) ||
            caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     atomic_fetch_add(&s_heap_largest_calls, 1U);
-    return caps & MALLOC_CAP_DMA ? atomic_load(&s_dma_largest) : 5900000U;
+    if ((caps & MALLOC_CAP_SPIRAM) != 0U)
+    {
+        return atomic_load(&s_psram_largest);
+    }
+    return (caps & MALLOC_CAP_DMA) != 0U ? atomic_load(&s_dma_largest) :
+           atomic_load(&s_internal_largest);
+}
+
+TaskHandle_t xTaskGetHandle(const char *name)
+{
+    assert(name != NULL);
+    assert(strcmp(name, TEST_RENDER_TASK_NAME) == 0);
+    return atomic_load(&s_render_task_available) ? &s_render_task_marker :
+           NULL;
+}
+
+UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
+{
+    assert(task == &s_render_task_marker);
+    return atomic_load(&s_render_stack_high_water);
+}
+
+StackType_t *xTaskGetStackStart(TaskHandle_t task)
+{
+    assert(task == &s_render_task_marker);
+    return TEST_RENDER_TASK_PSRAM ? &s_psram_stack_marker :
+           &s_internal_stack_marker;
+}
+
+bool esp_ptr_external_ram(const void *pointer)
+{
+    assert(pointer == &s_internal_stack_marker ||
+           pointer == &s_psram_stack_marker);
+    return pointer == &s_psram_stack_marker;
 }
 
 static void _test_start_semaphore_failures_cleanup_and_retry(void)
@@ -574,7 +633,17 @@ static void _test_passing_benchmark(void)
     assert(report.fps_read_error_count == 0U);
     assert(report.minimum_fps == 42U);
     assert(report.fps_failure_count == 0U);
+    assert(report.minimum_internal_free == 180000U);
+    assert(report.minimum_internal_largest == 90000U);
+    assert(report.minimum_dma_free == 120000U);
     assert(report.minimum_dma_largest == 64000U);
+    assert(report.minimum_psram_free == 6000000U);
+    assert(report.minimum_psram_largest == 5900000U);
+    assert(report.render_task_found == (TEST_RENDER_TASK_EXPECTED != 0));
+    assert(report.minimum_render_stack_high_water ==
+           (TEST_RENDER_TASK_EXPECTED ? 8192U : 0U));
+    assert(report.render_task_stack_in_psram ==
+           (TEST_RENDER_TASK_PSRAM != 0));
     assert(report.dma_failure_count == 0U);
     assert(report.frame_submit_count == 3U);
     assert(report.panel_submit_count == 3U);
@@ -673,6 +742,73 @@ static void _test_snapshot_prepare_metrics_are_informational(void)
     assert(push->snapshot_fallback_count == 0U);
     assert(app_manager_display_diagnostics_stop() == ESP_OK);
 }
+
+static void _test_memory_metrics_reset_between_benchmarks(void)
+{
+    _reset();
+    atomic_store(&s_internal_free, 100000U);
+    atomic_store(&s_internal_largest, 50000U);
+    atomic_store(&s_dma_free, 80000U);
+    atomic_store(&s_dma_largest, 30000U);
+    atomic_store(&s_psram_free, 4000000U);
+    atomic_store(&s_psram_largest, 3900000U);
+    assert(app_manager_display_diagnostics_start(&s_display) == ESP_OK);
+    const uint32_t first_sample = atomic_load(&s_fps_sample_calls) + 1U;
+    assert(app_manager_display_diagnostics_begin_benchmark(30U, 14720U) ==
+           ESP_OK);
+    _wait_for_samples(first_sample);
+
+    app_manager_display_benchmark_report_t first_report;
+    assert(app_manager_display_diagnostics_end_benchmark(&first_report) ==
+           ESP_OK);
+    assert(first_report.minimum_internal_free == 100000U);
+    assert(first_report.minimum_internal_largest == 50000U);
+    assert(first_report.minimum_dma_free == 80000U);
+    assert(first_report.minimum_dma_largest == 30000U);
+    assert(first_report.minimum_psram_free == 4000000U);
+    assert(first_report.minimum_psram_largest == 3900000U);
+
+    atomic_store(&s_internal_free, 200000U);
+    atomic_store(&s_internal_largest, 100000U);
+    atomic_store(&s_dma_free, 160000U);
+    atomic_store(&s_dma_largest, 70000U);
+    atomic_store(&s_psram_free, 6100000U);
+    atomic_store(&s_psram_largest, 6000000U);
+    const uint32_t second_sample = atomic_load(&s_fps_sample_calls) + 1U;
+    assert(app_manager_display_diagnostics_begin_benchmark(30U, 14720U) ==
+           ESP_OK);
+    _wait_for_samples(second_sample);
+
+    app_manager_display_benchmark_report_t second_report;
+    assert(app_manager_display_diagnostics_end_benchmark(&second_report) ==
+           ESP_OK);
+    assert(second_report.minimum_internal_free == 200000U);
+    assert(second_report.minimum_internal_largest == 100000U);
+    assert(second_report.minimum_dma_free == 160000U);
+    assert(second_report.minimum_dma_largest == 70000U);
+    assert(second_report.minimum_psram_free == 6100000U);
+    assert(second_report.minimum_psram_largest == 6000000U);
+    assert(app_manager_display_diagnostics_stop() == ESP_OK);
+}
+
+#if TEST_RENDER_TASK_EXPECTED
+static void _test_missing_render_task_is_reported(void)
+{
+    _reset();
+    atomic_store(&s_render_task_available, false);
+    assert(app_manager_display_diagnostics_start(&s_display) == ESP_OK);
+    assert(app_manager_display_diagnostics_begin_benchmark(30U, 14720U) ==
+           ESP_OK);
+    _wait_for_samples(1U);
+
+    app_manager_display_benchmark_report_t report;
+    assert(app_manager_display_diagnostics_end_benchmark(&report) == ESP_OK);
+    assert(!report.render_task_found);
+    assert(report.minimum_render_stack_high_water == 0U);
+    assert(!report.render_task_stack_in_psram);
+    assert(app_manager_display_diagnostics_stop() == ESP_OK);
+}
+#endif
 
 static void _test_completion_waits_for_successful_final_submit(void)
 {
@@ -1343,6 +1479,10 @@ int main(void)
     _test_start_sample_and_stop();
     _test_passing_benchmark();
     _test_snapshot_prepare_metrics_are_informational();
+    _test_memory_metrics_reset_between_benchmarks();
+#if TEST_RENDER_TASK_EXPECTED
+    _test_missing_render_task_is_reported();
+#endif
     _test_completion_waits_for_successful_final_submit();
     _test_presentation_wait_blocks_until_final_submit();
     _test_presentation_wait_times_out_without_final_submit();

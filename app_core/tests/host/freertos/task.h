@@ -7,6 +7,8 @@
 BaseType_t xTaskNotifyGive(TaskHandle_t task);
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit,
                           TickType_t timeout_ticks);
+TaskHandle_t xTaskGetHandle(const char *name);
+UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 void vTaskSuspend(TaskHandle_t task);
 
