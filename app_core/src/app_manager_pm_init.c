@@ -15,6 +15,10 @@
 #include "app_manager_pm_internal.h"
 #ifndef HOST_TEST
     #include "esp_timer.h"
+    #if CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU0 || \
+        CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU1
+        #include "freertos/idf_additions.h"
+    #endif
     #include "nv_storage.h"
 #endif
 #include <string.h>
@@ -310,11 +314,18 @@ static void _control_reset_runtime_state(void)
 
 static esp_err_t _control_start_task(void)
 {
-    if (xTaskCreate(app_manager_control_task, "app_control", APP_CONTROL_TASK_STACK,
-                    NULL, s_task_priority, &s_task) != pdPASS)
+    if (xTaskCreatePinnedToCore(
+                app_manager_control_task, "app_control",
+                APP_CONTROL_TASK_STACK, NULL, s_task_priority, &s_task,
+                CONFIG_MAIN_PROJECT_TASK_CORE_ID) != pdPASS)
     {
         return ESP_ERR_NO_MEM;
     }
+#if CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU0 || \
+    CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU1
+    LOG_I("task affinity name=app_control core=%d",
+          (int)xTaskGetCoreID(s_task));
+#endif
     if (xSemaphoreTake(s_task_ready,
                        pdMS_TO_TICKS(APP_CONTROL_TASK_READY_MS)) != pdTRUE)
     {

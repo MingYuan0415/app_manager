@@ -972,6 +972,9 @@ static void _app_manager_display_diagnostics_read_render_task(
         return;
     }
     report->render_task_found = true;
+    const BaseType_t core_id = xTaskGetCoreID(render_task);
+    report->render_task_core_id =
+        core_id == 0 || core_id == 1 ? (int8_t)core_id : -1;
     report->minimum_render_stack_high_water =
         (uint32_t)uxTaskGetStackHighWaterMark(render_task);
     const StackType_t *stack_start = xTaskGetStackStart(render_task);
@@ -1268,17 +1271,21 @@ esp_err_t app_manager_display_diagnostics_start(lv_display_t *display)
                           memory_order_relaxed);
     _app_manager_display_diagnostics_reset_benchmark();
 
-    if (xTaskCreateWithCaps(_app_manager_display_diagnostics_task,
-                            "display_diag",
-                            APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_STACK,
-                            display,
-                            APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_PRIORITY,
-                            &s_task,
-                            APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_STACK_CAPS) != pdPASS)
+    if (xTaskCreatePinnedToCoreWithCaps(
+                _app_manager_display_diagnostics_task, "display_diag",
+                APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_STACK, display,
+                APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_PRIORITY, &s_task,
+                CONFIG_MAIN_PROJECT_TASK_CORE_ID,
+                APP_MANAGER_DISPLAY_DIAGNOSTICS_TASK_STACK_CAPS) != pdPASS)
     {
         result = ESP_ERR_NO_MEM;
         goto failed;
     }
+#if CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU0 || \
+    CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU1
+    LOG_I("task affinity name=display_diag core=%d",
+          (int)xTaskGetCoreID(s_task));
+#endif
 
     result = esp_lv_adapter_lock(
                  APP_MANAGER_DISPLAY_DIAGNOSTICS_LVGL_LOCK_MS);
@@ -1628,6 +1635,7 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
     }
     _app_manager_display_diagnostics_reset_spans();
     memset(report, 0, sizeof(*report));
+    report->render_task_core_id = -1;
     report->sample_count = atomic_load_explicit(&s_sample_count,
                            memory_order_relaxed);
     const uint32_t minimum_fps = atomic_load_explicit(&s_minimum_fps,

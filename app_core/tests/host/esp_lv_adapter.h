@@ -17,11 +17,13 @@ typedef void *esp_lcd_panel_io_handle_t;
 typedef struct esp_lv_adapter_config
 {
     uint32_t task_stack_size;
+    int task_core_id;
     bool stack_in_psram;
 } esp_lv_adapter_config_t;
 
 #define ESP_LV_ADAPTER_DEFAULT_CONFIG() \
-    { .task_stack_size = 8192U, .stack_in_psram = false }
+    { .task_stack_size = 8192U, .task_core_id = -1, \
+      .stack_in_psram = false }
 
 /** @brief Display interface values used by the fixture. */
 typedef enum

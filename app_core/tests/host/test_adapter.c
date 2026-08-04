@@ -489,6 +489,8 @@ esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
 {
     _mock_observe_initializing_or_deinitializing();
     if (config == NULL || !config->stack_in_psram ||
+            config->task_core_id !=
+            CONFIG_APP_MANAGER_LVGL_WORKER_CORE_ID ||
             config->task_stack_size !=
             CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE)
     {

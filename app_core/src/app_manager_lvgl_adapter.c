@@ -1067,6 +1067,8 @@ static esp_err_t _app_adapter_initialize_lvgl(
     esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     adapter_config.task_stack_size =
         CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE;
+    adapter_config.task_core_id =
+        CONFIG_APP_MANAGER_LVGL_WORKER_CORE_ID;
     adapter_config.stack_in_psram = true;
     esp_err_t result = esp_lv_adapter_init(&adapter_config);
     if (result != ESP_OK)

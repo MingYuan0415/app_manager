@@ -530,6 +530,12 @@ TaskHandle_t xTaskGetHandle(const char *name)
            NULL;
 }
 
+BaseType_t xTaskGetCoreID(TaskHandle_t task)
+{
+    assert(task == &s_render_task_marker);
+    return TEST_RENDER_TASK_CORE;
+}
+
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
 {
     assert(task == &s_render_task_marker);
@@ -584,6 +590,8 @@ static void _test_start_sample_and_stop(void)
     assert(host_display_diagnostics_port_stack_caps() ==
            (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     assert(host_display_diagnostics_port_priority() == 1U);
+    assert(host_display_diagnostics_port_core_id() ==
+           CONFIG_MAIN_PROJECT_TASK_CORE_ID);
     assert(atomic_load(&s_event_add_calls) == 1U);
 
     _wait_for_samples(1U);
@@ -642,6 +650,8 @@ static void _test_passing_benchmark(void)
     assert(report.render_task_found == (TEST_RENDER_TASK_EXPECTED != 0));
     assert(report.minimum_render_stack_high_water ==
            (TEST_RENDER_TASK_EXPECTED ? 8192U : 0U));
+    assert(report.render_task_core_id ==
+           (TEST_RENDER_TASK_EXPECTED ? TEST_RENDER_TASK_CORE : -1));
     assert(report.render_task_stack_in_psram ==
            (TEST_RENDER_TASK_PSRAM != 0));
     assert(report.dma_failure_count == 0U);

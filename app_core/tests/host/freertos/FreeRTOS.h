@@ -7,4 +7,6 @@
 typedef unsigned UBaseType_t;
 typedef uint32_t StackType_t;
 
+#define tskNO_AFFINITY ((BaseType_t)0x7FFFFFFF)
+
 #endif /* __HOST_DISPLAY_DIAGNOSTICS_FREERTOS_H__ */

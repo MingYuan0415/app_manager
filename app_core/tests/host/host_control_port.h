@@ -34,9 +34,9 @@ BaseType_t xQueueSendFromISR(QueueHandle_t queue, const void *item,
                              BaseType_t *task_woken);
 
 /** @brief Start one pthread-backed FreeRTOS task facade. */
-BaseType_t xTaskCreate(void (*entry)(void *), const char *name,
-                       uint32_t stack_size, void *arg, uint32_t priority,
-                       TaskHandle_t *task);
+BaseType_t xTaskCreatePinnedToCore(
+    void (*entry)(void *), const char *name, uint32_t stack_size, void *arg,
+    uint32_t priority, TaskHandle_t *task, BaseType_t core_id);
 
 /** @brief Delete another host task or exit the current task. */
 void vTaskDelete(TaskHandle_t task);

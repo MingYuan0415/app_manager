@@ -25,6 +25,7 @@ static atomic_uint s_delete_count;
 static atomic_uint s_stack_depth;
 static atomic_uint s_stack_caps;
 static atomic_uint s_priority;
+static atomic_int s_core_id;
 static void (*s_delete_hook)(void);
 static void (*s_timeout_hook)(TickType_t timeout_ticks);
 
@@ -59,6 +60,7 @@ void host_display_diagnostics_port_reset(void)
     atomic_store(&s_stack_depth, 0U);
     atomic_store(&s_stack_caps, 0U);
     atomic_store(&s_priority, 0U);
+    atomic_store(&s_core_id, tskNO_AFFINITY);
     s_delete_hook = NULL;
     s_timeout_hook = NULL;
 }
@@ -93,6 +95,11 @@ UBaseType_t host_display_diagnostics_port_priority(void)
     return atomic_load(&s_priority);
 }
 
+BaseType_t host_display_diagnostics_port_core_id(void)
+{
+    return atomic_load(&s_core_id);
+}
+
 void host_display_diagnostics_port_set_delete_hook(void (*hook)(void))
 {
     s_delete_hook = hook;
@@ -104,10 +111,10 @@ void host_display_diagnostics_port_set_timeout_hook(
     s_timeout_hook = hook;
 }
 
-BaseType_t xTaskCreateWithCaps(void (*entry)(void *), const char *name,
-                               uint32_t stack_depth, void *arg,
-                               UBaseType_t priority, TaskHandle_t *handle,
-                               UBaseType_t memory_caps)
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    void (*entry)(void *), const char *name, uint32_t stack_depth, void *arg,
+    UBaseType_t priority, TaskHandle_t *handle, BaseType_t core_id,
+    UBaseType_t memory_caps)
 {
     (void)name;
     if (entry == NULL || handle == NULL ||
@@ -138,6 +145,7 @@ BaseType_t xTaskCreateWithCaps(void (*entry)(void *), const char *name,
     atomic_store(&s_stack_depth, stack_depth);
     atomic_store(&s_stack_caps, memory_caps);
     atomic_store(&s_priority, priority);
+    atomic_store(&s_core_id, core_id);
     *handle = task;
     return pdPASS;
 }

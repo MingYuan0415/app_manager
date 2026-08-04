@@ -56,6 +56,32 @@ config APP_MANAGER_LVGL_WORKER_STACK_SIZE
         executes FreeType rendering on this PSRAM-backed task, so LV_OS_NONE
         retains the conservative 32 KiB font-rendering budget.
 
+choice APP_MANAGER_LVGL_WORKER_AFFINITY
+    prompt "LVGL worker core affinity"
+    default APP_MANAGER_LVGL_WORKER_AFFINITY_NO_AFFINITY
+    help
+        Select the core used by the esp_lvgl_adapter worker. Keep the default
+        unless a product profile also isolates other project and system tasks.
+
+config APP_MANAGER_LVGL_WORKER_AFFINITY_CPU0
+    bool "CPU0"
+    depends on !FREERTOS_UNICORE
+
+config APP_MANAGER_LVGL_WORKER_AFFINITY_CPU1
+    bool "CPU1"
+    depends on !FREERTOS_UNICORE
+
+config APP_MANAGER_LVGL_WORKER_AFFINITY_NO_AFFINITY
+    bool "No affinity"
+
+endchoice
+
+config APP_MANAGER_LVGL_WORKER_CORE_ID
+    int
+    default 0 if APP_MANAGER_LVGL_WORKER_AFFINITY_CPU0
+    default 1 if APP_MANAGER_LVGL_WORKER_AFFINITY_CPU1
+    default -1
+
 config APP_MANAGER_LVGL_RGB565_SWAPPED
     bool "Render display buffers as byte-swapped RGB565"
     default n

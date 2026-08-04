@@ -13,6 +13,11 @@ function(configure_host_test target)
     target_sources(${target} PRIVATE host_freertos.c)
     target_compile_features(${target} PRIVATE c_std_11)
     target_compile_definitions(${target} PRIVATE HOST_TEST=1)
+    target_compile_definitions(${target} PRIVATE
+        CONFIG_MAIN_PROJECT_TASK_CORE_ID=0
+        CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU0=0
+        CONFIG_MAIN_PROJECT_TASK_AFFINITY_CPU1=0
+    )
     target_include_directories(${target} PRIVATE
         "${CMAKE_CURRENT_LIST_DIR}"
         "${APP_CORE_DIR}/include"
@@ -112,8 +117,10 @@ set_tests_properties(control PROPERTIES TIMEOUT 30)
 function(add_adapter_test name target buffer_height swapped diagnostics os_none)
     if(os_none)
         set(worker_stack_size 32768)
+        set(worker_core_id 1)
     else()
         set(worker_stack_size 8192)
+        set(worker_core_id -1)
     endif()
     add_executable(${target}
         test_adapter.c
@@ -132,6 +139,7 @@ function(add_adapter_test name target buffer_height swapped diagnostics os_none)
         CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT=${buffer_height}
         CONFIG_APP_MANAGER_LVGL_RGB565_SWAPPED=${swapped}
         CONFIG_APP_MANAGER_LVGL_WORKER_STACK_SIZE=${worker_stack_size}
+        CONFIG_APP_MANAGER_LVGL_WORKER_CORE_ID=${worker_core_id}
         CONFIG_LV_OS_NONE=${os_none}
     )
     add_host_test(${name} ${target})
@@ -153,7 +161,8 @@ configure_host_test(test_display_diagnostics_disabled)
 add_host_test(display_diagnostics_disabled test_display_diagnostics_disabled)
 
 function(add_display_diagnostics_test name target draw_units os_none
-         render_task_expected render_task_psram render_task_name)
+         render_task_expected render_task_psram render_task_name
+         render_task_core)
     add_executable(${target}
         test_display_diagnostics.c
         host_display_diagnostics_port.c
@@ -168,6 +177,8 @@ function(add_display_diagnostics_test name target draw_units os_none
         TEST_RENDER_TASK_EXPECTED=${render_task_expected}
         TEST_RENDER_TASK_PSRAM=${render_task_psram}
         TEST_RENDER_TASK_NAME="${render_task_name}"
+        TEST_RENDER_TASK_CORE=${render_task_core}
+        CONFIG_APP_MANAGER_LVGL_WORKER_CORE_ID=${render_task_core}
         APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERVAL_MS=50
         APP_MANAGER_DISPLAY_BENCHMARK_INTERVAL_MS=5
     )
@@ -175,8 +186,8 @@ function(add_display_diagnostics_test name target draw_units os_none
 endfunction()
 
 add_display_diagnostics_test(display_diagnostics
-    test_display_diagnostics 2 0 0 0 unused)
+    test_display_diagnostics 2 0 0 0 unused -1)
 add_display_diagnostics_test(display_diagnostics_freertos_single
-    test_display_diagnostics_freertos_single 1 0 1 0 swdraw)
+    test_display_diagnostics_freertos_single 1 0 1 0 swdraw -1)
 add_display_diagnostics_test(display_diagnostics_os_none
-    test_display_diagnostics_os_none 1 1 1 1 lvgl)
+    test_display_diagnostics_os_none 1 1 1 1 lvgl 1)

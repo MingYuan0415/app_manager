@@ -1,5 +1,6 @@
 #include "host_control_port.h"
 
+#include <assert.h>
 #include <pthread.h>
 #include <stdlib.h>
 
@@ -48,13 +49,14 @@ BaseType_t xQueueSendFromISR(QueueHandle_t queue, const void *item,
     return result;
 }
 
-BaseType_t xTaskCreate(void (*entry)(void *), const char *name,
-                       uint32_t stack_size, void *arg, uint32_t priority,
-                       TaskHandle_t *task)
+BaseType_t xTaskCreatePinnedToCore(
+    void (*entry)(void *), const char *name, uint32_t stack_size, void *arg,
+    uint32_t priority, TaskHandle_t *task, BaseType_t core_id)
 {
     (void)name;
     (void)stack_size;
     (void)priority;
+    assert(core_id == CONFIG_MAIN_PROJECT_TASK_CORE_ID);
     if (entry == NULL || task == NULL)
     {
         return pdFAIL;

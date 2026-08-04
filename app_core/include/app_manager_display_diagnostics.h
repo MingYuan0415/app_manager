@@ -85,6 +85,7 @@ typedef struct app_manager_display_benchmark_report
     size_t minimum_psram_free;             /**< Lowest external 8-bit free heap. */
     size_t minimum_psram_largest;          /**< Lowest external 8-bit free block. */
     uint32_t minimum_render_stack_high_water; /**< Render-task minimum free stack. */
+    int8_t render_task_core_id;              /**< -1 when absent/unbound; otherwise 0 or 1. */
     bool render_task_found;                /**< True when the unique render task exists. */
     bool render_task_stack_in_psram;       /**< True when its stack starts in PSRAM. */
     uint32_t dma_failure_count;            /**< Samples below the DMA target. */
