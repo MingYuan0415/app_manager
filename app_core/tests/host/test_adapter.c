@@ -13,7 +13,6 @@
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
-#include "app_manager_page_arena.h"
 #include "app_manager_presentation.h"
 #include "esp_lv_adapter.h"
 #include "esp_heap_caps.h"
@@ -160,7 +159,6 @@ static bool s_lifecycle_admission_closed;
 static bool s_gesture_accepting;
 static bool s_gesture_suspended;
 static char s_expected_drive_letter;
-static size_t s_expected_page_arena_bytes;
 static unsigned s_lvgl_lock_depth;
 static unsigned s_mmap_del_failures_remaining;
 static unsigned s_checks;
@@ -298,7 +296,6 @@ static void _mock_reset(void)
     s_gesture_accepting = false;
     s_gesture_suspended = true;
     s_expected_drive_letter = 'F';
-    s_expected_page_arena_bytes = 0U;
     s_lvgl_lock_depth = 0;
     s_mmap_del_failures_remaining = 0;
     memset(&s_touch_callbacks, 0, sizeof(s_touch_callbacks));
@@ -464,7 +461,6 @@ static app_manager_config_t _make_config(void)
             .request_standby = _standby_request,
             .cancel_standby = _standby_request,
         },
-        .page_memory_bytes = 0,
         .control_task_priority = 5U,
     };
     return config;
@@ -1092,12 +1088,10 @@ esp_err_t app_manager_mailbox_init(void)
     return ESP_OK;
 }
 
-esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
+esp_err_t app_manager_builtin_registry_validate(void)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (max_page_memory_size !=
-            app_manager_page_arena_stride(s_expected_page_arena_bytes) ||
-            s_live.mailbox == 0 ||
+    if (s_live.mailbox == 0 ||
             s_live.registry != 0)
     {
         s_contract_error = true;
@@ -1172,11 +1166,10 @@ esp_err_t app_manager_lifecycle_configure(
            s_failure.result : ESP_OK;
 }
 
-esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
+esp_err_t app_manager_lifecycle_init(void)
 {
     _mock_observe_initializing_or_deinitializing();
-    if (arena_bytes != s_expected_page_arena_bytes || s_live.registry == 0 ||
-            s_live.presentation == 0)
+    if (s_live.registry == 0 || s_live.presentation == 0)
     {
         s_contract_error = true;
     }
@@ -1842,19 +1835,6 @@ static void _test_semantic_image_resources(void)
     config.image_resource_count =
         sizeof(duplicate_images) / sizeof(duplicate_images[0]);
     CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
-    _check_clean_state();
-}
-
-static void _test_custom_page_arena_stride_is_forwarded(void)
-{
-    _mock_reset();
-    app_manager_config_t config = _make_config();
-    config.page_memory_bytes = APP_MANAGER_MAX_PAGE_INSTANCES * 65U + 7U;
-    s_expected_page_arena_bytes = config.page_memory_bytes;
-
-    CHECK(app_manager_page_arena_stride(config.page_memory_bytes) == 64U);
-    CHECK(app_manager_init(&config) == ESP_OK);
-    CHECK(app_manager_deinit() == ESP_OK);
     _check_clean_state();
 }
 
@@ -2567,7 +2547,6 @@ int main(void)
     _test_invalid_config_and_ready_state();
     _test_resource_drive_letter_is_forwarded();
     _test_semantic_image_resources();
-    _test_custom_page_arena_stride_is_forwarded();
     _test_disabled_te_uses_default_mode();
     _test_te_profile_uses_proxy_and_disables_startup_touch();
     _test_te_register_failure_clears_proxy_after_deinit();

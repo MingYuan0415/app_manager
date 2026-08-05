@@ -39,6 +39,16 @@ extern "C" {
 #define APP_MANAGER_MAX_RESIDENT_APPS CONFIG_APP_MANAGER_MAX_RESIDENT_APPS
 /** Physical retained-page capacity. */
 #define APP_MANAGER_MAX_PAGE_INSTANCES CONFIG_APP_MANAGER_MAX_PAGE_INSTANCES
+/** Maximum private-state bytes owned by one retained Page instance. */
+#define APP_MANAGER_PAGE_STATE_BYTES CONFIG_APP_MANAGER_PAGE_STATE_BYTES
+
+#ifdef __cplusplus
+static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
+              "Page state capacity must be 8-byte aligned");
+#else
+_Static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
+               "Page state capacity must be 8-byte aligned");
+#endif
 
 /** @brief Versioned, value-owned navigation arguments. */
 typedef struct app_manager_typed_blob
@@ -83,6 +93,45 @@ typedef enum
  */
 typedef void (*app_page_msg_cb_t)(app_manager_msg_type_t msg, void *param);
 
+/** @brief Callback-scoped state and immutable inputs for Page lifecycle ops. */
+typedef struct app_manager_page_context
+{
+    /** Page-private state valid until the Page instance is released. */
+    void *state;
+    /** Descriptor-owned route data valid for the firmware lifetime. */
+    void *route_user_data;
+    /** Mounted Page Screen, or NULL when no Screen is owned. */
+    lv_obj_t *screen;
+    /** Current immutable navigation arguments, or NULL when absent. */
+    const app_manager_typed_blob_t *arguments;
+} app_manager_page_context_t;
+
+/**
+ * @brief Infallible Page lifecycle operation.
+ * @param context is valid only for the duration of this callback.
+ */
+typedef void (*app_manager_page_stage_cb_t)(
+    const app_manager_page_context_t *context);
+/**
+ * @brief Retryable PAUSE or STOP cleanup operation.
+ * @param context is valid only for the duration of this callback.
+ * @return ESP_OK on success, otherwise a cleanup error retained for retry.
+ */
+typedef esp_err_t (*app_manager_page_cleanup_cb_t)(
+    const app_manager_page_context_t *context);
+
+/** @brief Optional typed lifecycle operations for one Page definition. */
+typedef struct app_manager_page_ops
+{
+    app_manager_page_stage_cb_t start; /**< Initialize nonvisual state. */
+    app_manager_page_stage_cb_t mount; /**< Create UI under context->screen. */
+    app_manager_page_stage_cb_t resume; /**< Start foreground resources. */
+    app_manager_page_cleanup_cb_t pause; /**< Stop foreground resources. */
+    app_manager_page_stage_cb_t unmount; /**< Destroy Page UI. */
+    app_manager_page_cleanup_cb_t stop; /**< Release retained resources. */
+    app_manager_page_stage_cb_t new_intent; /**< Consume updated arguments. */
+} app_manager_page_ops_t;
+
 /** @brief Flags attached to an application descriptor. */
 typedef enum
 {
@@ -94,7 +143,10 @@ typedef enum
 /** @brief Immutable implementation shared by one or more application routes. */
 typedef struct app_manager_page_definition
 {
-    app_page_msg_cb_t handler; /**< Lifecycle handler. */
+    /** Raw lifecycle handler; mutually exclusive with ops. */
+    app_page_msg_cb_t handler;
+    /** Typed lifecycle operations; mutually exclusive with handler. */
+    const app_manager_page_ops_t *ops;
     uint32_t memory_size;      /**< Zeroed private bytes required per instance. */
 } app_manager_page_definition_t;
 

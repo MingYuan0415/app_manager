@@ -10,6 +10,8 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     (void)user_data;
 }
 
+static const app_manager_page_ops_t s_page_ops = {0};
+
 static const app_manager_page_definition_t s_shared_definition =
 {
     .handler = _page_handler,
@@ -76,7 +78,7 @@ static void _register_valid(void)
 static void _test_valid_registry_and_shared_definition(void)
 {
     _register_valid();
-    assert(app_manager_builtin_registry_validate(32U) == ESP_OK);
+    assert(app_manager_builtin_registry_validate() == ESP_OK);
     assert(app_manager_builtin_app_count() == 2U);
     assert(app_manager_builtin_enumerate(0U) == &s_valid_apps[0]);
     assert(app_manager_builtin_enumerate(2U) == NULL);
@@ -98,10 +100,10 @@ static void _test_valid_registry_and_shared_definition(void)
 }
 
 static void _expect_invalid(const app_manager_app_desc_t *apps,
-                            size_t app_count, size_t maximum_memory)
+                            size_t app_count)
 {
     assert(app_manager_register_builtin_descriptors(apps, app_count) == ESP_OK);
-    assert(app_manager_builtin_registry_validate(maximum_memory) ==
+    assert(app_manager_builtin_registry_validate() ==
            ESP_ERR_INVALID_ARG);
     assert(app_manager_builtin_app_count() == 0U);
 }
@@ -119,15 +121,15 @@ static void _test_invalid_app_descriptors(void)
             .page_route_count = 1U,
         },
     };
-    _expect_invalid(duplicate_apps, 2U, 32U);
+    _expect_invalid(duplicate_apps, 2U);
 
     app_manager_app_desc_t invalid_app = s_valid_apps[0];
     invalid_app.page_routes = NULL;
-    _expect_invalid(&invalid_app, 1U, 32U);
+    _expect_invalid(&invalid_app, 1U);
 
     invalid_app = s_valid_apps[0];
     invalid_app.page_route_count = 0U;
-    _expect_invalid(&invalid_app, 1U, 32U);
+    _expect_invalid(&invalid_app, 1U);
 
     assert(app_manager_register_builtin_descriptors(NULL, 1U) ==
            ESP_ERR_INVALID_ARG);
@@ -152,7 +154,7 @@ static void _test_invalid_routes(void)
         .page_routes = missing_root_routes,
         .page_route_count = 1U,
     };
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
 
     app_manager_page_route_t invalid_routes[] =
     {
@@ -163,11 +165,11 @@ static void _test_invalid_routes(void)
     app.page_routes = invalid_routes;
 
     invalid_routes[1].page_id = "root";
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
 
     invalid_routes[1] = s_settings_routes[1];
     invalid_routes[1].definition = NULL;
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
 
     const app_manager_page_definition_t null_handler_definition =
     {
@@ -176,20 +178,57 @@ static void _test_invalid_routes(void)
     };
     invalid_routes[1] = s_settings_routes[1];
     invalid_routes[1].definition = &null_handler_definition;
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
 
     const app_manager_page_definition_t oversized_definition =
     {
         .handler = _page_handler,
-        .memory_size = 33U,
+        .memory_size = APP_MANAGER_PAGE_STATE_BYTES + 1U,
     };
     invalid_routes[1] = s_settings_routes[1];
     invalid_routes[1].definition = &oversized_definition;
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
+
+    const app_manager_page_definition_t both_definition =
+    {
+        .handler = _page_handler,
+        .ops = &s_page_ops,
+        .memory_size = 8U,
+    };
+    invalid_routes[1] = s_settings_routes[1];
+    invalid_routes[1].definition = &both_definition;
+    _expect_invalid(&app, 1U);
 
     invalid_routes[1] = s_settings_routes[1];
     invalid_routes[1].page_id = "";
-    _expect_invalid(&app, 1U, 32U);
+    _expect_invalid(&app, 1U);
+}
+
+static void _test_ops_registry_and_capacity_boundary(void)
+{
+    const app_manager_page_definition_t ops_definition =
+    {
+        .ops = &s_page_ops,
+        .memory_size = APP_MANAGER_PAGE_STATE_BYTES,
+    };
+    const app_manager_page_route_t routes[] =
+    {
+        {
+            .page_id = "root",
+            .definition = &ops_definition,
+        },
+    };
+    const app_manager_app_desc_t app =
+    {
+        .name = "ops",
+        .id = "ops",
+        .root_page_id = "root",
+        .page_routes = routes,
+        .page_route_count = 1U,
+    };
+    assert(app_manager_register_builtin_descriptors(&app, 1U) == ESP_OK);
+    assert(app_manager_builtin_registry_validate() == ESP_OK);
+    app_manager_builtin_registry_reset();
 }
 
 int main(void)
@@ -197,5 +236,6 @@ int main(void)
     _test_valid_registry_and_shared_definition();
     _test_invalid_app_descriptors();
     _test_invalid_routes();
+    _test_ops_registry_and_capacity_boundary();
     return 0;
 }

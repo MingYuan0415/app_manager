@@ -5,28 +5,23 @@
 #endif
 
 #include "app_manager_nav_model.h"
-#include "app_manager_page_arena.h"
-
 #include <string.h>
 
 _Static_assert(APP_MANAGER_MAX_RESIDENT_APPS <= UINT8_MAX,
                "resident indexes must fit in uint8_t");
 _Static_assert(APP_MANAGER_MAX_PAGE_INSTANCES <= UINT8_MAX,
                "page indexes must fit in uint8_t");
+_Static_assert(APP_MANAGER_PAGE_STATE_BYTES > 0U,
+               "Page state capacity must be nonzero");
 
-esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
-                                     size_t arena_bytes)
+esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model)
 {
     if (model == NULL)
     {
         return ESP_ERR_INVALID_ARG;
     }
     memset(model, 0, sizeof(*model));
-    model->page_stride = app_manager_page_arena_stride(arena_bytes);
-    if (model->page_stride == 0)
-    {
-        return ESP_ERR_INVALID_SIZE;
-    }
+    model->page_stride = APP_MANAGER_PAGE_STATE_BYTES;
 #ifndef HOST_TEST
     model->page_arena = heap_caps_aligned_calloc(
                             8, 1,

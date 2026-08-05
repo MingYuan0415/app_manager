@@ -256,6 +256,72 @@ const char *app_manager_lifecycle_callback_app_id(void)
     return _lifecycle_callback_app_id();
 }
 
+static void _lifecycle_call_ops(const app_manager_page_ops_t *ops,
+                                app_manager_msg_type_t message)
+{
+    const app_manager_page_context_t context =
+    {
+        .state = app_manager_this_page_memory(),
+        .route_user_data = app_manager_this_page_userdata(),
+        .screen = app_manager_this_page_screen(),
+        .arguments = app_manager_this_page_arguments(),
+    };
+    esp_err_t cleanup_result = ESP_OK;
+
+    switch (message)
+    {
+    case APP_MANAGER_MSG_ONSTART:
+        if (ops->start != NULL)
+        {
+            ops->start(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONMOUNT:
+        if (ops->mount != NULL)
+        {
+            ops->mount(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONRESUME:
+        if (ops->resume != NULL)
+        {
+            ops->resume(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONPAUSE:
+        if (ops->pause != NULL)
+        {
+            cleanup_result = ops->pause(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONUNMOUNT:
+        if (ops->unmount != NULL)
+        {
+            ops->unmount(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONSTOP:
+        if (ops->stop != NULL)
+        {
+            cleanup_result = ops->stop(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_ONNEWINTENT:
+        if (ops->new_intent != NULL)
+        {
+            ops->new_intent(&context);
+        }
+        break;
+    case APP_MANAGER_MSG_USER_END:
+    default:
+        break;
+    }
+    if (cleanup_result != ESP_OK && s_handler_cleanup_error == ESP_OK)
+    {
+        s_handler_cleanup_error = cleanup_result;
+    }
+}
+
 static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
         app_manager_msg_type_t message)
 {
@@ -268,7 +334,8 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
 
     if (page == NULL || !page->in_use || page->route == NULL ||
             page->route->definition == NULL ||
-            page->route->definition->handler == NULL)
+            ((page->route->definition->handler == NULL) ==
+             (page->route->definition->ops == NULL)))
     {
         return ESP_ERR_INVALID_STATE;
     }
@@ -292,7 +359,16 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
     LOG_I("[%s][%s] ON %s", page->app->descriptor->name,
           page->route->page_id, s_lifecycle_message_names[message]);
 #endif
-    page->route->definition->handler(message, page->route->user_data);
+    const app_manager_page_definition_t *definition =
+        page->route->definition;
+    if (definition->ops != NULL)
+    {
+        _lifecycle_call_ops(definition->ops, message);
+    }
+    else
+    {
+        definition->handler(message, page->route->user_data);
+    }
 #ifdef HOST_TEST
     if (observer != NULL)
     {
@@ -1951,7 +2027,7 @@ esp_err_t app_manager_lifecycle_navigate(
     return result;
 }
 
-esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
+esp_err_t app_manager_lifecycle_init(void)
 {
     esp_err_t result = ESP_OK;
     int expected = LIFECYCLE_SCREEN_CLOSED;
@@ -1974,7 +2050,7 @@ esp_err_t app_manager_lifecycle_init(size_t arena_bytes)
         vTaskDelay(1);
 #endif
     }
-    result = app_manager_nav_model_init(&s_model, arena_bytes);
+    result = app_manager_nav_model_init(&s_model);
     if (result != ESP_OK)
     {
         goto fail;

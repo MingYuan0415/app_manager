@@ -18,6 +18,15 @@ config APP_MANAGER_MAX_PAGE_INSTANCES
     range 1 32
     default 12
 
+config APP_MANAGER_PAGE_STATE_BYTES
+    int "Page-private state capacity in bytes"
+    range 256 16384
+    default 2728
+    help
+        Maximum private-state bytes available to each retained Page instance.
+        The value must be a multiple of 8. Page state should contain handles,
+        ownership flags, and UI pointers; allocate bulk payloads separately.
+
 config APP_MANAGER_NAV_COMMAND_CAPACITY
     int "Navigation command capacity"
     range 1 64

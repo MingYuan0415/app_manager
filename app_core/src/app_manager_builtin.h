@@ -26,11 +26,9 @@ esp_err_t app_manager_register_builtin_descriptors(
 /**
  * @brief Validate the selected builtin app and page registry.
  *
- * @param max_page_memory_size is the largest page-private allocation supported
- *                             by the configured fixed arena.
  * @return ESP_OK when all descriptors and roots are valid.
  */
-esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size);
+esp_err_t app_manager_builtin_registry_validate(void);
 
 /**
  * @brief Reset registry validation after lifecycle teardown.

@@ -1,6 +1,4 @@
 #include "app_manager_nav_model.h"
-#include "app_manager_page_arena.h"
-
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -170,8 +168,7 @@ static void _pop_child(app_manager_nav_model_t *model)
 static void _test_random_model_commands(void)
 {
     app_manager_nav_model_t model;
-    assert(app_manager_nav_model_init(
-               &model, APP_MANAGER_MAX_PAGE_INSTANCES * 64U) == ESP_OK);
+    assert(app_manager_nav_model_init(&model) == ESP_OK);
     assert(app_manager_nav_model_invariants(&model));
 
     uint32_t random_state = UINT32_C(0x51F11A7E);
@@ -264,12 +261,12 @@ static void _test_memory_capacity_and_scrub(void)
     static const app_manager_page_definition_t full_definition =
     {
         .handler = _page_handler,
-        .memory_size = 64U,
+        .memory_size = APP_MANAGER_PAGE_STATE_BYTES,
     };
     static const app_manager_page_definition_t oversized_definition =
     {
         .handler = _page_handler,
-        .memory_size = 65U,
+        .memory_size = APP_MANAGER_PAGE_STATE_BYTES + 1U,
     };
     static const app_manager_page_definition_t small_definition =
     {
@@ -292,8 +289,7 @@ static void _test_memory_capacity_and_scrub(void)
         .definition = &small_definition,
     };
     app_manager_nav_model_t model;
-    assert(app_manager_nav_model_init(
-               &model, APP_MANAGER_MAX_PAGE_INSTANCES * 64U) == ESP_OK);
+    assert(app_manager_nav_model_init(&model) == ESP_OK);
     assert(app_manager_nav_model_alloc_page(&model, &oversized_route) == NULL);
 
     app_manager_page_node_t *pages[APP_MANAGER_MAX_PAGE_INSTANCES];
@@ -303,43 +299,32 @@ static void _test_memory_capacity_and_scrub(void)
         assert(pages[index] != NULL);
     }
     assert(app_manager_nav_model_alloc_page(&model, &small_route) == NULL);
-    memset(pages[3]->private_memory, 0xFF, 64U);
+    memset(pages[3]->private_memory, 0xFF, APP_MANAGER_PAGE_STATE_BYTES);
     void *memory = pages[3]->private_memory;
     app_manager_nav_model_free_page(&model, pages[3]);
     pages[3] = app_manager_nav_model_alloc_page(&model, &full_route);
     assert(pages[3] != NULL);
     assert(pages[3]->private_memory == memory);
     const uint8_t *bytes = pages[3]->private_memory;
-    for (size_t index = 0; index < 64U; index++)
+    for (size_t index = 0; index < APP_MANAGER_PAGE_STATE_BYTES; index++)
     {
         assert(bytes[index] == 0U);
     }
     app_manager_nav_model_deinit(&model);
 }
 
-static void _test_page_arena_stride_resolution(void)
+static void _test_page_state_capacity(void)
 {
-    const size_t uneven_arena_bytes =
-        APP_MANAGER_MAX_PAGE_INSTANCES * 65U + 7U;
-    assert(app_manager_page_arena_resolve_bytes(0U) ==
-           APP_MANAGER_PAGE_ARENA_DEFAULT_BYTES);
-    assert(app_manager_page_arena_stride(0U) == 2728U);
-    assert(app_manager_page_arena_resolve_bytes(uneven_arena_bytes) ==
-           uneven_arena_bytes);
-    assert(app_manager_page_arena_stride(uneven_arena_bytes) == 64U);
-
     app_manager_nav_model_t model;
-    assert(app_manager_nav_model_init(&model, uneven_arena_bytes) == ESP_OK);
-    assert(model.page_stride ==
-           app_manager_page_arena_stride(uneven_arena_bytes));
+    assert(app_manager_nav_model_init(&model) == ESP_OK);
+    assert(model.page_stride == APP_MANAGER_PAGE_STATE_BYTES);
     app_manager_nav_model_deinit(&model);
 }
 
 static void _test_paused_and_cleanup_owned_nodes(void)
 {
     app_manager_nav_model_t model;
-    assert(app_manager_nav_model_init(
-               &model, APP_MANAGER_MAX_PAGE_INSTANCES * 64U) == ESP_OK);
+    assert(app_manager_nav_model_init(&model) == ESP_OK);
     app_manager_app_node_t *active = _create_app(&model, 0U);
     assert(active != NULL);
     _set_page_foreground(active->current_page, false);
@@ -401,7 +386,7 @@ int main(void)
 {
     _test_random_model_commands();
     _test_memory_capacity_and_scrub();
-    _test_page_arena_stride_resolution();
+    _test_page_state_capacity();
     _test_paused_and_cleanup_owned_nodes();
     return 0;
 }

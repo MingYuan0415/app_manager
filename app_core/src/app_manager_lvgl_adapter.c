@@ -12,7 +12,6 @@
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
-#include "app_manager_page_arena.h"
 #include "app_manager_presentation.h"
 #include "app_theme.h"
 #include "driver/gpio.h"
@@ -1065,7 +1064,6 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->standby_ops.cancel_standby &&
            config->standby_ops.is_standby_allowed ==
            active->standby_ops.is_standby_allowed &&
-           config->page_memory_bytes == active->page_memory_bytes &&
            config->max_resident_apps == active->max_resident_apps &&
            config->resident_policy == active->resident_policy &&
            _app_adapter_transition_equal(&config->app_forward_transition,
@@ -1270,8 +1268,6 @@ static esp_err_t _app_adapter_initialize_resources(
 static esp_err_t _app_adapter_start_services(
     const app_manager_config_t *config)
 {
-    const size_t page_memory_bytes =
-        app_manager_page_arena_stride(config->page_memory_bytes);
     esp_err_t result = esp_lv_adapter_start();
     if (result != ESP_OK)
     {
@@ -1283,11 +1279,7 @@ static esp_err_t _app_adapter_start_services(
         return result;
     }
     s_mailbox_ready = true;
-    if (page_memory_bytes == 0U)
-    {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    result = app_manager_builtin_registry_validate(page_memory_bytes);
+    result = app_manager_builtin_registry_validate();
     if (result != ESP_OK)
     {
         return result;
@@ -1310,7 +1302,7 @@ static esp_err_t _app_adapter_start_services(
     {
         return result;
     }
-    result = app_manager_lifecycle_init(config->page_memory_bytes);
+    result = app_manager_lifecycle_init();
     if (result != ESP_OK)
     {
         return result;
@@ -1394,8 +1386,8 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
           s_display_port->width, s_display_port->height,
           (unsigned)CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY,
           (unsigned)CONFIG_APP_MANAGER_MAILBOX_CAPACITY,
-          (unsigned)app_manager_page_arena_resolve_bytes(
-              config->page_memory_bytes));
+          (unsigned)(APP_MANAGER_PAGE_STATE_BYTES *
+                     APP_MANAGER_MAX_PAGE_INSTANCES));
     return ESP_OK;
 
 fail:

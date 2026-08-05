@@ -86,8 +86,7 @@ static const app_manager_page_route_t *_builtin_find_page_in(
     return NULL;
 }
 
-static esp_err_t _builtin_validate_routes(const app_manager_app_desc_t *app,
-        size_t max_page_memory_size)
+static esp_err_t _builtin_validate_routes(const app_manager_app_desc_t *app)
 {
     if (app->page_routes == NULL || app->page_route_count == 0U)
     {
@@ -98,8 +97,10 @@ static esp_err_t _builtin_validate_routes(const app_manager_app_desc_t *app,
         const app_manager_page_route_t *route = &app->page_routes[i];
         if (!_builtin_id_is_valid(route->page_id) ||
                 route->definition == NULL ||
-                route->definition->handler == NULL ||
-                route->definition->memory_size > max_page_memory_size)
+                ((route->definition->handler == NULL) ==
+                 (route->definition->ops == NULL)) ||
+                route->definition->memory_size >
+                APP_MANAGER_PAGE_STATE_BYTES)
         {
             return ESP_ERR_INVALID_ARG;
         }
@@ -116,8 +117,7 @@ static esp_err_t _builtin_validate_routes(const app_manager_app_desc_t *app,
 }
 
 static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
-                                        size_t app_count,
-                                        size_t max_page_memory_size)
+                                        size_t app_count)
 {
     const uint32_t known_flags = APP_MANAGER_APP_FLAG_PINNED |
                                  APP_MANAGER_APP_FLAG_HIDDEN;
@@ -138,8 +138,7 @@ static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
                 return ESP_ERR_INVALID_ARG;
             }
         }
-        const esp_err_t result = _builtin_validate_routes(
-                                     app, max_page_memory_size);
+        const esp_err_t result = _builtin_validate_routes(app);
         if (result != ESP_OK)
         {
             return result;
@@ -166,7 +165,7 @@ esp_err_t app_manager_register_builtin_descriptors(
     return ESP_OK;
 }
 
-esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
+esp_err_t app_manager_builtin_registry_validate(void)
 {
     size_t app_count = 0U;
     const app_manager_app_desc_t *apps = _builtin_source_apps(&app_count);
@@ -178,8 +177,7 @@ esp_err_t app_manager_builtin_registry_validate(size_t max_page_memory_size)
     {
         return ESP_ERR_INVALID_ARG;
     }
-    const esp_err_t result = _builtin_validate_apps(
-                                 apps, app_count, max_page_memory_size);
+    const esp_err_t result = _builtin_validate_apps(apps, app_count);
     if (result != ESP_OK)
     {
         return result;
@@ -240,7 +238,7 @@ int app_manager_builtin_discover(void)
     esp_err_t result = ESP_OK;
     if (!s_registry_validated)
     {
-        result = app_manager_builtin_registry_validate(SIZE_MAX);
+        result = app_manager_builtin_registry_validate();
     }
     if (result == ESP_OK && s_registry_app_count <= INT_MAX)
     {

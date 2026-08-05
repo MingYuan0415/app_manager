@@ -53,8 +53,7 @@ typedef struct app_manager_nav_model
     size_t page_stride;
 } app_manager_nav_model_t;
 
-esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model,
-                                     size_t arena_bytes);
+esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model);
 void app_manager_nav_model_deinit(app_manager_nav_model_t *model);
 
 app_manager_app_node_t *app_manager_nav_model_find_app(

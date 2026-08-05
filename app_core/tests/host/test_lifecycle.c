@@ -288,10 +288,140 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     }
 }
 
+static page_state_t *_ops_record(
+    const app_manager_page_context_t *context,
+    app_manager_msg_type_t message)
+{
+    page_state_t *state = context->route_user_data;
+    assert(state != NULL);
+    assert(context->state == app_manager_this_page_memory());
+    assert(context->route_user_data == app_manager_this_page_userdata());
+    assert(context->screen == app_manager_this_page_screen());
+    assert(context->arguments == app_manager_this_page_arguments());
+    assert(s_callback_owner_app_id != NULL);
+    assert(strcmp(s_callback_owner_app_id, state->app_id) == 0);
+    assert(s_trace_count < TEST_TRACE_CAPACITY);
+    s_trace[s_trace_count++] = (trace_event_t)
+    {
+        .page = state,
+        .message = message,
+    };
+    state->messages[message]++;
+    state->has_arguments = context->arguments != NULL;
+    if (context->arguments != NULL)
+    {
+        state->arguments = *context->arguments;
+    }
+    else
+    {
+        memset(&state->arguments, 0, sizeof(state->arguments));
+    }
+    return state;
+}
+
+static void _ops_start(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONSTART);
+    uint8_t *memory = context->state;
+    assert(context->screen == NULL);
+    assert(memory != NULL && memory[0] == 0U);
+    state->instance_memory = memory;
+    memory[0] = 0xA5U;
+    state->mounted = false;
+    state->lifecycle_active = false;
+}
+
+static void _ops_mount(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONMOUNT);
+    assert(context->screen != NULL);
+    state->last_screen = context->screen;
+    state->mounted = true;
+}
+
+static void _ops_resume(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONRESUME);
+    uint8_t *memory = context->state;
+    assert(context->screen == state->last_screen);
+    assert(memory != NULL);
+    memory[1] = 0x5AU;
+    state->lifecycle_active = true;
+}
+
+static esp_err_t _ops_pause(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONPAUSE);
+    uint8_t *memory = context->state;
+    assert(context->screen == state->last_screen);
+    assert(memory != NULL && memory[1] == 0x5AU);
+    if (state->pause_failures > 0U)
+    {
+        state->pause_failures--;
+        return ESP_FAIL;
+    }
+    memory[1] = 0U;
+    state->lifecycle_active = false;
+    return ESP_OK;
+}
+
+static void _ops_unmount(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONUNMOUNT);
+    assert(context->screen == state->last_screen);
+    state->mounted = false;
+}
+
+static esp_err_t _ops_stop(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONSTOP);
+    uint8_t *memory = context->state;
+    assert(context->screen == NULL);
+    assert(memory != NULL && memory[0] == 0xA5U);
+    assert(memory[1] == 0U);
+    if (state->stop_failures > 0U)
+    {
+        state->stop_failures--;
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static void _ops_new_intent(const app_manager_page_context_t *context)
+{
+    page_state_t *state = _ops_record(context,
+                                      APP_MANAGER_MSG_ONNEWINTENT);
+    state->new_intent_had_screen = context->screen != NULL;
+}
+
+static const app_manager_page_ops_t s_page_ops =
+{
+    .start = _ops_start,
+    .mount = _ops_mount,
+    .resume = _ops_resume,
+    .pause = _ops_pause,
+    .unmount = _ops_unmount,
+    .stop = _ops_stop,
+    .new_intent = _ops_new_intent,
+};
+
 static const app_manager_page_definition_t s_shared_page_definition =
 {
     .handler = _page_handler,
     .memory_size = 16U,
+};
+
+static const app_manager_page_definition_t s_ops_page_definition =
+{
+    .ops = &s_page_ops,
+    .memory_size = 16U,
+};
+
+static const app_manager_page_ops_t s_empty_page_ops = {0};
+
+static const app_manager_page_definition_t s_empty_ops_page_definition =
+{
+    .ops = &s_empty_page_ops,
 };
 
 static const app_manager_page_route_t s_a_routes[] =
@@ -326,8 +456,16 @@ static const app_manager_page_route_t s_c_routes[] =
 {
     {
         .page_id = "root",
-        .definition = &s_shared_page_definition,
+        .definition = &s_ops_page_definition,
         .user_data = &s_c_root,
+    },
+};
+
+static const app_manager_page_route_t s_d_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_empty_ops_page_definition,
     },
 };
 
@@ -354,6 +492,13 @@ static const app_manager_app_desc_t s_apps[] =
         .root_page_id = "root",
         .page_routes = s_c_routes,
         .page_route_count = sizeof(s_c_routes) / sizeof(s_c_routes[0]),
+    },
+    {
+        .name = "D",
+        .id = "d",
+        .root_page_id = "root",
+        .page_routes = s_d_routes,
+        .page_route_count = sizeof(s_d_routes) / sizeof(s_d_routes[0]),
     },
 };
 
@@ -1069,6 +1214,20 @@ static void _test_resident_eviction_and_cleanup(void)
     assert(_navigate(&call) == ESP_OK);
     assert(!app_manager_is_page_present("b", "root"));
     assert(app_manager_get_running_apps() == 2U);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    call.request.has_arguments = true;
+    call.request.arguments = _arguments(9U, UINT32_C(0xA5A5A5A5));
+    _trace_reset();
+    assert(_navigate(&call) == ESP_OK);
+    const trace_event_t ops_intent_expected[] =
+    {
+        EVENT(&s_c_root, APP_MANAGER_MSG_ONNEWINTENT),
+    };
+    _expect_trace(ops_intent_expected,
+                  sizeof(ops_intent_expected) /
+                  sizeof(ops_intent_expected[0]));
+    assert(s_c_root.new_intent_had_screen);
+    assert(s_c_root.has_arguments && s_c_root.arguments.type == 9U);
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
 
@@ -1296,6 +1455,54 @@ static void _test_validation_and_final_exit(void)
     assert(s_presentation.active == &s_presentation.neutral);
 }
 
+static void _test_ops_pause_cleanup_retry(void)
+{
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    uint8_t *instance_memory = s_c_root.instance_memory;
+    lv_obj_t *screen = s_c_root.last_screen;
+    assert(instance_memory != NULL && instance_memory[1] == 0x5AU);
+
+    s_c_root.pause_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    _trace_reset();
+    assert(_navigate(&call) == ESP_FAIL);
+    assert(app_manager_is_actived("c"));
+    assert(app_page_is_actived("c", "root"));
+    assert(s_c_root.instance_memory == instance_memory);
+    assert(s_c_root.last_screen == screen);
+    assert(s_c_root.mounted && s_c_root.lifecycle_active);
+    assert(instance_memory[1] == 0x5AU);
+
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(!app_manager_is_actived("c"));
+    assert(app_manager_is_page_present("c", "root"));
+    assert(s_c_root.instance_memory == instance_memory);
+    assert(!s_c_root.mounted && !s_c_root.lifecycle_active);
+    assert(instance_memory[1] == 0U);
+
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_all_closed());
+}
+
+static void _test_empty_ops_are_noop(void)
+{
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
+    _trace_reset();
+    assert(_navigate(&call) == ESP_OK);
+    _expect_trace(NULL, 0U);
+    assert(app_manager_is_actived("d"));
+
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "d", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    _expect_trace(NULL, 0U);
+    assert(app_manager_is_all_closed());
+}
+
 static void _prepare_deinit_cleanup_retry(void)
 {
     nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
@@ -1314,9 +1521,9 @@ int main(void)
     _test_configuration_validation();
     assert(app_manager_register_builtin_descriptors(
                s_apps, sizeof(s_apps) / sizeof(s_apps[0])) == ESP_OK);
-    assert(app_manager_builtin_registry_validate(64U) == ESP_OK);
+    assert(app_manager_builtin_registry_validate() == ESP_OK);
     assert(app_manager_mailbox_init() == ESP_OK);
-    assert(app_manager_lifecycle_init(12U * 64U) == ESP_OK);
+    assert(app_manager_lifecycle_init() == ESP_OK);
     app_manager_lifecycle_host_set_observer(_lifecycle_observer);
     _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
 
@@ -1334,6 +1541,8 @@ int main(void)
     _test_stop_rollback_load_failure_suspend_cleanup();
     _test_screen_suspend_and_delete_retry();
     _test_validation_and_final_exit();
+    _test_ops_pause_cleanup_retry();
+    _test_empty_ops_are_noop();
     _prepare_deinit_cleanup_retry();
 
     assert(app_manager_lifecycle_shutdown_begin_and_wait() == ESP_OK);
