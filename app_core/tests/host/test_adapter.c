@@ -16,7 +16,10 @@
 #include "app_manager_page_arena.h"
 #include "app_manager_presentation.h"
 #include "esp_lv_adapter.h"
+#include "esp_heap_caps.h"
 #include "esp_mmap_assets.h"
+
+#include <stdlib.h>
 
 #define EXPECTED_COLOR_FORMAT LV_COLOR_FORMAT_RGB565
 
@@ -202,6 +205,15 @@ static struct _lv_obj_t s_screen_handle;
 static struct _lv_font_t s_font_handles[APP_THEME_FONT_MAX];
 static struct mmap_assets_t s_assets_handle;
 static int s_fs_handle;
+typedef struct mock_image_file
+{
+    lv_image_header_t header;
+    uint8_t pixels[18];
+} mock_image_file_t;
+
+static mock_image_file_t s_mock_image_file;
+static const uint8_t *s_mock_asset_memory;
+static int s_mock_asset_size;
 static esp_err_t _panel_draw_bitmap(esp_lcd_panel_t *panel,
                                     int x_start, int y_start,
                                     int x_end, int y_end,
@@ -310,6 +322,19 @@ static void _mock_reset(void)
     s_adapter_deinit_keeps_initialized = false;
     s_color_format_calls = 0;
     s_color_format = LV_COLOR_FORMAT_UNKNOWN;
+    s_mock_image_file = (mock_image_file_t)
+    {
+        .header =
+        {
+            .magic = LV_IMAGE_HEADER_MAGIC,
+            .cf = LV_COLOR_FORMAT_RGB565A8,
+            .w = 2U,
+            .h = 2U,
+            .stride = 4U,
+        },
+    };
+    s_mock_asset_memory = (const uint8_t *)&s_mock_image_file;
+    s_mock_asset_size = (int)sizeof(lv_image_header_t) + 12;
 #if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
     s_diagnostics_ready = false;
     s_draw_during_display_registration = false;
@@ -419,6 +444,8 @@ static app_manager_config_t _make_config(void)
         .font_sizes = NULL,
         .font_count = 0,
         .res_fs_letter = 'F',
+        .resource_file_count = 1U,
+        .resource_checksum = 0x4303U,
         .screen_ops = {
             .suspend = _screen_suspend,
             .resume_prepare = _screen_resume_prepare,
@@ -909,6 +936,20 @@ esp_err_t mmap_assets_new(const mmap_assets_config_t *config,
     return ESP_OK;
 }
 
+void *heap_caps_calloc(size_t count, size_t size, uint32_t caps)
+{
+    if (caps != (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))
+    {
+        s_contract_error = true;
+    }
+    return calloc(count, size);
+}
+
+void heap_caps_free(void *memory)
+{
+    free(memory);
+}
+
 int mmap_assets_get_stored_files(mmap_assets_handle_t handle)
 {
     _mock_observe_initializing_or_deinitializing();
@@ -921,19 +962,20 @@ int mmap_assets_get_stored_files(mmap_assets_handle_t handle)
 
 const uint8_t *mmap_assets_get_mem(mmap_assets_handle_t handle, int index)
 {
-    static const uint8_t font_data[] = {0x00, 0x01, 0x02, 0x03};
-    (void)handle;
-    (void)index;
-    s_contract_error = true;
-    return font_data;
+    if (handle != &s_assets_handle || s_live.mmap == 0 || index != 0)
+    {
+        s_contract_error = true;
+    }
+    return s_mock_asset_memory;
 }
 
 int mmap_assets_get_size(mmap_assets_handle_t handle, int index)
 {
-    (void)handle;
-    (void)index;
-    s_contract_error = true;
-    return 4;
+    if (handle != &s_assets_handle || s_live.mmap == 0 || index != 0)
+    {
+        s_contract_error = true;
+    }
+    return s_mock_asset_size;
 }
 
 esp_err_t esp_lv_adapter_fs_mount(const fs_cfg_t *config,
@@ -1676,6 +1718,133 @@ static void _test_resource_drive_letter_is_forwarded(void)
     _check_clean_state();
 }
 
+static void _test_semantic_image_resources(void)
+{
+    static const app_manager_image_resource_config_t image =
+    {
+        .semantic_id = 0x1001U,
+        .asset_index = 0U,
+        .width = 2U,
+        .height = 2U,
+    };
+    const lv_image_dsc_t *descriptor = NULL;
+
+    _mock_reset();
+    CHECK(app_manager_get_image(image.semantic_id, &descriptor) ==
+          ESP_ERR_INVALID_STATE);
+    app_manager_config_t config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_get_image(0U, &descriptor) == ESP_ERR_INVALID_ARG);
+    CHECK(app_manager_get_image(image.semantic_id, NULL) ==
+          ESP_ERR_INVALID_ARG);
+    CHECK(app_manager_get_image(0xFFFFU, &descriptor) == ESP_ERR_NOT_FOUND);
+    CHECK(app_manager_get_image(image.semantic_id, &descriptor) == ESP_OK);
+    CHECK(descriptor != NULL);
+    CHECK(descriptor->header.magic == LV_IMAGE_HEADER_MAGIC);
+    CHECK(descriptor->header.cf == LV_COLOR_FORMAT_RGB565A8);
+    CHECK(descriptor->header.w == image.width);
+    CHECK(descriptor->header.h == image.height);
+    CHECK(descriptor->data == s_mock_asset_memory + sizeof(lv_image_header_t));
+    CHECK(descriptor->data_size == 12U);
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_image_file.header.magic = 0U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_image_file.header.w = 3U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_asset_size = (int)sizeof(lv_image_header_t);
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_SIZE);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_asset_size = (int)sizeof(lv_image_header_t) + 11;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_SIZE);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_asset_size = (int)sizeof(lv_image_header_t) + 13;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_SIZE);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_image_file.header.stride = 5U;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_image_file.header.flags = LV_IMAGE_FLAGS_COMPRESSED;
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    _check_clean_state();
+
+    _mock_reset();
+    config = _make_config();
+    config.image_resources = &image;
+    config.image_resource_count = 1U;
+    s_mock_image_file.header.stride = 6U;
+    s_mock_asset_size = (int)sizeof(lv_image_header_t) +
+                        (int)sizeof(s_mock_image_file.pixels);
+    CHECK(app_manager_init(&config) == ESP_OK);
+    CHECK(app_manager_get_image(image.semantic_id, &descriptor) == ESP_OK);
+    CHECK(descriptor->header.stride == 6U);
+    CHECK(descriptor->data_size == sizeof(s_mock_image_file.pixels));
+    CHECK(app_manager_deinit() == ESP_OK);
+    _check_clean_state();
+
+    _mock_reset();
+    static const app_manager_image_resource_config_t duplicate_images[] =
+    {
+        {
+            .semantic_id = 0x1001U,
+            .asset_index = 0U,
+            .width = 2U,
+            .height = 2U,
+        },
+        {
+            .semantic_id = 0x1001U,
+            .asset_index = 0U,
+            .width = 2U,
+            .height = 2U,
+        },
+    };
+    config = _make_config();
+    config.image_resources = duplicate_images;
+    config.image_resource_count =
+        sizeof(duplicate_images) / sizeof(duplicate_images[0]);
+    CHECK(app_manager_init(&config) == ESP_ERR_INVALID_ARG);
+    _check_clean_state();
+}
+
 static void _test_custom_page_arena_stride_is_forwarded(void)
 {
     _mock_reset();
@@ -2397,6 +2566,7 @@ int main(void)
 {
     _test_invalid_config_and_ready_state();
     _test_resource_drive_letter_is_forwarded();
+    _test_semantic_image_resources();
     _test_custom_page_arena_stride_is_forwarded();
     _test_disabled_te_uses_default_mode();
     _test_te_profile_uses_proxy_and_disables_startup_touch();

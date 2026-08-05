@@ -17,6 +17,7 @@
 #include "app_theme.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_interface.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -26,6 +27,7 @@
     #include "esp_timer.h"
 #endif
 #include <stdatomic.h>
+#include <string.h>
 
 #define APP_ADAPTER_PARTIAL_BUFFER_HEIGHT \
     ((uint32_t)CONFIG_APP_MANAGER_LVGL_PARTIAL_BUFFER_HEIGHT)
@@ -41,11 +43,15 @@
     #include "esp_mmap_assets.h"
 
     #define APP_RESOURCE_PARTITION_LABEL "res"
-    #define APP_RESOURCE_FILE_COUNT      1
-    #define APP_RESOURCE_CHECKSUM        0x4303U
 
     static mmap_assets_handle_t s_resource_assets;
 #endif
+
+typedef struct app_image_resource
+{
+    uint32_t semantic_id;
+    lv_image_dsc_t image;
+} app_image_resource_t;
 
 typedef enum
 {
@@ -80,6 +86,8 @@ static atomic_bool s_initial_display_committed;
 static atomic_bool s_refresh_capture_active;
 static atomic_int s_refresh_capture_error;
 static esp_lcd_panel_handle_t s_panel_proxy_delegate;
+static app_image_resource_t *s_image_resources;
+static size_t s_image_resource_count;
 
 static void _app_adapter_capture_refresh_error(esp_err_t result)
 {
@@ -455,14 +463,37 @@ bool app_manager_display_is_sleeping(void)
     return atomic_load_explicit(&s_display_sleeping, memory_order_acquire);
 }
 
+esp_err_t app_manager_get_image(uint32_t semantic_id,
+                                const lv_image_dsc_t **image)
+{
+    if (semantic_id == 0U || image == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (atomic_load(&s_state) != APP_ADAPTER_READY)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (size_t index = 0U; index < s_image_resource_count; ++index)
+    {
+        if (s_image_resources[index].semantic_id == semantic_id)
+        {
+            *image = &s_image_resources[index].image;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
-static esp_err_t _app_adapter_mount_resources(char drive_letter)
+static esp_err_t _app_adapter_mount_resources(
+    const app_manager_config_t *config)
 {
     const mmap_assets_config_t mmap_config =
     {
         .partition_label = APP_RESOURCE_PARTITION_LABEL,
-        .max_files = APP_RESOURCE_FILE_COUNT,
-        .checksum = APP_RESOURCE_CHECKSUM,
+        .max_files = config->resource_file_count,
+        .checksum = config->resource_checksum,
         .flags = {.mmap_enable = true},
     };
 
@@ -484,7 +515,7 @@ static esp_err_t _app_adapter_mount_resources(char drive_letter)
 
     const fs_cfg_t fs_config =
     {
-        .fs_letter = drive_letter,
+        .fs_letter = config->res_fs_letter,
         .fs_nums = (int)file_count,
         .fs_assets = s_resource_assets,
     };
@@ -499,6 +530,80 @@ static esp_err_t _app_adapter_mount_resources(char drive_letter)
         return result;
     }
     return result;
+}
+
+static esp_err_t _app_adapter_initialize_images(
+    const app_manager_config_t *config)
+{
+    if (config->image_resource_count == 0U)
+    {
+        return ESP_OK;
+    }
+    s_image_resources = heap_caps_calloc(
+                            config->image_resource_count,
+                            sizeof(*s_image_resources),
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_image_resources == NULL)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+    s_image_resource_count = config->image_resource_count;
+    for (size_t index = 0U; index < config->image_resource_count; ++index)
+    {
+        const app_manager_image_resource_config_t *binding =
+            &config->image_resources[index];
+        const uint8_t *memory = mmap_assets_get_mem(
+                                    s_resource_assets, binding->asset_index);
+        int size = mmap_assets_get_size(s_resource_assets,
+                                        binding->asset_index);
+        lv_image_header_t header;
+        if (memory == NULL || size <= (int)sizeof(header))
+        {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        memcpy(&header, memory, sizeof(header));
+        size_t data_size = (size_t)size - sizeof(header);
+        if (header.magic != LV_IMAGE_HEADER_MAGIC ||
+                header.cf != LV_COLOR_FORMAT_RGB565A8 ||
+                header.w != binding->width || header.h != binding->height ||
+                (header.flags & LV_IMAGE_FLAGS_COMPRESSED) != 0U ||
+                (header.stride & 1U) != 0U ||
+                header.stride < (uint32_t)header.w * 2U)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (header.stride > SIZE_MAX / header.h)
+        {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        size_t expected_data_size = (size_t)header.stride * header.h;
+        size_t alpha_stride = header.stride / 2U;
+        if (alpha_stride > (SIZE_MAX - expected_data_size) / header.h)
+        {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        expected_data_size += alpha_stride * header.h;
+        if (data_size != expected_data_size || expected_data_size > UINT32_MAX)
+        {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        for (size_t previous = 0U; previous < index; ++previous)
+        {
+            if (s_image_resources[previous].semantic_id ==
+                    binding->semantic_id)
+            {
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
+        s_image_resources[index].semantic_id = binding->semantic_id;
+        s_image_resources[index].image = (lv_image_dsc_t)
+        {
+            .header = header,
+            .data_size = (uint32_t)expected_data_size,
+            .data = memory + sizeof(header),
+        };
+    }
+    return ESP_OK;
 }
 #endif
 
@@ -788,6 +893,9 @@ static esp_err_t _app_adapter_cleanup_resources(void)
 {
     esp_err_t result = ESP_OK;
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS
+    heap_caps_free(s_image_resources);
+    s_image_resources = NULL;
+    s_image_resource_count = 0U;
     if (s_resource_assets != NULL)
     {
         result = mmap_assets_del(s_resource_assets);
@@ -844,7 +952,26 @@ exit:
 
 static bool _app_adapter_config_valid(const app_manager_config_t *config)
 {
-    return config != NULL && config->disp_port != NULL &&
+    bool resources_valid = config != NULL &&
+                           config->resource_file_count > 0U &&
+                           (config->image_resource_count == 0U ||
+                            config->image_resources != NULL);
+    if (resources_valid)
+    {
+        for (size_t index = 0U; index < config->image_resource_count; ++index)
+        {
+            const app_manager_image_resource_config_t *binding =
+                &config->image_resources[index];
+            if (binding->semantic_id == 0U || binding->width == 0U ||
+                    binding->height == 0U ||
+                    binding->asset_index >= config->resource_file_count)
+            {
+                resources_valid = false;
+                break;
+            }
+        }
+    }
+    return resources_valid && config->disp_port != NULL &&
            config->disp_port->panel != NULL &&
            config->disp_port->panel_io != NULL &&
            config->disp_port->touch != NULL &&
@@ -909,6 +1036,10 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            config->font_sizes == active->font_sizes &&
            config->font_count == active->font_count &&
            config->res_fs_letter == active->res_fs_letter &&
+           config->resource_file_count == active->resource_file_count &&
+           config->resource_checksum == active->resource_checksum &&
+           config->image_resources == active->image_resources &&
+           config->image_resource_count == active->image_resource_count &&
            config->screen_ops.suspend == active->screen_ops.suspend &&
            config->screen_ops.resume_prepare ==
            active->screen_ops.resume_prepare &&
@@ -1114,7 +1245,11 @@ static esp_err_t _app_adapter_initialize_resources(
     {
         return ESP_ERR_INVALID_ARG;
     }
-    result = _app_adapter_mount_resources(config->res_fs_letter);
+    result = _app_adapter_mount_resources(config);
+    if (result == ESP_OK)
+    {
+        result = _app_adapter_initialize_images(config);
+    }
 #endif
 #if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE
     if (result == ESP_OK)

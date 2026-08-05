@@ -353,6 +353,17 @@ esp_err_t app_manager_get_ui_dispatch_fn(app_manager_ui_dispatch_fn *out_fn);
  */
 const lv_font_t *app_manager_get_font(app_theme_font_id_t id);
 
+/**
+ * @brief Resolve one product semantic ID to a persistent mmap image.
+ *
+ * @param semantic_id is the nonzero product-owned image identity.
+ * @param image receives a descriptor valid until app_manager_deinit().
+ * @return ESP_OK when found; ESP_ERR_NOT_FOUND for an unknown ID; otherwise
+ *         an argument or lifecycle error.
+ */
+esp_err_t app_manager_get_image(uint32_t semantic_id,
+                                const lv_image_dsc_t **image);
+
 /* ── Static registry export macros ── */
 
 /**

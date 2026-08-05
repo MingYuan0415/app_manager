@@ -80,6 +80,12 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 | Typed Blob | 96 字节，其中 payload 88 字节 | `ESP_ERR_INVALID_ARG` |
 | 动画时长 | 1..2000 ms，0 表示使用默认值 | `ESP_ERR_INVALID_ARG` |
 
+构建生成的只读图片由装配层使用 `app_manager_image_resource_config_t` 将产品语义 ID 映射
+到 mmap asset index。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
+BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
+始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
+`app_manager_deinit()`，因此全部 LVGL Image 对象必须先由正常页面生命周期销毁。
+
 每个 App 节点拥有独立 Page 栈，App 节点本身组成前台历史：
 
 ```text

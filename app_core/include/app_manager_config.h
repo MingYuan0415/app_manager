@@ -15,6 +15,15 @@
 extern "C" {
 #endif
 
+/** @brief Product mapping from a semantic image ID to one mmap asset. */
+typedef struct app_manager_image_resource_config
+{
+    uint32_t semantic_id; /**< Nonzero product-owned stable image identity. */
+    uint16_t asset_index; /**< Generated mmap asset index. */
+    uint16_t width;       /**< Expected decoded width. */
+    uint16_t height;      /**< Expected decoded height. */
+} app_manager_image_resource_config_t;
+
 /** @brief Immutable dependencies copied during application-manager startup. */
 typedef struct app_manager_config
 {
@@ -22,6 +31,10 @@ typedef struct app_manager_config
     const uint16_t           *font_sizes;     /**< 字号表，例 {18,22,28,36,48,54} */
     size_t                    font_count;     /**< 字号表长度，例 6 */
     char                      res_fs_letter;  /**< 资源分区盘符，例 'F' */
+    uint16_t                  resource_file_count; /**< Generated mmap file count. */
+    uint16_t                  resource_checksum; /**< Generated mmap checksum. */
+    const app_manager_image_resource_config_t *image_resources; /**< Semantic image map. */
+    size_t                    image_resource_count; /**< Semantic image map length. */
     app_manager_screen_ctrl_ops_t screen_ops; /**< Required; called only by app-control. */
     app_manager_input_ops_t       input_ops;  /**< Required typed input bridge. */
     app_manager_standby_ops_t     standby_ops; /**< Required non-blocking system-PM bridge. */

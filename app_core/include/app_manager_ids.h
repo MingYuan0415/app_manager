@@ -14,5 +14,7 @@
 #define APP_MANAGER_ID_SETTINGS "settings"
 /** @brief Stable identifier of the setup application. */
 #define APP_MANAGER_ID_SETUP    "setup"
+/** @brief Stable identifier of the weather application. */
+#define APP_MANAGER_ID_WEATHER  "weather"
 
 #endif /* __APP_MANAGER_IDS_H__ */

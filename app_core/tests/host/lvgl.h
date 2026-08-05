@@ -58,8 +58,34 @@ typedef enum
 {
     LV_COLOR_FORMAT_UNKNOWN = 0,
     LV_COLOR_FORMAT_RGB565 = 0x12,
+    LV_COLOR_FORMAT_RGB565A8 = 0x14,
     LV_COLOR_FORMAT_RGB565_SWAPPED = 0x1B,
 } lv_color_format_t;
+
+#define LV_IMAGE_HEADER_MAGIC 0x19U
+#define LV_IMAGE_FLAGS_COMPRESSED 0x0008U
+
+/** @brief Minimal LVGL image header used by mmap resource tests. */
+typedef struct lv_image_header
+{
+    uint32_t magic : 8;
+    uint32_t cf : 8;
+    uint32_t flags : 16;
+    uint32_t w : 16;
+    uint32_t h : 16;
+    uint32_t stride : 16;
+    uint32_t reserved_2 : 16;
+} lv_image_header_t;
+
+/** @brief Minimal persistent LVGL image descriptor. */
+typedef struct lv_image_dsc
+{
+    lv_image_header_t header;
+    uint32_t data_size;
+    const uint8_t *data;
+    const void *reserved;
+    const void *reserved_2;
+} lv_image_dsc_t;
 
 /** @brief Return the active screen of a fake display. */
 lv_obj_t *lv_display_get_screen_active(lv_display_t *display);
