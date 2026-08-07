@@ -20,6 +20,7 @@
 #include "app_manager_mailbox.h"
 #include "app_manager_nav_model.h"
 #include "app_manager_presentation.h"
+#include "app_manager_recents.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -621,6 +622,10 @@ static void _lifecycle_activate_app(app_manager_app_node_t *app)
 static esp_err_t _lifecycle_free_app(app_manager_app_node_t *app)
 {
     esp_err_t result = ESP_OK;
+    if (app->descriptor != NULL)
+    {
+        app_manager_recents_invalidate(app->descriptor->id);
+    }
     for (app_manager_page_node_t *page = app->current_page;
             page != NULL; page = page->previous)
     {
@@ -677,10 +682,16 @@ static esp_err_t _lifecycle_destroy_background_app(app_manager_app_node_t *app)
     {
         result = _lifecycle_free_app(app);
     }
+    else
+    {
+        /* The instance still owns its resources; mark it so recent-tasks and
+         * the retry loop keep it visible and force cleanup before reuse. */
+        app->cleanup_pending = true;
+    }
     return result;
 }
 
-static esp_err_t _lifecycle_retry_pending_cleanup(void)
+static esp_err_t _lifecycle_retry_pending_cleanup(const char *excluded_app_id)
 {
     esp_err_t result = ESP_OK;
     for (size_t index = 0; index < APP_MANAGER_MAX_PAGE_INSTANCES; index++)
@@ -716,6 +727,13 @@ static esp_err_t _lifecycle_retry_pending_cleanup(void)
         app_manager_app_node_t *app = &s_model.apps[index];
         if (!app->in_use || !app->cleanup_pending)
         {
+            continue;
+        }
+        if (excluded_app_id != NULL && app->descriptor != NULL &&
+                strcmp(app->descriptor->id, excluded_app_id) == 0)
+        {
+            /* The pending EXIT target is retried by the EXIT path itself so
+             * an exact retry reports success instead of NOT_FOUND. */
             continue;
         }
         result = _lifecycle_destroy_background_app(app);
@@ -1535,6 +1553,31 @@ static esp_err_t _lifecycle_prepare_target(app_manager_page_node_t *target,
     return result;
 }
 
+static void _lifecycle_capture_recents_source(
+    app_manager_app_node_t *source_app)
+{
+    app_manager_page_node_t *source_page = NULL;
+    const lv_draw_buf_t *snapshot = NULL;
+
+    if (source_app == NULL || source_app->descriptor == NULL ||
+            (source_app->descriptor->flags &
+             (APP_MANAGER_APP_FLAG_PINNED | APP_MANAGER_APP_FLAG_HIDDEN)) !=
+            0U ||
+            source_app->current_page == NULL)
+    {
+        return;
+    }
+    source_page = source_app->current_page;
+    if (!source_page->mounted || source_page->screen == NULL ||
+            app_manager_presentation_capture_source(
+                source_page->screen, &snapshot) != ESP_OK ||
+            snapshot == NULL)
+    {
+        return;
+    }
+    app_manager_recents_capture(source_app->descriptor->id, snapshot);
+}
+
 static esp_err_t _lifecycle_run_app(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
@@ -1571,6 +1614,10 @@ static esp_err_t _lifecycle_run_app(
     {
         completion(ESP_OK, context);
         return ESP_OK;
+    }
+    if (target_app != source_app)
+    {
+        _lifecycle_capture_recents_source(source_app);
     }
     result = _lifecycle_prepare_target(target_page, source_page);
     if (result != ESP_OK)
@@ -1668,6 +1715,11 @@ static esp_err_t _lifecycle_open_page(
                 return result;
             }
         }
+    }
+
+    if (target_app != source_app)
+    {
+        _lifecycle_capture_recents_source(source_app);
     }
 
     result = _lifecycle_prepare_target(target_page, source_page);
@@ -1817,6 +1869,21 @@ static esp_err_t _lifecycle_back_to(
     return _lifecycle_back_page(request, target, completion, context);
 }
 
+static app_manager_app_node_t *_lifecycle_find_app_including_pending(
+    const char *app_id)
+{
+    for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
+    {
+        app_manager_app_node_t *app = &s_model.apps[index];
+        if (app->in_use && app->descriptor != NULL &&
+                strcmp(app->descriptor->id, app_id) == 0)
+        {
+            return app;
+        }
+    }
+    return NULL;
+}
+
 static esp_err_t _lifecycle_exit_app(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
@@ -1830,7 +1897,13 @@ static esp_err_t _lifecycle_exit_app(
                                   app_id);
     if (app == NULL)
     {
-        return ESP_ERR_NOT_FOUND;
+        /* The target may still hold a cleanup_pending instance that the
+         * generic retry deliberately skipped for this request. */
+        app = _lifecycle_find_app_including_pending(app_id);
+        if (app == NULL)
+        {
+            return ESP_ERR_NOT_FOUND;
+        }
     }
     if (app == s_model.active_app)
     {
@@ -1990,7 +2063,9 @@ esp_err_t app_manager_lifecycle_navigate(
     {
         return result;
     }
-    result = _lifecycle_retry_pending_cleanup();
+    const char *cleanup_excluded_app_id =
+        request->operation == APP_MANAGER_NAV_OP_EXIT ? request->app_id : NULL;
+    result = _lifecycle_retry_pending_cleanup(cleanup_excluded_app_id);
     if (result != ESP_OK)
     {
         return result;
@@ -2055,10 +2130,17 @@ esp_err_t app_manager_lifecycle_init(void)
     {
         goto fail;
     }
+    result = app_manager_recents_init();
+    if (result != ESP_OK)
+    {
+        app_manager_nav_model_deinit(&s_model);
+        goto fail;
+    }
     if (app_manager_presentation_neutral_screen() == NULL)
     {
         result = ESP_ERR_INVALID_STATE;
         app_manager_nav_model_deinit(&s_model);
+        app_manager_recents_deinit();
         goto fail;
     }
     memset(&s_transition, 0, sizeof(s_transition));
@@ -2108,6 +2190,7 @@ void app_manager_lifecycle_force_deinit(void)
         app_manager_presentation_finish_now();
         _lifecycle_force_release_nodes();
         app_manager_nav_model_deinit(&s_model);
+        app_manager_recents_deinit();
     }
     memset(&s_transition, 0, sizeof(s_transition));
     s_handler_page = NULL;
@@ -2134,7 +2217,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
     }
     s_tearing_down = true;
     app_manager_presentation_finish_now();
-    result = _lifecycle_retry_pending_cleanup();
+    result = _lifecycle_retry_pending_cleanup(NULL);
     if (result != ESP_OK)
     {
         return result;
@@ -2171,6 +2254,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
         }
     }
     app_manager_nav_model_deinit(&s_model);
+    app_manager_recents_deinit();
     s_initialized = false;
     s_tearing_down = false;
     s_recovery_pending = false;
@@ -2275,7 +2359,7 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
     {
         return ESP_ERR_INVALID_STATE;
     }
-    result = _lifecycle_retry_pending_cleanup();
+    result = _lifecycle_retry_pending_cleanup(NULL);
     if (result != ESP_OK)
     {
         return result;
@@ -2561,6 +2645,91 @@ esp_err_t app_manager_lifecycle_running_count_call(void *opaque)
     request->count = _lifecycle_topology_query_allowed() ?
                      app_manager_nav_model_running_count(&s_model) : 0U;
     return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque)
+{
+    app_manager_lifecycle_request_t *request = opaque;
+    request->tasks_filled = 0U;
+    if (request->tasks == NULL || request->task_capacity == 0U ||
+            !_lifecycle_topology_query_allowed())
+    {
+        return ESP_OK;
+    }
+    const size_t capacity = request->task_capacity <
+                            APP_MANAGER_MAX_RECENT_TASKS ?
+                            request->task_capacity :
+                            APP_MANAGER_MAX_RECENT_TASKS;
+    size_t filled = 0U;
+    for (app_manager_app_node_t *app = s_model.active_app;
+            app != NULL && filled < capacity;
+            app = app->previous)
+    {
+        if (!app->in_use || app->descriptor == NULL ||
+                (app->descriptor->flags &
+                 (APP_MANAGER_APP_FLAG_PINNED | APP_MANAGER_APP_FLAG_HIDDEN)) !=
+                0U)
+        {
+            continue;
+        }
+        app_manager_recent_task_t *task = &request->tasks[filled];
+        memset(task, 0, sizeof(*task));
+        task->app_id = app->descriptor->id;
+        task->display_name = app->descriptor->display_name != NULL ?
+                             app->descriptor->display_name :
+                             app->descriptor->name;
+        task->page_id = app->current_page != NULL &&
+                        app->current_page->route != NULL ?
+                        app->current_page->route->page_id : NULL;
+        task->preview_valid = app_manager_recents_lookup(task->app_id,
+                              &task->preview);
+        task->active = app == s_model.active_app;
+        task->cleanup_pending = app->cleanup_pending;
+        filled++;
+    }
+    request->tasks_filled = filled;
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_capture_active_recents(void)
+{
+    if (!s_initialized || s_tearing_down ||
+            !app_manager_mailbox_is_worker() ||
+            !_lifecycle_topology_query_allowed())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    _lifecycle_capture_recents_source(s_model.active_app);
+    return ESP_OK;
+}
+
+esp_err_t app_manager_lifecycle_clear_background_tasks(void)
+{
+    if (!s_initialized || s_tearing_down ||
+            !app_manager_mailbox_is_worker() ||
+            !_lifecycle_topology_query_allowed())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t result = ESP_OK;
+    for (size_t index = 0; index < APP_MANAGER_MAX_RESIDENT_APPS; index++)
+    {
+        app_manager_app_node_t *app = &s_model.apps[index];
+        if (!app->in_use || app == s_model.active_app ||
+                app->descriptor == NULL ||
+                (app->descriptor->flags &
+                 (APP_MANAGER_APP_FLAG_PINNED | APP_MANAGER_APP_FLAG_HIDDEN)) !=
+                0U)
+        {
+            continue;
+        }
+        esp_err_t step = _lifecycle_destroy_background_app(app);
+        if (step != ESP_OK && result == ESP_OK)
+        {
+            result = step;
+        }
+    }
+    return result;
 }
 
 void *app_manager_this_page_memory(void)

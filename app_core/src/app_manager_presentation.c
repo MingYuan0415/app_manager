@@ -525,6 +525,44 @@ fallback:
     }
     return result;
 }
+
+esp_err_t app_manager_presentation_capture_source(
+    lv_obj_t *screen, const lv_draw_buf_t **snapshot)
+{
+    if (screen == NULL || snapshot == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *snapshot = NULL;
+    if (!s_presentation.initialized || s_presentation.deinitializing ||
+            !s_presentation.snapshot_available ||
+            !_presentation_screen_is_valid(screen) ||
+            !_presentation_snapshot_screen_is_eligible(screen))
+    {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (lv_snapshot_take_to_draw_buf(screen, LV_COLOR_FORMAT_RGB565,
+                                     &s_presentation.snapshot_draw_buffers[0]) !=
+            LV_RESULT_OK)
+    {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    *snapshot = &s_presentation.snapshot_draw_buffers[0];
+    return ESP_OK;
+}
+#endif
+
+#if !APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED
+esp_err_t app_manager_presentation_capture_source(
+    lv_obj_t *screen, const lv_draw_buf_t **snapshot)
+{
+    (void)screen;
+    if (snapshot != NULL)
+    {
+        *snapshot = NULL;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
 #endif
 
 static void _presentation_schedule_completion(uint32_t generation)

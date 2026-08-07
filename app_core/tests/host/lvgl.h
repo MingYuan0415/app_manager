@@ -62,6 +62,13 @@ typedef enum
     LV_COLOR_FORMAT_RGB565_SWAPPED = 0x1B,
 } lv_color_format_t;
 
+/** @brief Minimal LVGL result values used by draw-buffer APIs. */
+typedef enum
+{
+    LV_RESULT_OK = 0,
+    LV_RESULT_INVALID,
+} lv_result_t;
+
 #define LV_IMAGE_HEADER_MAGIC 0x19U
 #define LV_IMAGE_FLAGS_COMPRESSED 0x0008U
 
@@ -86,6 +93,28 @@ typedef struct lv_image_dsc
     const void *reserved;
     const void *reserved_2;
 } lv_image_dsc_t;
+
+/** @brief Byte alignment required for draw-buffer data. */
+#define LV_DRAW_BUF_ALIGN 16U
+
+/** @brief Minimal fake LVGL draw buffer used by recent-tasks previews. */
+typedef struct lv_draw_buf
+{
+    lv_image_header_t header;
+    uint32_t data_size;
+    void *data;
+} lv_draw_buf_t;
+
+/** @brief Initialize a fake draw buffer. */
+lv_result_t lv_draw_buf_init(lv_draw_buf_t *draw_buf, uint32_t width,
+                             uint32_t height, lv_color_format_t color_format,
+                             uint32_t stride, void *data, uint32_t data_size);
+/** @brief Return the byte stride for one scanline of a color format. */
+uint32_t lv_draw_buf_width_to_stride(uint32_t width,
+                                     lv_color_format_t color_format);
+/** @brief Flush the data cache of one fake draw buffer. */
+void lv_draw_buf_flush_cache(const lv_draw_buf_t *draw_buf,
+                             const lv_area_t *area);
 
 /** @brief Return the active screen of a fake display. */
 lv_obj_t *lv_display_get_screen_active(lv_display_t *display);

@@ -68,7 +68,7 @@ esp_err_t app_manager_control_handle_activity(void);
  */
 esp_err_t app_manager_control_handle_touch_activity(uint32_t generation);
 
-/** @brief Dispatch a coalesced HOME request to the UI worker. */
+/** @brief Dispatch the resolved single- or double-click HOME navigation. */
 void app_manager_control_process_pending_home(void);
 
 /**
@@ -76,9 +76,10 @@ void app_manager_control_process_pending_home(void);
  * @param key identifies the logical key.
  * @param event identifies the key transition.
  * @param generation identifies a HOME sequence or is zero for other keys.
+ * @param event_us is the producer admission time of the event.
  * @return ESP_OK on success, otherwise a transition or dispatch error.
  */
 esp_err_t app_manager_control_handle_input(app_manager_key_t key,
-        app_manager_key_event_t event, uint32_t generation);
+        app_manager_key_event_t event, uint32_t generation, int64_t event_us);
 
 #endif /* __APP_MANAGER_PM_TRANSITION_H__ */

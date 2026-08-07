@@ -71,7 +71,6 @@ atomic_bool s_touch_activity_enabled;
 atomic_bool s_touch_restore_pending;
 atomic_bool s_input_wake_required;
 atomic_uint s_home_sequence_state;
-atomic_uint s_home_pending_generation;
 atomic_bool s_home_inflight;
 atomic_uint s_brightness_temp_value;
 atomic_uint s_brightness_temp_generation;
@@ -82,6 +81,19 @@ static atomic_flag s_deinit_busy = ATOMIC_FLAG_INIT;
 bool s_power_wake_click_pending;
 bool s_power_long_press_seen;
 uint32_t s_home_worker_wake_generation;
+atomic_uint s_home_click_state;
+atomic_uint s_home_click_generation;
+int64_t s_home_click_event_us;
+int64_t s_home_click_deadline_us;
+atomic_flag s_home_click_fallback_lock = ATOMIC_FLAG_INIT;
+app_manager_home_click_record_t
+s_home_click_fallback[APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH];
+uint32_t s_home_click_fallback_head;
+uint32_t s_home_click_fallback_count;
+atomic_uint s_home_click_fallback_epoch;
+uint32_t s_home_action_fifo[APP_MANAGER_HOME_ACTION_FIFO_DEPTH];
+uint32_t s_home_action_head;
+uint32_t s_home_action_count;
 
 typedef struct control_brightness_request
 {
@@ -300,8 +312,18 @@ static void _control_reset_runtime_state(void)
     atomic_store(&s_touch_restore_pending, false);
     atomic_store(&s_input_wake_required, false);
     atomic_store(&s_home_sequence_state, 1U);
-    atomic_store(&s_home_pending_generation, 0U);
     atomic_store(&s_home_inflight, false);
+    atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+    atomic_store(&s_home_click_generation, 0U);
+    s_home_click_event_us = 0;
+    s_home_click_deadline_us = 0;
+    s_home_click_fallback_head = 0U;
+    s_home_click_fallback_count = 0U;
+    atomic_store(&s_home_click_fallback_epoch, 0U);
+    memset(s_home_click_fallback, 0, sizeof(s_home_click_fallback));
+    s_home_action_count = 0U;
+    s_home_action_head = 0U;
+    memset(s_home_action_fifo, 0, sizeof(s_home_action_fifo));
     atomic_store(&s_brightness_temp_value, UINT8_MAX);
     atomic_store(&s_brightness_temp_generation, 0U);
     atomic_store(&s_brightness_temp_pending, false);

@@ -41,6 +41,8 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
+| `app_core/src/app_manager_recents.c` | 最近任务三槽 PSRAM 预览缓存与降采样 |
+| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：卡片、上滑关闭、清除与生命周期协作 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
@@ -108,8 +110,8 @@ context 访问同一 Page state。页面成功释放后不得继续保存该指�
 - `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
 
 `APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
-HOME 操作默认只把已有 HOME 实例提到前台。需要释放其他后台 App 时提交
-`APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
+双击 HOME 打开系统任务切换器、单击 HOME 回到 HOME 根页（见第 10.1 节）。需要释放
+其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
 ## 4. 静态 Registry 与 App-owned Routes
 
@@ -512,6 +514,55 @@ typed ops 的 `pause` 和 `stop` 直接返回 `esp_err_t`；未提供的回调�
 
 ## 10. Screen Suspend、Resume 与 Deinit
 
+### 10.1 双击 HOME 与系统任务切换器
+
+HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第二次点击提交
+`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时
+提交 `OPEN_PAGE(home, root)`。两种动作都经统一 navigation gateway 异步提交，且只有
+worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被取消的先行命令。
+切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
+HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby 准备和 deinit 都取消
+待定窗口。worker 按窗口剩余时间缩短轮询等待，单击延迟不超过 350 ms 加一个轮询周期。
+
+最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
+App 或 Page：它在 LVGL Sys Layer 创建全屏表面，原前台 App 保持运行且不收到
+PAUSE/UNMOUNT，触摸由切换器完全接管。打开时先调用
+`app_manager_lifecycle_capture_active_recents()` 采集当前前台任务预览，再经
+`app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含当前任务与
+`cleanup_pending` 状态）并构建横向卡片；每张卡片绑定固定预览 draw buffer，任何
+EXIT、淘汰、重新捕获、suspend 或 deinit 之前都先删除全部预览 Image。点击当前任务
+卡片或空白背景关闭切换器并回原任务；点击后台任务卡片通过普通 RUN 恢复（导航
+gateway 在执行前自动隐藏切换器）；上滑卡片经 `EXIT` 关闭该任务并原地刷新列表；
+横向滑动不跟手：卡片行永久禁用原生指针滚动（无 SCROLLABLE/scroll chain/snap），
+拖动期间只累计位移，松手时若最终水平位移达到 40 px 且水平主导则按方向翻一张
+（页距为卡片宽 230 px 加间距 12 px = 242 px）；行按主轴起始对齐并在两侧留
+半屏边距，使每个页目标恰好可达、不会在分页中途被 LVGL 有界化钳制。未达阈值时
+位置不变，因此任何短上滑都绝不会产生残留位移或 LVGL throw/snap 接管。手势分类
+只看松手时相对按下的最终位移：垂直主导且 `dy <= -40`、`|dx| <= 60` 关闭；水平
+主导且 `|dx| >= 40` 分页；任一轴最大位移（含仅出现在释放样本中的位移）达到
+10 px 即抑制本次 CLICKED，背景区域拖动同样抑制。列表重建（EXIT 完成、淘汰、
+清除失败重试、重新打开）一律回到第一张 MRU 卡片；分页动画进行中再次按下会先
+稳定到已记录目标页。
+"清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁全部
+非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行前
+同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记保持
+可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列并销毁切换器对象，再
+进入页面 PAUSE；resume 后保持关闭。deinit 先删除切换器，再释放预览缓存和
+presentation Sys Layer 对象。
+
+最近任务数据由 `app_manager_get_recent_tasks()` 提供：按 MRU 顺序返回最多
+`APP_MANAGER_MAX_RECENT_TASKS` 个非 pinned、非 hidden 的驻留 App，每项包含静态
+descriptor（含 `display_name`）、保留的当前 Page ID、`active` 与 `cleanup_pending`
+状态和固定预览 draw buffer。预览是 App Manager 私有 `app_manager_recents.c` 的三槽
+PSRAM 缓存（230 x 280 RGB565，约 386 KiB），在 App 即将离开前台时由 lifecycle
+调用 presentation 的 `app_manager_presentation_capture_source()` 采集全屏 source
+快照并最近邻降采样；转场快照不可用或页面不满足采集条件时保留旧预览。App 销毁
+（EXIT、淘汰、回滚清理、deinit）时通过 `_lifecycle_free_app()` 统一失效对应槽位。
+清理失败的任务保留在列表中并标记 `cleanup_pending`，允许再次重试；处于该状态的
+实例从公共拓扑查询（`app_manager_is_page_present` 等）保守隐藏，但保留驻留计数、
+保留在 recent-tasks 列表中，下一次导航先重试其清理再继续。预览缓冲生命周期覆盖
+整个 manager 运行期，页面销毁不释放。
+
 Screen suspend 不播放动画：
 
 ```text
@@ -827,7 +878,8 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 - Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后
   才按普通 Page/App 返回动画决定是否创建全分辨率快照；
 - 静态 indicator 图片、LVGL Vector 或 ThorVG；弧形只由固定 A8 Canvas 程序化生成；
-- popup/overlay manager；
+- popup/overlay manager；系统任务切换器是 App Manager 自有的 Sys Layer 界面，
+  不属于业务 overlay 框架，业务 App 不得创建或复用该表面；
 - 多个 app-manager 实例；
 - 对 ESP-IDF、LVGL 或 `managed_components/` 的本地修改。
 

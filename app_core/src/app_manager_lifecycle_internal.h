@@ -18,6 +18,9 @@ typedef struct app_manager_lifecycle_request
     void *value;                /**< Pointer response storage. */
     uint32_t count;             /**< Integer response storage. */
     bool condition;             /**< Boolean response storage. */
+    app_manager_recent_task_t *tasks; /**< Recent-tasks output storage. */
+    size_t task_capacity;       /**< Capacity of the tasks array. */
+    size_t tasks_filled;        /**< Tasks copied by the recent-tasks call. */
 } app_manager_lifecycle_request_t;
 
 /**
@@ -64,6 +67,34 @@ esp_err_t app_manager_lifecycle_all_closed_call(void *opaque);
  * @return ESP_OK after the count field is filled.
  */
 esp_err_t app_manager_lifecycle_running_count_call(void *opaque);
+/**
+ * @brief Copy the recent-tasks snapshot on the lifecycle worker.
+ * @param opaque points to an app_manager_lifecycle_request_t.
+ * @return ESP_OK after the tasks array is filled.
+ */
+esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque);
+
+/**
+ * @brief Capture the current foreground task preview on the lifecycle worker.
+ *
+ * @note The task switcher calls this before building its cards so that every
+ *       preview image refers to a freshly captured immutable slot.
+ *
+ * @return ESP_OK when a preview was captured or skipped, otherwise an error.
+ */
+esp_err_t app_manager_lifecycle_capture_active_recents(void);
+
+/**
+ * @brief Stop every eligible background task on the lifecycle worker.
+ *
+ * @note UI-worker context only, after the active task is Home. Destroys all
+ *       non-pinned, non-hidden resident applications including one that was
+ *       foreground when the task switcher opened. Partially stopped tasks are
+ *       kept with their cleanup ownership for a later retry.
+ *
+ * @return ESP_OK when every task stopped, otherwise the first cleanup error.
+ */
+esp_err_t app_manager_lifecycle_clear_background_tasks(void);
 
 #ifdef __cplusplus
 }

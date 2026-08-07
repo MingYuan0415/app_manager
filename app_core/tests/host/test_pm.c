@@ -2,6 +2,7 @@
 #include "app_manager.h"
 #include "app_manager_config.h"
 #include "../../src/app_manager_control.h"
+#include "../../src/app_manager_navigation.h"
 #include "../../src/app_manager_pm_internal.h"
 
 #include <assert.h>
@@ -33,7 +34,12 @@ static atomic_int s_standby_cancel_count;
 static atomic_bool s_standby_allowed;
 static atomic_int s_ui_post_count;
 static atomic_int s_run_home_count;
+static atomic_int s_home_nav_recents_count;
 static atomic_bool s_fail_ui_post;
+static atomic_bool s_defer_home_completion;
+static atomic_int s_deferred_home_count;
+static app_manager_nav_completion_cb_t s_deferred_home_completion;
+static void *s_deferred_home_context;
 static atomic_bool s_block_failed_ui_post;
 static atomic_bool s_failed_ui_post_entered;
 static atomic_bool s_screen_suspended;
@@ -322,10 +328,49 @@ esp_err_t app_manager_navigate_async(
         return ESP_ERR_NO_MEM;
     }
     assert(request != NULL);
-    assert(request->operation == APP_MANAGER_NAV_OP_RUN);
+    assert(request->operation == APP_MANAGER_NAV_OP_OPEN_PAGE);
     assert(request->app_id != NULL);
     assert(strcmp(request->app_id, APP_MANAGER_ID_HOME) == 0);
+    assert(request->page_id != NULL);
+    assert(strcmp(request->page_id, APP_MANAGER_ID_HOME_ROOT) == 0);
     atomic_fetch_add(&s_run_home_count, 1);
+    if (atomic_load(&s_defer_home_completion))
+    {
+        s_deferred_home_completion = completion;
+        s_deferred_home_context = context;
+        atomic_fetch_add(&s_deferred_home_count, 1);
+        return ESP_OK;
+    }
+    if (completion != NULL)
+    {
+        completion(ESP_OK, context);
+    }
+    return ESP_OK;
+}
+
+esp_err_t app_manager_navigation_submit_system_op(
+    app_manager_nav_system_op_t op, app_manager_nav_completion_cb_t completion,
+    void *context)
+{
+    atomic_fetch_add(&s_ui_post_count, 1);
+    if (atomic_load(&s_fail_ui_post))
+    {
+        atomic_store(&s_failed_ui_post_entered, true);
+        while (atomic_load(&s_block_failed_ui_post))
+        {
+            usleep(1000);
+        }
+        return ESP_ERR_NO_MEM;
+    }
+    assert(op == APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW);
+    atomic_fetch_add(&s_home_nav_recents_count, 1);
+    if (atomic_load(&s_defer_home_completion))
+    {
+        s_deferred_home_completion = completion;
+        s_deferred_home_context = context;
+        atomic_fetch_add(&s_deferred_home_count, 1);
+        return ESP_OK;
+    }
     if (completion != NULL)
     {
         completion(ESP_OK, context);
@@ -464,9 +509,92 @@ static bool _standby_is_allowed(void)
     return atomic_load(&s_standby_allowed);
 }
 
+
+static void _home_click_fallback_clear(void)
+{
+    while (atomic_flag_test_and_set_explicit(
+                &s_home_click_fallback_lock, memory_order_acquire))
+    {
+    }
+    s_home_click_fallback_head = 0U;
+    s_home_click_fallback_count = 0U;
+    memset(s_home_click_fallback, 0, sizeof(s_home_click_fallback));
+    atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                               memory_order_release);
+}
+
+static void _home_click_fallback_push(uint32_t generation, int64_t event_us)
+{
+    while (atomic_flag_test_and_set_explicit(
+                &s_home_click_fallback_lock, memory_order_acquire))
+    {
+    }
+    assert(s_home_click_fallback_count <
+           APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH);
+    const uint32_t tail =
+        (s_home_click_fallback_head + s_home_click_fallback_count) %
+        APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH;
+    s_home_click_fallback[tail].generation = generation;
+    s_home_click_fallback[tail].event_us = event_us;
+    s_home_click_fallback[tail].epoch =
+        atomic_load_explicit(&s_home_click_fallback_epoch,
+                             memory_order_relaxed);
+    s_home_click_fallback_count++;
+    atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                               memory_order_release);
+}
+
+static uint32_t _home_click_fallback_count(void)
+{
+    uint32_t count = 0U;
+    while (atomic_flag_test_and_set_explicit(
+                &s_home_click_fallback_lock, memory_order_acquire))
+    {
+    }
+    count = s_home_click_fallback_count;
+    atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                               memory_order_release);
+    return count;
+}
+
 static void _set_time_ms(int64_t milliseconds)
 {
     atomic_store(&g_host_time_us, milliseconds * 1000);
+}
+
+/* Emit a complete active HOME press so each CLICK belongs to its own
+ * sequence generation, matching the physical BSP event stream. */
+static void _complete_deferred_home(void)
+{
+    assert(atomic_load(&s_deferred_home_count) == 1);
+    app_manager_nav_completion_cb_t completion =
+        s_deferred_home_completion;
+    void *context = s_deferred_home_context;
+    s_deferred_home_completion = NULL;
+    s_deferred_home_context = NULL;
+    atomic_store(&s_deferred_home_count, 0);
+    assert(completion != NULL);
+    completion(ESP_OK, context);
+}
+
+static void _wait_for_deferred_home(void)
+{
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_deferred_home_count) == 0; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_deferred_home_count) == 1);
+}
+
+static void _home_click_active(void)
+{
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_DOWN,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
+                     s_input_user_data);
+    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
+                     s_input_user_data);
 }
 
 static void _wait_for_state_at(app_manager_pm_state_t expected, int line)
@@ -566,6 +694,15 @@ static void _reset_mocks(void)
     atomic_store(&s_standby_allowed, true);
     atomic_store(&s_ui_post_count, 0);
     atomic_store(&s_run_home_count, 0);
+    atomic_store(&s_home_nav_recents_count, 0);
+    atomic_store(&s_defer_home_completion, false);
+    atomic_store(&s_deferred_home_count, 0);
+    s_deferred_home_completion = NULL;
+    s_deferred_home_context = NULL;
+    atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+    atomic_store(&s_home_click_generation, 0U);
+    s_home_click_deadline_us = 0;
+    _home_click_fallback_clear();
     atomic_store(&s_screen_suspended, false);
     atomic_store(&s_adapter_sleeping, false);
     atomic_store(&s_fail_lifecycle_pause, false);
@@ -768,16 +905,265 @@ int main(void)
     assert(app_manager_pm_set_standby_delay_ms(-1) == ESP_OK);
     assert(app_manager_pm_get_standby_delay_ms() == -1);
 
-    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
-                     s_input_user_data);
-    for (int i = 0; i < 200 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(&s_ui_post_count) == 0; i++)
+    /* A single HOME click waits for the double-click window, then opens the
+     * home root page. */
+    const int home_posts_before_click = atomic_load(&s_ui_post_count);
+    const int home_navs_before_click = atomic_load(&s_run_home_count);
+    _home_click_active();
+    usleep(50000);
+    assert(atomic_load(&s_ui_post_count) == home_posts_before_click);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_click);
+    _set_time_ms(65400);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_ui_post_count) == home_posts_before_click; i++)
     {
         usleep(1000);
     }
-    assert(atomic_load(&s_ui_post_count) == 1);
-    assert(atomic_load(&s_run_home_count) == 1);
+    assert(atomic_load(&s_ui_post_count) == home_posts_before_click + 1);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_click + 1);
+    assert(atomic_load(&s_home_nav_recents_count) == 0);
 
+    /* A second click inside the window opens recent tasks instead and no
+     * further navigation follows after the window expires. */
+    const int recents_before_double = atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(65480);
+    _home_click_active();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_home_nav_recents_count) == recents_before_double;
+            i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_double + 1);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_click + 1);
+    _set_time_ms(70000);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_click + 1);
+
+    /* Window boundary: a second click 349 ms after the first is a double;
+     * a second click 351 ms after the first is an expired single followed
+     * by a fresh single window. */
+    const int recents_before_boundary = atomic_load(&s_home_nav_recents_count);
+    const int home_navs_before_boundary = atomic_load(&s_run_home_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(70349);
+    _home_click_active();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_home_nav_recents_count) == recents_before_boundary;
+            i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_boundary + 1);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_boundary);
+
+    const int home_navs_after_boundary = atomic_load(&s_run_home_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(70700);
+    _home_click_active();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) < home_navs_after_boundary + 1; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) == home_navs_after_boundary + 1);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_boundary + 1);
+    /* The expired click resolves the first single; the fresh second click
+     * arms its own window and resolves to the home root page on expiry. */
+    _set_time_ms(73000);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) == home_navs_after_boundary + 2);
+
+    /* An active HOME click submitted while the control queue is saturated is
+     * preserved by the producer fallback and navigates exactly once after the
+     * worker drains it. The worker is deterministically blocked in a failed
+     * dispatch so the queue stays full when the second click is injected. */
+    atomic_store(&s_fail_ui_post, true);
+    atomic_store(&s_block_failed_ui_post, true);
+    atomic_store(&s_failed_ui_post_entered, false);
+    const int home_before_saturated_click = atomic_load(&s_run_home_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(74000);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            !atomic_load(&s_failed_ui_post_entered); i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_failed_ui_post_entered));
+    for (int i = 0; i < APP_CONTROL_QUEUE_DEPTH; i++)
+    {
+        assert(app_manager_screen_set_brightness((uint8_t)(i + 1)) ==
+               ESP_OK);
+    }
+    _home_click_active();
+    usleep(20000);
+    assert(_home_click_fallback_count() == 1U);
+    assert(atomic_load(&s_run_home_count) == home_before_saturated_click);
+    atomic_store(&s_fail_ui_post, false);
+    atomic_store(&s_block_failed_ui_post, false);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) == home_before_saturated_click; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) ==
+           home_before_saturated_click + 1);
+    _set_time_ms(75000);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) == home_before_saturated_click + 1;
+            i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) ==
+           home_before_saturated_click + 2);
+    assert(_home_click_fallback_count() == 0U);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) ==
+           home_before_saturated_click + 2);
+
+    /* While a navigation completion is deferred (inflight), resolved actions
+     * queue up; two queued singles followed by a double replace the last
+     * single so no accepted click is dropped. */
+    atomic_store(&s_defer_home_completion, true);
+    const int home_before_fifo = atomic_load(&s_run_home_count);
+    const int recents_before_fifo = atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(76000);
+    _wait_for_deferred_home();
+    assert(atomic_load(&s_run_home_count) == home_before_fifo + 1);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(76400);
+    usleep(100000);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(76800);
+    usleep(100000);
+    _home_click_active();
+    _home_click_active();
+    usleep(50000);
+    /* Complete the deferred first navigation; everything queued behind it
+     * then dispatches synchronously. */
+    atomic_store(&s_defer_home_completion, false);
+    _complete_deferred_home();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_home_nav_recents_count) == recents_before_fifo; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_fifo + 1);
+    assert(atomic_load(&s_run_home_count) == home_before_fifo + 2);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) == home_before_fifo + 2);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_fifo + 1);
+
+    /* A stale fallback record drained after a newer click must not pair
+     * into a double across the 350 ms boundary. */
+    _home_click_fallback_push(9001U, 75000000);
+    const int recents_before_oob = atomic_load(&s_home_nav_recents_count);
+    const int home_navs_before_oob = atomic_load(&s_run_home_count);
+    _set_time_ms(75349);
+    _home_click_active();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_home_nav_recents_count) == recents_before_oob; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_oob + 1);
+    assert(atomic_load(&s_run_home_count) == home_navs_before_oob);
+    _set_time_ms(78000);
+    usleep(250000);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_oob + 1);
+
+    /* 351 ms apart: the stale first press resolves to the root page and the
+     * newer press keeps its own window, which resolves on expiry. */
+    _home_click_fallback_push(9002U, 75000000);
+    const int home_navs_after_oob = atomic_load(&s_run_home_count);
+    const int recents_after_oob = atomic_load(&s_home_nav_recents_count);
+    _set_time_ms(78351);
+    _home_click_active();
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) < home_navs_after_oob + 1; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) == home_navs_after_oob + 1);
+    assert(atomic_load(&s_home_nav_recents_count) == recents_after_oob);
+    _set_time_ms(79000);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) < home_navs_after_oob + 2; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) == home_navs_after_oob + 2);
+    assert(atomic_load(&s_home_nav_recents_count) == recents_after_oob);
+
+    /* A burst of clicks during saturation is bounded by the fallback depth;
+     * every accepted click is resolved after recovery and the overflow click
+     * is rejected. */
+    atomic_store(&s_fail_ui_post, true);
+    atomic_store(&s_block_failed_ui_post, true);
+    atomic_store(&s_failed_ui_post_entered, false);
+    const int home_before_burst = atomic_load(&s_run_home_count);
+    const int recents_before_burst = atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(79400);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            !atomic_load(&s_failed_ui_post_entered); i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_failed_ui_post_entered));
+    for (int i = 0; i < APP_CONTROL_QUEUE_DEPTH; i++)
+    {
+        assert(app_manager_screen_set_brightness((uint8_t)(i + 1)) ==
+               ESP_OK);
+    }
+    for (int i = 0; i < APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH; i++)
+    {
+        _home_click_active();
+    }
+    usleep(20000);
+    assert(_home_click_fallback_count() ==
+           APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH);
+    _home_click_active();
+    usleep(20000);
+    assert(_home_click_fallback_count() ==
+           APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH);
+    atomic_store(&s_fail_ui_post, false);
+    atomic_store(&s_block_failed_ui_post, false);
+    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+            atomic_load(&s_run_home_count) < home_before_burst + 2; i++)
+    {
+        usleep(1000);
+    }
+    assert(atomic_load(&s_run_home_count) == home_before_burst + 1);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_burst + 1);
+    assert(_home_click_fallback_count() == 0U);
+    _set_time_ms(81000);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) == home_before_burst + 1);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_burst + 1);
+
+    /* A HOME sequence that started while the display was off only wakes the
+     * display; its trailing CLICK never navigates. */
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     const int home_before_wake = atomic_load(&s_run_home_count);
@@ -790,7 +1176,6 @@ int main(void)
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
                      s_input_user_data);
     _wait_for_flag_clear(&s_wake_pending);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
     assert(atomic_load(&s_run_home_count) == home_before_wake);
     assert(atomic_load(&s_ui_post_count) == home_posts_before_wake);
 
@@ -800,7 +1185,6 @@ int main(void)
                      s_input_user_data);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
     _wait_for_flag_clear(&s_wake_pending);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
     assert(atomic_load(&s_run_home_count) == home_before_wake);
     assert(atomic_load(&s_ui_post_count) == home_posts_before_wake);
 
@@ -814,32 +1198,43 @@ int main(void)
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_UP,
                      s_input_user_data);
 
+    /* A click whose dispatch fails is retried once admission recovers. The
+     * expired first click resolves to the home root action; the double
+     * injected while the worker is blocked resolves to one recents action. */
     atomic_store(&s_fail_ui_post, true);
     atomic_store(&s_block_failed_ui_post, true);
-    s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
-                     s_input_user_data);
+    const int home_before_backpressure = atomic_load(&s_run_home_count);
+    const int recents_before_backpressure =
+        atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(81400);
     for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
         usleep(1000);
     }
     assert(atomic_load(&s_failed_ui_post_entered));
-    for (int i = 1; i < 8; i++)
-    {
-        s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
-                         s_input_user_data);
-    }
-    assert(atomic_load(&s_run_home_count) == 1);
+    _home_click_active();
+    _home_click_active();
+    assert(atomic_load(&s_run_home_count) == home_before_backpressure);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_backpressure);
     atomic_store(&s_fail_ui_post, false);
     atomic_store(&s_block_failed_ui_post, false);
     for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(&s_run_home_count) == 1; i++)
+            atomic_load(&s_run_home_count) < home_before_backpressure + 1;
+            i++)
     {
         usleep(1000);
     }
-    assert(atomic_load(&s_run_home_count) == 2);
+    assert(atomic_load(&s_run_home_count) == home_before_backpressure + 1);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_backpressure + 1);
     usleep(250000);
-    assert(atomic_load(&s_run_home_count) == 2);
+    assert(atomic_load(&s_run_home_count) == home_before_backpressure + 1);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_backpressure + 1);
 
     /* A physical PWR click must survive a saturated control queue. Keep the
      * control task blocked in its UI handoff, fill all 16 command slots with
@@ -850,6 +1245,8 @@ int main(void)
     atomic_store(&s_failed_ui_post_entered, false);
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
                      s_input_user_data);
+    usleep(20000);
+    _set_time_ms(81800);
     for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
@@ -883,7 +1280,6 @@ int main(void)
     const int home_before_full_queue_wake = atomic_load(&s_run_home_count);
     assert(app_manager_input_inject(APP_MANAGER_KEY_HOME,
                                     APP_MANAGER_KEY_EVENT_CLICK) == ESP_OK);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
     atomic_store(&s_block_screen_suspend, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
     _wait_for_flag_clear(&s_wake_pending);
@@ -1029,7 +1425,6 @@ int main(void)
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
                      s_input_user_data);
     _wait_for_flag_clear(&s_wake_pending);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
     assert(atomic_load(&s_run_home_count) == home_before_standby_wake);
 
     assert(app_manager_pm_request_screen_off() == ESP_OK);
@@ -1331,7 +1726,6 @@ int main(void)
                      s_input_user_data);
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
                      s_input_user_data);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
     atomic_store(&s_block_screen_suspend, false);
     wait_for_state(APP_MANAGER_PM_ACTIVE);
     _wait_for_flag_clear(&s_wake_pending);
@@ -1345,6 +1739,8 @@ int main(void)
                      s_input_user_data);
     s_input_callback(APP_MANAGER_KEY_HOME, APP_MANAGER_KEY_EVENT_CLICK,
                      s_input_user_data);
+    usleep(20000);
+    _set_time_ms(54500);
     _wait_for_count(&s_run_home_count, home_before_active_sequence + 1);
     assert(atomic_load(&s_ui_post_count) ==
            home_posts_before_active_sequence + 1);
@@ -1391,7 +1787,7 @@ int main(void)
     atomic_store(&s_brightness_temp_pending, true);
     atomic_store(&s_standby_commit_pending, true);
     atomic_store(&s_home_sequence_state, HOME_SEQUENCE_WAKE_MASK | 9U);
-    atomic_store(&s_home_pending_generation, 9U);
+    _home_click_fallback_push(9U, 9000000);
     const control_command_t queued_resume = {.type = CONTROL_RESUME};
     assert(xQueueSend(s_queue, &queued_resume, 0) == pdTRUE);
     usleep(250000);
@@ -1412,7 +1808,9 @@ int main(void)
     assert(!atomic_load(&s_brightness_temp_pending));
     assert(!atomic_load(&s_standby_commit_pending));
     assert(atomic_load(&s_home_sequence_state) == 1U);
-    assert(atomic_load(&s_home_pending_generation) == 0U);
+    assert(atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_IDLE);
+    assert(atomic_load(&s_home_click_generation) == 0U);
+    assert(_home_click_fallback_count() == 0U);
 
     atomic_store(&s_fail_screen_resume, false);
     assert(app_manager_control_deinit() == ESP_OK);

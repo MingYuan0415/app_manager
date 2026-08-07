@@ -13,6 +13,7 @@
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
 #include "app_manager_presentation.h"
+#include "app_manager_task_switcher.h"
 #include "app_theme.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
@@ -70,6 +71,7 @@ static bool s_presentation_ready;
 static bool s_lifecycle_ready;
 static bool s_navigation_ready;
 static bool s_gesture_ready;
+static bool s_switcher_ready;
 static bool s_control_ready;
 static bool s_active_config_valid;
 static app_manager_config_t s_active_config;
@@ -216,6 +218,7 @@ static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
         return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_suspend();
+    app_manager_task_switcher_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
     return app_manager_lifecycle_screen_pause();
@@ -679,11 +682,26 @@ static esp_err_t _app_adapter_gesture_init_on_ui(void *arg)
     return app_manager_back_gesture_init(s_display, s_touch);
 }
 
+static esp_err_t _app_adapter_switcher_init_on_ui(void *arg)
+{
+    (void)arg;
+    return app_manager_task_switcher_init(s_display);
+}
+
 static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
 {
     (void)arg;
     esp_err_t result = ESP_OK;
 
+    if (s_switcher_ready)
+    {
+        result = app_manager_task_switcher_deinit();
+        if (result != ESP_OK)
+        {
+            return result;
+        }
+        s_switcher_ready = false;
+    }
     if (s_lifecycle_ready)
     {
         result = app_manager_lifecycle_deinit();
@@ -1087,6 +1105,7 @@ static void _app_adapter_reset_runtime(void)
     s_lifecycle_ready = false;
     s_navigation_ready = false;
     s_gesture_ready = false;
+    s_switcher_ready = false;
     s_control_ready = false;
     s_active_config_valid = false;
     s_active_config = (app_manager_config_t)
@@ -1292,6 +1311,13 @@ static esp_err_t _app_adapter_start_services(
         return result;
     }
     s_presentation_ready = true;
+    result = app_manager_ui_call(_app_adapter_switcher_init_on_ui,
+                                 NULL, UINT32_MAX);
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+    s_switcher_ready = true;
     result = app_manager_lifecycle_configure(
                  config->max_resident_apps, config->resident_policy,
                  &config->app_forward_transition,

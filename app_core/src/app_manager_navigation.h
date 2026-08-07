@@ -60,6 +60,48 @@ esp_err_t app_manager_navigation_submit_gesture_back(
     const app_manager_navigation_gesture_token_t *token,
     app_manager_nav_completion_cb_t completion, void *context);
 
+/** @brief Private system commands serialized by the navigation gateway. */
+typedef enum
+{
+    APP_MANAGER_NAV_SYSTEM_NONE = 0, /**< Empty system slot. */
+    APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW, /**< Open or close the task switcher. */
+    APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_CLEAR_ALL, /**< Clear all tasks to Home. */
+    APP_MANAGER_NAV_SYSTEM_END, /**< Internal range sentinel. */
+} app_manager_nav_system_op_t;
+
+/**
+ * @brief Queue one private system command through the navigation gateway.
+ *
+ * System commands share the command pool, epoch, screen-access fence and
+ * exactly-once completion semantics with ordinary navigation. They never hide
+ * the task switcher; the switcher itself owns the visible state.
+ *
+ * @param op selects the system operation.
+ * @param completion receives the final result on the UI worker and may be NULL.
+ * @param context is forwarded to completion.
+ * @return ESP_OK when admitted, otherwise an admission error.
+ */
+esp_err_t app_manager_navigation_submit_system_op(
+    app_manager_nav_system_op_t op, app_manager_nav_completion_cb_t completion,
+    void *context);
+
+/**
+ * @brief Queue one task-switcher EXIT that keeps the switcher visible.
+ *
+ * Unlike ordinary navigation, the executing command does not hide the task
+ * switcher: the switcher shows its busy shell and rebuilds on completion. The
+ * preservation is bound to this command only; commands queued before or after
+ * it still hide the switcher when they execute.
+ *
+ * @param request must be an APP_MANAGER_NAV_OP_EXIT request.
+ * @param completion receives the final result on the UI worker and may be NULL.
+ * @param context is forwarded to completion.
+ * @return ESP_OK when admitted, otherwise an admission error.
+ */
+esp_err_t app_manager_navigation_submit_switcher_exit(
+    const app_manager_nav_request_t *request,
+    app_manager_nav_completion_cb_t completion, void *context);
+
 #ifdef __cplusplus
 }
 #endif

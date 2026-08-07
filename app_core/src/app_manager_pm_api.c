@@ -9,6 +9,7 @@
 #include "app_manager_display.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
+#include "esp_timer.h"
 
 #include <stdatomic.h>
 
@@ -69,6 +70,10 @@ static esp_err_t _app_manager_input_inject_home(
         }
     }
     command.data.input.generation = generation;
+    if (event == APP_MANAGER_KEY_EVENT_CLICK)
+    {
+        command.data.input.event_us = esp_timer_get_time();
+    }
 
     if (event == APP_MANAGER_KEY_EVENT_LONG_PRESS ||
             event == APP_MANAGER_KEY_EVENT_DOUBLE_CLICK)
@@ -92,13 +97,38 @@ static esp_err_t _app_manager_input_inject_home(
             app_manager_control_access_end();
             return ESP_OK;
         }
-
-        uint32_t no_generation = 0U;
-        if (atomic_compare_exchange_strong_explicit(
-                    &s_home_pending_generation, &no_generation, generation,
-                    memory_order_acq_rel, memory_order_acquire))
+        if (xQueueSend(s_queue, &command, 0) != pdTRUE)
         {
-            (void)xQueueSend(s_queue, &command, 0);
+            /* A saturated queue must not lose the navigation intent: latch
+             * the click (with its admission time) for the worker to drain. */
+            bool latched = false;
+            while (atomic_flag_test_and_set_explicit(
+                        &s_home_click_fallback_lock, memory_order_acquire))
+            {
+            }
+            if (s_home_click_fallback_count <
+                    APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH)
+            {
+                const uint32_t tail =
+                    (s_home_click_fallback_head +
+                     s_home_click_fallback_count) %
+                    APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH;
+                s_home_click_fallback[tail].generation = generation;
+                s_home_click_fallback[tail].event_us =
+                    command.data.input.event_us;
+                s_home_click_fallback[tail].epoch =
+                    atomic_load_explicit(&s_home_click_fallback_epoch,
+                                         memory_order_relaxed);
+                s_home_click_fallback_count++;
+                latched = true;
+            }
+            atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                                       memory_order_release);
+            if (!latched)
+            {
+                app_manager_control_access_end();
+                return ESP_ERR_NO_MEM;
+            }
         }
         app_manager_control_access_end();
         return ESP_OK;
@@ -310,8 +340,8 @@ bool app_manager_pm_standby_prepare_guard(void)
                  !atomic_load_explicit(&s_wake_pending,
                                        memory_order_acquire) &&
                  !_app_manager_control_home_wake_is_pending() &&
-                 atomic_load_explicit(&s_home_pending_generation,
-                                      memory_order_acquire) == 0U;
+                 atomic_load(&s_home_click_state) ==
+                 APP_MANAGER_HOME_CLICK_IDLE;
     app_manager_control_access_end();
     return clear;
 }

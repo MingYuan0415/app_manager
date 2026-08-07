@@ -108,6 +108,23 @@ bool        app_manager_is_all_closed(void);
  */
 uint32_t    app_manager_get_running_apps(void);
 /**
+ * @brief Copy the most-recently-used background task snapshot.
+ *
+ * Tasks are ordered from most recently used to oldest and exclude the home
+ * application and hidden applications. Each preview is a fixed App
+ * Manager-owned PSRAM draw buffer; `preview_valid` reports whether a captured
+ * thumbnail is available for that task.
+ *
+ * @param tasks receives up to capacity copied task records.
+ * @param capacity is the number of app_manager_recent_task_t slots in tasks.
+ * @param count receives the number of tasks copied.
+ * @return ESP_OK when the snapshot was produced, otherwise an argument or
+ *         admission error. While a transition is in progress or the screen is
+ *         paused, the snapshot conservatively reports zero tasks.
+ */
+esp_err_t   app_manager_get_recent_tasks(app_manager_recent_task_t *tasks,
+        size_t capacity, size_t *count);
+/**
  * @brief Report whether a screen transition is currently in progress.
  * @return true while topology queries intentionally expose conservative state.
  */
@@ -370,12 +387,13 @@ esp_err_t app_manager_get_image(uint32_t semantic_id,
  * @brief Export one builtin application descriptor.
  * @param n is the descriptor symbol suffix and display name.
  * @param icn is the optional icon pointer.
+ * @param nm is the localized display name, or NULL to use n.
  * @param aid is the stable application identifier.
  * @param root_id identifies the application's static root page.
  * @param app_flags is a bitwise app_manager_app_flag_t value.
  * @param routes is the application's static page-route array.
  */
-#define APP_MANAGER_APP_EXPORT(n, icn, aid, root_id, app_flags, routes) \
+#define APP_MANAGER_APP_EXPORT(n, icn, nm, aid, root_id, app_flags, routes) \
     __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
     static const app_manager_app_desc_t _app_manager_app_##n = \
     { \
@@ -386,6 +404,7 @@ esp_err_t app_manager_get_image(uint32_t semantic_id,
         .page_routes = (routes), \
         .page_route_count = sizeof(routes) / sizeof((routes)[0]), \
         .flags = (app_flags), \
+        .display_name = (nm), \
     }
 
 #ifdef __cplusplus

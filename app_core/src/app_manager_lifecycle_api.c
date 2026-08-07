@@ -169,6 +169,31 @@ uint32_t app_manager_get_running_apps(void)
     return count;
 }
 
+esp_err_t app_manager_get_recent_tasks(app_manager_recent_task_t *tasks,
+                                       size_t capacity, size_t *count)
+{
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (tasks == NULL || capacity == 0U || count == NULL)
+    {
+        return result;
+    }
+    *count = 0U;
+    if (!_app_manager_lifecycle_access_begin())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    app_manager_lifecycle_request_t request =
+    {
+        .tasks = tasks,
+        .task_capacity = capacity,
+    };
+    result = _app_manager_lifecycle_call(app_manager_lifecycle_recent_tasks_call,
+                                         &request);
+    *count = request.tasks_filled;
+    app_manager_lifecycle_screen_access_end();
+    return result;
+}
+
 const lv_font_t *app_manager_get_font(app_theme_font_id_t id)
 {
     return app_theme_get_font(id);

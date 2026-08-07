@@ -1,6 +1,7 @@
 #include "app_manager.h"
 #include "app_manager_builtin.h"
 #include "app_manager_lifecycle.h"
+#include "app_manager_lifecycle_internal.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_presentation.h"
 
@@ -72,6 +73,8 @@ typedef struct presentation_mock
     unsigned start_failures;
     unsigned starts;
     unsigned finishes;
+    unsigned capture_calls;
+    lv_obj_t *last_capture_screen;
     bool last_start_had_page_target;
     bool last_start_target_active;
     bool last_start_source_inactive;
@@ -84,6 +87,7 @@ static page_state_t s_a_one = {.name = "a/one", .app_id = "a"};
 static page_state_t s_a_two = {.name = "a/two", .app_id = "a"};
 static page_state_t s_b_root = {.name = "b/root", .app_id = "b"};
 static page_state_t s_c_root = {.name = "c/root", .app_id = "c"};
+static page_state_t s_e_root = {.name = "e/root", .app_id = "e"};
 static page_state_t *const s_page_states[] =
 {
     &s_a_root,
@@ -98,6 +102,7 @@ static presentation_mock_t s_presentation;
 static FILE *s_lifecycle_log_output;
 static int s_saved_stderr = -1;
 static const char *s_callback_owner_app_id;
+static const lv_draw_buf_t *s_test_capture_result;
 
 static void _lifecycle_log_capture_begin(void)
 {
@@ -469,6 +474,15 @@ static const app_manager_page_route_t s_d_routes[] =
     },
 };
 
+static const app_manager_page_route_t s_e_routes[] =
+{
+    {
+        .page_id = "root",
+        .definition = &s_ops_page_definition,
+        .user_data = &s_e_root,
+    },
+};
+
 static const app_manager_app_desc_t s_apps[] =
 {
     {
@@ -499,6 +513,13 @@ static const app_manager_app_desc_t s_apps[] =
         .root_page_id = "root",
         .page_routes = s_d_routes,
         .page_route_count = sizeof(s_d_routes) / sizeof(s_d_routes[0]),
+    },
+    {
+        .name = "E",
+        .id = "e",
+        .root_page_id = "root",
+        .page_routes = s_e_routes,
+        .page_route_count = sizeof(s_e_routes) / sizeof(s_e_routes[0]),
     },
 };
 
@@ -654,6 +675,50 @@ void app_manager_presentation_finish_now(void)
 bool app_manager_presentation_is_running(void)
 {
     return s_presentation.running;
+}
+
+esp_err_t app_manager_presentation_capture_source(
+    lv_obj_t *screen, const lv_draw_buf_t **snapshot)
+{
+    s_presentation.capture_calls++;
+    s_presentation.last_capture_screen = screen;
+    if (snapshot != NULL)
+    {
+        *snapshot = s_test_capture_result;
+    }
+    return s_test_capture_result != NULL ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
+}
+
+lv_result_t lv_draw_buf_init(lv_draw_buf_t *draw_buf, uint32_t width,
+                             uint32_t height, lv_color_format_t color_format,
+                             uint32_t stride, void *data, uint32_t data_size)
+{
+    if (draw_buf == NULL || data == NULL || width == 0U || height == 0U ||
+            stride == 0U)
+    {
+        return LV_RESULT_INVALID;
+    }
+    draw_buf->header.cf = color_format;
+    draw_buf->header.w = width;
+    draw_buf->header.h = height;
+    draw_buf->header.stride = stride;
+    draw_buf->data = data;
+    draw_buf->data_size = data_size;
+    return LV_RESULT_OK;
+}
+
+uint32_t lv_draw_buf_width_to_stride(uint32_t width,
+                                     lv_color_format_t color_format)
+{
+    (void)color_format;
+    return width * 2U;
+}
+
+void lv_draw_buf_flush_cache(const lv_draw_buf_t *draw_buf,
+                             const lv_area_t *area)
+{
+    (void)draw_buf;
+    (void)area;
 }
 
 const lv_font_t *app_theme_get_font(app_theme_font_id_t id)
@@ -840,7 +905,7 @@ static void _test_configuration_validation(void)
                2U, APP_MANAGER_RESIDENT_REJECT,
                &invalid, NULL, NULL, NULL) == ESP_ERR_INVALID_ARG);
     assert(app_manager_lifecycle_configure(
-               2U, APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND,
+               4U, APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND,
                NULL, NULL, NULL, NULL) == ESP_OK);
 }
 
@@ -1191,14 +1256,21 @@ static void _test_async_transition_queries(void)
 
 static void _test_resident_eviction_and_cleanup(void)
 {
+    /* The suite runs with four resident slots (one pinned home-style app),
+     * matching the product policy. */
     assert(app_manager_get_running_apps() == 2U);
+    nav_call_t fill = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&fill) == ESP_OK);
+    fill = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
+    assert(_navigate(&fill) == ESP_OK);
+    assert(app_manager_get_running_apps() == 4U);
     nav_call_t missing = _request(APP_MANAGER_NAV_OP_RUN, "missing", NULL);
     assert(_navigate(&missing) == ESP_ERR_NOT_FOUND);
     assert(app_manager_is_page_present("b", "root"));
-    assert(app_manager_get_running_apps() == 2U);
+    assert(app_manager_get_running_apps() == 4U);
 
     s_b_root.stop_failures = 1U;
-    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
     _trace_reset();
     assert(_navigate(&call) == ESP_FAIL);
     const trace_event_t eviction_fail_expected[] =
@@ -1208,36 +1280,40 @@ static void _test_resident_eviction_and_cleanup(void)
     _expect_trace(eviction_fail_expected,
                   sizeof(eviction_fail_expected) /
                   sizeof(eviction_fail_expected[0]));
-    assert(app_manager_get_running_apps() == 2U);
+    assert(app_manager_get_running_apps() == 4U);
 
-    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
     assert(_navigate(&call) == ESP_OK);
     assert(!app_manager_is_page_present("b", "root"));
-    assert(app_manager_get_running_apps() == 2U);
-    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(app_manager_get_running_apps() == 4U);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
     call.request.has_arguments = true;
     call.request.arguments = _arguments(9U, UINT32_C(0xA5A5A5A5));
     _trace_reset();
     assert(_navigate(&call) == ESP_OK);
     const trace_event_t ops_intent_expected[] =
     {
-        EVENT(&s_c_root, APP_MANAGER_MSG_ONNEWINTENT),
+        EVENT(&s_e_root, APP_MANAGER_MSG_ONNEWINTENT),
     };
     _expect_trace(ops_intent_expected,
                   sizeof(ops_intent_expected) /
                   sizeof(ops_intent_expected[0]));
-    assert(s_c_root.new_intent_had_screen);
-    assert(s_c_root.has_arguments && s_c_root.arguments.type == 9U);
+    assert(s_e_root.new_intent_had_screen);
+    assert(s_e_root.has_arguments && s_e_root.arguments.type == 9U);
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
 
-    s_c_root.stop_failures = 1U;
+    s_e_root.stop_failures = 1U;
     call = _request(APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND, NULL, NULL);
     assert(_navigate(&call) == ESP_FAIL);
-    assert(app_manager_is_page_present("c", "root"));
+    /* The failed task stays resident and visible to recent-tasks, but is
+     * hidden from the conservative public topology queries until its cleanup
+     * retry succeeds. */
+    assert(!app_manager_is_page_present("e", "root"));
+    assert(app_manager_get_running_apps() == 4U);
     call = _request(APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND, NULL, NULL);
     assert(_navigate(&call) == ESP_OK);
-    assert(!app_manager_is_page_present("c", "root"));
+    assert(!app_manager_is_page_present("e", "root"));
     assert(app_manager_get_running_apps() == 1U);
 
     call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
@@ -1503,6 +1579,342 @@ static void _test_empty_ops_are_noop(void)
     assert(app_manager_is_all_closed());
 }
 
+static void _test_recent_tasks_snapshot(void)
+{
+    static uint8_t s_test_source_pixels[368U * 448U * 2U];
+    static lv_draw_buf_t s_test_source_draw_buf;
+    app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
+    size_t count = 0U;
+    nav_call_t call;
+
+    /* The suite runs with four resident slots (one pinned home-style app),
+     * so up to three business tasks are retained at once. */
+    _trace_reset();
+    assert(app_manager_is_all_closed());
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+
+    /* Pinned home-style apps never appear in the task list. */
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 0U);
+
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "c") == 0);
+    assert(strcmp(tasks[0].display_name, "C") == 0);
+    assert(strcmp(tasks[0].page_id, "root") == 0);
+    assert(!tasks[0].preview_valid);
+    assert(strcmp(tasks[1].app_id, "b") == 0);
+    assert(!tasks[1].preview_valid);
+
+    /* Capture is unavailable by default; recent previews stay invalid. */
+    s_test_capture_result = NULL;
+    const unsigned captures_before_invalid =
+        s_presentation.capture_calls;
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_presentation.capture_calls == captures_before_invalid + 1U);
+    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(!tasks[0].preview_valid);
+
+    /* Enable source capture; leaving an app refreshes its preview. */
+    memset(s_test_source_pixels, 0xAA, sizeof(s_test_source_pixels));
+    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_test_source_draw_buf.header.w = 368U;
+    s_test_source_draw_buf.header.h = 448U;
+    s_test_source_draw_buf.header.stride = 368U * 2U;
+    s_test_source_draw_buf.data = s_test_source_pixels;
+    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
+    s_test_capture_result = &s_test_source_draw_buf;
+    const unsigned captures_before_valid = s_presentation.capture_calls;
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_presentation.capture_calls == captures_before_valid + 1U);
+    assert(s_presentation.last_capture_screen == s_b_root.last_screen);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_presentation.capture_calls == captures_before_valid + 2U);
+    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "d") == 0);
+    assert(!tasks[0].preview_valid);
+    assert(strcmp(tasks[1].app_id, "c") == 0);
+    assert(tasks[1].preview_valid);
+    assert(tasks[1].preview != NULL);
+    assert(tasks[1].preview->header.w == APP_MANAGER_RECENT_PREVIEW_WIDTH);
+    assert(tasks[1].preview->header.h == APP_MANAGER_RECENT_PREVIEW_HEIGHT);
+    assert(tasks[1].preview->header.stride ==
+           APP_MANAGER_RECENT_PREVIEW_WIDTH * 2U);
+    const uint8_t *pixels = tasks[1].preview->data;
+    assert(pixels[0] == 0xAAU && pixels[1] == 0xAAU);
+    assert(pixels[(APP_MANAGER_RECENT_PREVIEW_HEIGHT - 1U) *
+                  APP_MANAGER_RECENT_PREVIEW_WIDTH * 2U] == 0xAAU);
+    assert(strcmp(tasks[2].app_id, "b") == 0);
+    assert(tasks[2].preview_valid);
+
+    /* A fifth task evicts the oldest background task and its preview. */
+    _trace_reset();
+    const unsigned captures_before_eviction = s_presentation.capture_calls;
+    call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_presentation.capture_calls == captures_before_eviction + 1U);
+    assert(s_presentation.last_capture_screen != NULL);
+    assert(!app_manager_is_page_present("b", "root"));
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "e") == 0);
+    assert(!tasks[0].preview_valid);
+    assert(strcmp(tasks[1].app_id, "d") == 0);
+    assert(tasks[1].preview_valid);
+    assert(strcmp(tasks[2].app_id, "c") == 0);
+    assert(tasks[2].preview_valid);
+
+    /* EXIT invalidates the preview binding; re-running recaptures it. */
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "d") == 0);
+
+    const unsigned captures_before_recapture = s_presentation.capture_calls;
+    call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    /* RUN e captures d; RUN a captures e. */
+    assert(s_presentation.capture_calls == captures_before_recapture + 2U);
+    assert(s_presentation.last_capture_screen == s_e_root.last_screen);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "e") == 0);
+    assert(tasks[0].preview_valid);
+
+    /* Re-running an evicted task evicts the now-oldest background task. */
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(!app_manager_is_page_present("c", "root"));
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "b") == 0);
+    assert(!tasks[0].preview_valid);
+
+    _trace_reset();
+    s_test_capture_result = NULL;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "d", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+}
+
+static void _test_product_eviction_recents(void)
+{
+    static uint8_t s_test_source_pixels[368U * 448U * 2U];
+    static lv_draw_buf_t s_test_source_draw_buf;
+    app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
+    size_t count = 0U;
+    nav_call_t call;
+
+    /* Product policy: Home (pinned) plus three business tasks. The fourth
+     * business task evicts the oldest background task. */
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    memset(s_test_source_pixels, 0x55, sizeof(s_test_source_pixels));
+    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_test_source_draw_buf.header.w = 368U;
+    s_test_source_draw_buf.header.h = 448U;
+    s_test_source_draw_buf.header.stride = 368U * 2U;
+    s_test_source_draw_buf.data = s_test_source_pixels;
+    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
+    s_test_capture_result = &s_test_source_draw_buf;
+
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_running_apps() == 4U);
+    assert(app_manager_is_page_present("a", "root"));
+    assert(app_manager_is_page_present("b", "root"));
+    assert(app_manager_is_page_present("c", "root"));
+    assert(app_manager_is_page_present("d", "root"));
+
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_running_apps() == 4U);
+    assert(!app_manager_is_page_present("b", "root"));
+    assert(app_manager_is_page_present("a", "root"));
+    assert(app_manager_is_page_present("c", "root"));
+    assert(app_manager_is_page_present("d", "root"));
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "e") == 0);
+    assert(!tasks[0].preview_valid);
+    assert(strcmp(tasks[1].app_id, "d") == 0);
+    assert(tasks[1].preview_valid);
+    assert(strcmp(tasks[2].app_id, "c") == 0);
+    assert(tasks[2].preview_valid);
+
+    /* Leaving e refreshes its preview; the active task is never evicted. */
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 3U);
+    assert(strcmp(tasks[0].app_id, "e") == 0);
+    assert(tasks[0].preview_valid);
+    assert(strcmp(tasks[1].app_id, "d") == 0);
+    assert(tasks[1].preview_valid);
+    assert(strcmp(tasks[2].app_id, "c") == 0);
+    assert(tasks[2].preview_valid);
+
+    _trace_reset();
+    s_test_capture_result = NULL;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "d", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+}
+
+static __attribute__((unused)) esp_err_t _capture_active_on_ui(void *context)
+{
+    (void)context;
+    return app_manager_lifecycle_capture_active_recents();
+}
+
+static __attribute__((unused)) esp_err_t _clear_tasks_on_ui(void *context)
+{
+    (void)context;
+    return app_manager_lifecycle_clear_background_tasks();
+}
+
+static void _test_task_switcher_helpers(void)
+{
+    static uint8_t s_test_source_pixels[368U * 448U * 2U];
+    static lv_draw_buf_t s_test_source_draw_buf;
+    app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
+    size_t count = 0U;
+    nav_call_t call;
+
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "c") == 0);
+    assert(tasks[0].active);
+    assert(!tasks[0].cleanup_pending);
+    assert(strcmp(tasks[1].app_id, "b") == 0);
+    assert(!tasks[1].active);
+    assert(!tasks[1].cleanup_pending);
+
+    memset(s_test_source_pixels, 0x33, sizeof(s_test_source_pixels));
+    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_test_source_draw_buf.header.w = 368U;
+    s_test_source_draw_buf.header.h = 448U;
+    s_test_source_draw_buf.header.stride = 368U * 2U;
+    s_test_source_draw_buf.data = s_test_source_pixels;
+    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
+    s_test_capture_result = &s_test_source_draw_buf;
+    const unsigned captures_before = s_presentation.capture_calls;
+    assert(app_manager_ui_call(_capture_active_on_ui, NULL,
+                               TEST_TIMEOUT_MS) == ESP_OK);
+    assert(s_presentation.capture_calls == captures_before + 1U);
+    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "c") == 0);
+    assert(tasks[0].preview_valid);
+
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    s_c_root.stop_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    assert(_navigate(&call) == ESP_FAIL);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "b") == 0);
+    assert(tasks[0].active);
+    assert(strcmp(tasks[1].app_id, "c") == 0);
+    assert(tasks[1].cleanup_pending);
+
+    /* An exact EXIT retry succeeds: the pending target is cleaned up by the
+     * EXIT path itself instead of reporting NOT_FOUND. */
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(!app_manager_is_page_present("c", "root"));
+
+    /* Recreating and leaving the task again refreshes the picture. */
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_actived("c"));
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    s_c_root.stop_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    assert(_navigate(&call) == ESP_FAIL);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_actived("c"));
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_ui_call(_clear_tasks_on_ui, NULL,
+                               TEST_TIMEOUT_MS) == ESP_OK);
+    assert(!app_manager_is_page_present("b", "root"));
+    assert(!app_manager_is_page_present("c", "root"));
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 0U);
+
+    _trace_reset();
+    call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+}
+
 static void _prepare_deinit_cleanup_retry(void)
 {
     nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
@@ -1517,6 +1929,8 @@ static void _prepare_deinit_cleanup_retry(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     _presentation_reset();
     _test_configuration_validation();
     assert(app_manager_register_builtin_descriptors(
@@ -1543,6 +1957,9 @@ int main(void)
     _test_validation_and_final_exit();
     _test_ops_pause_cleanup_retry();
     _test_empty_ops_are_noop();
+    _test_recent_tasks_snapshot();
+    _test_product_eviction_recents();
+    _test_task_switcher_helpers();
     _prepare_deinit_cleanup_retry();
 
     assert(app_manager_lifecycle_shutdown_begin_and_wait() == ESP_OK);

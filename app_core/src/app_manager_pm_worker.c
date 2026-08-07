@@ -13,6 +13,7 @@
     #include "esp_timer.h"
     #include "nv_storage.h"
 #endif
+#include <string.h>
 
 static void _control_discard_shutdown_pending(void)
 {
@@ -27,8 +28,6 @@ static void _control_discard_shutdown_pending(void)
                           memory_order_release);
     atomic_store_explicit(&s_home_sequence_state, 1U,
                           memory_order_release);
-    atomic_store_explicit(&s_home_pending_generation, 0U,
-                          memory_order_release);
     atomic_store_explicit(&s_brightness_temp_pending, false,
                           memory_order_release);
     s_power_wake_click_pending = false;
@@ -40,7 +39,8 @@ static esp_err_t _control_execute_input(const control_command_t *command)
 {
     esp_err_t result = app_manager_control_handle_input(command->data.input.key,
                        command->data.input.event,
-                       command->data.input.generation);
+                       command->data.input.generation,
+                       command->data.input.event_us);
     if (command->data.input.key == APP_MANAGER_KEY_POWER)
     {
         atomic_fetch_and_explicit(
@@ -215,7 +215,8 @@ static bool _control_process_pending_power(void)
     if ((events & POWER_PENDING_EVENT(APP_MANAGER_KEY_EVENT_CLICK)) != 0U)
     {
         (void)app_manager_control_handle_input(APP_MANAGER_KEY_POWER,
-                                               APP_MANAGER_KEY_EVENT_CLICK, 0U);
+                                               APP_MANAGER_KEY_EVENT_CLICK, 0U,
+                                               esp_timer_get_time());
     }
     return true;
 }
@@ -399,6 +400,21 @@ void app_manager_control_task(void *arg)
                 CONTROL_DEINITIALIZING)
         {
             wake_retry_pending = false;
+            atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+            atomic_store(&s_home_click_generation, 0U);
+            s_home_click_deadline_us = 0;
+            s_home_action_count = 0U;
+            s_home_action_head = 0U;
+            memset(s_home_action_fifo, 0, sizeof(s_home_action_fifo));
+            while (atomic_flag_test_and_set_explicit(
+                        &s_home_click_fallback_lock, memory_order_acquire))
+            {
+            }
+            s_home_click_fallback_head = 0U;
+            s_home_click_fallback_count = 0U;
+            memset(s_home_click_fallback, 0, sizeof(s_home_click_fallback));
+            atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                                       memory_order_release);
             _control_discard_shutdown_pending();
         }
         else if (wake_retry_pending)
@@ -413,8 +429,9 @@ void app_manager_control_task(void *arg)
 
         bool command_wake_retry = false;
         control_command_t command;
-        if (xQueueReceive(s_queue, &command,
-                          pdMS_TO_TICKS(APP_CONTROL_POLL_MS)) == pdTRUE)
+        const TickType_t poll_ticks =
+            pdMS_TO_TICKS(app_manager_control_home_click_wait_ms());
+        if (xQueueReceive(s_queue, &command, poll_ticks) == pdTRUE)
         {
             for (size_t drained = 0; drained < APP_CONTROL_QUEUE_DEPTH; drained++)
             {

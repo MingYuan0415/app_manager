@@ -94,6 +94,22 @@ void app_manager_presentation_finish_now(void);
  */
 bool app_manager_presentation_is_running(void);
 
+/**
+ * @brief Capture one mounted screen into the transition source snapshot.
+ *
+ * Used by the lifecycle to refresh the recent-tasks preview of an app that is
+ * about to leave the foreground. When snapshot capture is unavailable or the
+ * screen is ineligible, the previous preview is preserved.
+ *
+ * @param screen is a valid mounted page screen.
+ * @param snapshot receives the fixed transition source draw buffer, which is
+ *        reused by the next transition and must not be retained.
+ * @return ESP_OK when captured, ESP_ERR_INVALID_ARG for null arguments, or
+ *         ESP_ERR_NOT_SUPPORTED when capture resources are unavailable.
+ */
+esp_err_t app_manager_presentation_capture_source(
+    lv_obj_t *screen, const lv_draw_buf_t **snapshot);
+
 #ifdef __cplusplus
 }
 #endif

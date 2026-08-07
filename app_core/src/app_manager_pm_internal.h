@@ -32,6 +32,36 @@
 #define APP_CONTROL_DEFAULT_STANDBY_MS   5000
 /** @brief Temporary brightness used while dimmed. */
 #define APP_CONTROL_DIM_BRIGHTNESS       76
+/** @brief Window in milliseconds for a second HOME click. */
+#define APP_CONTROL_HOME_DOUBLE_CLICK_WINDOW_MS 350U
+
+/** @brief Worker-owned HOME click disambiguation states. */
+typedef enum
+{
+    APP_MANAGER_HOME_CLICK_IDLE = 0,      /**< No active click window. */
+    APP_MANAGER_HOME_CLICK_WAIT_SECOND,   /**< Waiting for a second click. */
+} app_manager_home_click_state_t;
+
+/** @brief Resolved HOME navigation actions queued for dispatch. */
+typedef enum
+{
+    APP_MANAGER_HOME_ACTION_NONE = 0,     /**< Empty FIFO slot. */
+    APP_MANAGER_HOME_ACTION_ROOT,         /**< OPEN_PAGE home/root. */
+    APP_MANAGER_HOME_ACTION_TASK_SWITCHER, /**< SHOW system task switcher. */
+} app_manager_home_action_t;
+
+/** @brief Capacity of the resolved HOME action FIFO. */
+#define APP_MANAGER_HOME_ACTION_FIFO_DEPTH 2U
+/** @brief Capacity of the queue-full HOME click fallback FIFO. */
+#define APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH APP_CONTROL_QUEUE_DEPTH
+
+/** @brief One active HOME click preserved across a saturated queue. */
+typedef struct app_manager_home_click_record
+{
+    uint32_t generation; /**< HOME sequence generation. */
+    int64_t event_us;    /**< Producer admission time. */
+    uint32_t epoch;      /**< Fallback epoch at admission; stale after cancel. */
+} app_manager_home_click_record_t;
 
 /** @brief Encode one physical power-key event for the fallback bit mask. */
 #define POWER_PENDING_EVENT(event)       (1U << (unsigned)(event))
@@ -84,7 +114,8 @@ typedef struct control_command
         {
             app_manager_key_t key;         /**< Logical input key. */
             app_manager_key_event_t event; /**< Logical input event. */
-            uint32_t generation;           /**< HOME input sequence or zero. */
+            uint32_t generation;           /**< HOME sequence or zero. */
+            int64_t event_us;              /**< Producer admission time. */
         } input;
         uint32_t touch_generation; /**< Touch-admission generation. */
         uint8_t brightness;        /**< Requested display brightness. */
@@ -129,7 +160,6 @@ extern atomic_bool s_touch_activity_enabled;
 extern atomic_bool s_touch_restore_pending;
 extern atomic_bool s_input_wake_required;
 extern atomic_uint s_home_sequence_state;
-extern atomic_uint s_home_pending_generation;
 extern atomic_bool s_home_inflight;
 extern atomic_uint s_brightness_temp_value;
 extern atomic_uint s_brightness_temp_generation;
@@ -139,6 +169,39 @@ extern bool s_power_wake_click_pending;
 extern bool s_power_long_press_seen;
 /** @brief Worker-owned wake classification for the queued HOME sequence. */
 extern uint32_t s_home_worker_wake_generation;
+/** @brief Worker-owned HOME click disambiguation state. */
+extern atomic_uint s_home_click_state;
+/** @brief HOME sequence generation owning the current click window. */
+extern atomic_uint s_home_click_generation;
+/** @brief Admission time of the click that armed the current window. */
+extern int64_t s_home_click_event_us;
+/** @brief Microsecond deadline of the pending single-click window. */
+extern int64_t s_home_click_deadline_us;
+/** @brief Producer fallback for active HOME clicks lost to a full queue. */
+extern atomic_flag s_home_click_fallback_lock;
+/** @brief Queue-full fallback click records. */
+extern app_manager_home_click_record_t
+s_home_click_fallback[APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH];
+/** @brief Queue-full fallback FIFO head and count. */
+extern uint32_t s_home_click_fallback_head;
+extern uint32_t s_home_click_fallback_count;
+/** @brief Fallback epoch; incremented by cancel to invalidate stale records. */
+extern atomic_uint s_home_click_fallback_epoch;
+/** @brief Worker-owned resolved HOME action FIFO. */
+extern uint32_t s_home_action_fifo[APP_MANAGER_HOME_ACTION_FIFO_DEPTH];
+/** @brief Worker-owned index of the oldest queued HOME action. */
+extern uint32_t s_home_action_head;
+/** @brief Worker-owned number of queued HOME actions. */
+extern uint32_t s_home_action_count;
+
+/**
+ * @brief Report how long the worker may sleep before the click deadline.
+ *
+ * @return Milliseconds remaining until the HOME click window expires, clamped
+ *         to the control poll period, or the poll period when no window is
+ *         armed.
+ */
+uint32_t app_manager_control_home_click_wait_ms(void);
 
 /** @brief Start a new HOME input sequence and return its nonzero generation. */
 static inline uint32_t _app_manager_control_home_sequence_begin(void)

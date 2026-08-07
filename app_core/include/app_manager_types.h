@@ -41,6 +41,12 @@ extern "C" {
 #define APP_MANAGER_MAX_PAGE_INSTANCES CONFIG_APP_MANAGER_MAX_PAGE_INSTANCES
 /** Maximum private-state bytes owned by one retained Page instance. */
 #define APP_MANAGER_PAGE_STATE_BYTES CONFIG_APP_MANAGER_PAGE_STATE_BYTES
+/** Maximum tasks reported by the recent-tasks snapshot. */
+#define APP_MANAGER_MAX_RECENT_TASKS  3U
+/** Preview width in pixels of one retained task thumbnail. */
+#define APP_MANAGER_RECENT_PREVIEW_WIDTH 230U
+/** Preview height in pixels of one retained task thumbnail. */
+#define APP_MANAGER_RECENT_PREVIEW_HEIGHT 280U
 
 #ifdef __cplusplus
 static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
@@ -168,6 +174,7 @@ typedef struct app_manager_app_desc
     const app_manager_page_route_t *page_routes; /**< Owned static route array. */
     size_t page_route_count;      /**< Number of entries in page_routes. */
     uint32_t flags;               /**< Bitwise app_manager_app_flag_t values. */
+    const char *display_name;     /**< Localized display name, or NULL to use name. */
 } app_manager_app_desc_t;
 
 /** @brief Native screen-transition effects. */
@@ -237,6 +244,24 @@ typedef enum
     APP_MANAGER_RESIDENT_REJECT = 0, /**< Reject the new application. */
     APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND, /**< Evict oldest eligible app. */
 } app_manager_resident_policy_t;
+
+/**
+ * @brief One task reported by the recent-tasks snapshot.
+ *
+ * The preview points to a fixed App Manager-owned PSRAM draw buffer that is
+ * valid only until the owning application is destroyed or the manager stops.
+ * Callers must never modify the preview data.
+ */
+typedef struct app_manager_recent_task
+{
+    const char *app_id;           /**< Stable application identifier. */
+    const char *display_name;     /**< Localized name, or descriptor name. */
+    const char *page_id;          /**< Retained current page identifier. */
+    bool preview_valid;           /**< preview contains a captured thumbnail. */
+    const lv_draw_buf_t *preview; /**< Fixed preview draw buffer, or NULL. */
+    bool active;                  /**< This task is the current foreground task. */
+    bool cleanup_pending;         /**< Cleanup failed; the instance retains resources. */
+} app_manager_recent_task_t;
 
 /** @brief Logical keys accepted by the application manager. */
 typedef enum

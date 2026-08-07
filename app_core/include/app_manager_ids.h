@@ -8,6 +8,8 @@
 
 /** @brief Stable identifier of the home application. */
 #define APP_MANAGER_ID_HOME     "home"
+/** @brief Page ID of the home application root page. */
+#define APP_MANAGER_ID_HOME_ROOT "root"
 /** @brief Stable identifier of the menu application. */
 #define APP_MANAGER_ID_MENU     "menu"
 /** @brief Stable identifier of the settings application. */

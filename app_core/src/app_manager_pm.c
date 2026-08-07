@@ -11,12 +11,18 @@
 
 #include "app_manager_control.h"
 #include "app_manager_display.h"
+#include "app_manager_navigation.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
 #ifndef HOST_TEST
     #include "esp_timer.h"
     #include "nv_storage.h"
 #endif
+#include <string.h>
+
+static void _control_home_click_cancel(void);
+static void _control_home_click_on_active(uint32_t generation,
+        int64_t event_us);
 
 void app_manager_control_state_set(app_manager_pm_state_t state)
 {
@@ -91,8 +97,7 @@ bool app_manager_control_standby_generation_begin(void)
                                   memory_order_acquire) &&
             !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
             !_app_manager_control_home_wake_is_pending() &&
-            atomic_load_explicit(&s_home_pending_generation,
-                                 memory_order_acquire) == 0U &&
+            atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_IDLE &&
             atomic_load_explicit(&s_power_input_pending,
                                  memory_order_acquire) == 0U;
     if (!ready)
@@ -128,8 +133,7 @@ bool app_manager_control_standby_generation_begin(void)
                                   memory_order_acquire) &&
             !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
             !_app_manager_control_home_wake_is_pending() &&
-            atomic_load_explicit(&s_home_pending_generation,
-                                 memory_order_acquire) == 0U &&
+            atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_IDLE &&
             atomic_load_explicit(&s_power_input_pending,
                                  memory_order_acquire) == 0U;
     if (!ready)
@@ -152,8 +156,7 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
             atomic_load_explicit(&s_power_pending_wake, memory_order_acquire) ||
             atomic_load_explicit(&s_wake_pending, memory_order_acquire) ||
             _app_manager_control_home_wake_is_pending() ||
-            atomic_load_explicit(&s_home_pending_generation,
-                                 memory_order_acquire) != 0U ||
+            atomic_load(&s_home_click_state) != APP_MANAGER_HOME_CLICK_IDLE ||
             atomic_load_explicit(&s_power_input_pending, memory_order_acquire) != 0U)
     {
         return false;
@@ -202,8 +205,7 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
                                  memory_order_acquire) &&
            !atomic_load_explicit(&s_wake_pending, memory_order_acquire) &&
            !_app_manager_control_home_wake_is_pending() &&
-           atomic_load_explicit(&s_home_pending_generation,
-                                memory_order_acquire) == 0U &&
+           atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_IDLE &&
            atomic_load_explicit(&s_power_input_pending,
                                 memory_order_acquire) == 0U &&
            atomic_load_explicit(&s_standby_generation,
@@ -336,8 +338,11 @@ static esp_err_t _control_resume_hardware(void)
 
 esp_err_t app_manager_control_suspend_hardware(void)
 {
+    /* Publish the wake gate before cancelling so a concurrent producer can
+     * never classify a post-suspend click as active after the cancel. */
     atomic_store_explicit(&s_input_wake_required, true,
                           memory_order_release);
+    _control_home_click_cancel();
     _control_disable_touch_activity();
 
     esp_err_t result = app_manager_display_sleep_prepare();
@@ -508,6 +513,186 @@ esp_err_t app_manager_control_handle_touch_activity(uint32_t generation)
     return app_manager_control_handle_activity();
 }
 
+static void _control_home_click_cancel(void)
+{
+    atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+    atomic_store(&s_home_click_generation, 0U);
+    s_home_click_event_us = 0;
+    s_home_click_deadline_us = 0;
+    s_home_action_count = 0U;
+    s_home_action_head = 0U;
+    memset(s_home_action_fifo, 0, sizeof(s_home_action_fifo));
+    while (atomic_flag_test_and_set_explicit(
+                &s_home_click_fallback_lock, memory_order_acquire))
+    {
+    }
+    s_home_click_fallback_head = 0U;
+    s_home_click_fallback_count = 0U;
+    memset(s_home_click_fallback, 0, sizeof(s_home_click_fallback));
+    atomic_fetch_add_explicit(&s_home_click_fallback_epoch, 1U,
+                              memory_order_acq_rel);
+    atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                               memory_order_release);
+}
+
+static void _control_home_click_drain_fallback(void)
+{
+    app_manager_home_click_record_t
+    records[APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH];
+    uint32_t count = 0U;
+    const uint32_t epoch = atomic_load_explicit(&s_home_click_fallback_epoch,
+                           memory_order_acquire);
+
+    while (atomic_flag_test_and_set_explicit(
+                &s_home_click_fallback_lock, memory_order_acquire))
+    {
+    }
+    count = s_home_click_fallback_count;
+    for (uint32_t index = 0U; index < count; index++)
+    {
+        records[index] = s_home_click_fallback[
+                             (s_home_click_fallback_head + index) %
+                             APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH];
+    }
+    s_home_click_fallback_head = 0U;
+    s_home_click_fallback_count = 0U;
+    atomic_flag_clear_explicit(&s_home_click_fallback_lock,
+                               memory_order_release);
+
+    for (uint32_t index = 0U; index < count; index++)
+    {
+        /* Records latched before a cancel (suspend, long press, deinit) are
+         * stale: their clicks were classified before the wake gate. */
+        if (records[index].epoch != epoch)
+        {
+            continue;
+        }
+        _control_home_click_on_active(records[index].generation,
+                                      records[index].event_us);
+    }
+}
+
+static void _control_home_action_push(uint32_t action)
+{
+    if (action == APP_MANAGER_HOME_ACTION_NONE)
+    {
+        return;
+    }
+    /* Repeated doubles coalesce into one task-switcher action wherever they
+     * sit. */
+    if (action == APP_MANAGER_HOME_ACTION_TASK_SWITCHER)
+    {
+        for (uint32_t index = 0U; index < s_home_action_count; index++)
+        {
+            const uint32_t slot =
+                (s_home_action_head + index) %
+                APP_MANAGER_HOME_ACTION_FIFO_DEPTH;
+            if (s_home_action_fifo[slot] == APP_MANAGER_HOME_ACTION_TASK_SWITCHER)
+            {
+                return;
+            }
+        }
+        if (s_home_action_count == APP_MANAGER_HOME_ACTION_FIFO_DEPTH)
+        {
+            /* The newest intent wins: replace the most recently queued
+             * single with the double so no accepted click is dropped. */
+            for (uint32_t index = s_home_action_count; index > 0U; index--)
+            {
+                const uint32_t slot =
+                    (s_home_action_head + index - 1U) %
+                    APP_MANAGER_HOME_ACTION_FIFO_DEPTH;
+                if (s_home_action_fifo[slot] == APP_MANAGER_HOME_ACTION_ROOT)
+                {
+                    s_home_action_fifo[slot] =
+                        APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
+                    return;
+                }
+            }
+            return;
+        }
+    }
+    else if (s_home_action_count == APP_MANAGER_HOME_ACTION_FIFO_DEPTH)
+    {
+        /* Repeated singles all navigate to the same root page; the newest
+         * single intent equals an already queued one. */
+        return;
+    }
+    const uint32_t tail =
+        (s_home_action_head + s_home_action_count) %
+        APP_MANAGER_HOME_ACTION_FIFO_DEPTH;
+    s_home_action_fifo[tail] = action;
+    s_home_action_count++;
+}
+
+static void _control_home_click_on_active(uint32_t generation,
+        int64_t event_us)
+{
+    const uint32_t state = atomic_load(&s_home_click_state);
+    const uint32_t window_generation = atomic_load(&s_home_click_generation);
+    if (state == APP_MANAGER_HOME_CLICK_WAIT_SECOND &&
+            window_generation != generation)
+    {
+        /* Compare admission times in absolute order so a stale fallback
+         * record drained after a newer click cannot pair into a double. */
+        const int64_t window_event = s_home_click_event_us;
+        if (event_us <= window_event)
+        {
+            /* Out of order: this click predates the window. It was the real
+             * first press; the window's click was the second. A double is
+             * formed only when the two presses are close in time; otherwise
+             * the older press resolves to the root page and the newer window
+             * is preserved for a possible third press. */
+            if (window_event - event_us <=
+                    (int64_t)APP_CONTROL_HOME_DOUBLE_CLICK_WINDOW_MS * 1000LL)
+            {
+                _control_home_action_push(APP_MANAGER_HOME_ACTION_TASK_SWITCHER);
+                atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+                s_home_click_event_us = 0;
+                s_home_click_deadline_us = 0;
+            }
+            else
+            {
+                _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+            }
+            return;
+        }
+        if (event_us <= s_home_click_deadline_us)
+        {
+            _control_home_action_push(APP_MANAGER_HOME_ACTION_TASK_SWITCHER);
+            atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+            s_home_click_event_us = 0;
+            s_home_click_deadline_us = 0;
+            return;
+        }
+        /* The previous window expired before this click; resolve the single
+         * press first and treat this click as the start of a new window. */
+        _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+    }
+    atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_WAIT_SECOND);
+    atomic_store(&s_home_click_generation, generation);
+    s_home_click_event_us = event_us;
+    s_home_click_deadline_us =
+        event_us + (int64_t)APP_CONTROL_HOME_DOUBLE_CLICK_WINDOW_MS * 1000LL;
+}
+
+uint32_t app_manager_control_home_click_wait_ms(void)
+{
+    if (atomic_load(&s_home_click_state) != APP_MANAGER_HOME_CLICK_WAIT_SECOND)
+    {
+        return APP_CONTROL_POLL_MS;
+    }
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us >= s_home_click_deadline_us)
+    {
+        return 0U;
+    }
+    const int64_t remaining_us = s_home_click_deadline_us - now_us;
+    const uint32_t remaining_ms =
+        (uint32_t)((remaining_us + 999) / 1000);
+    return remaining_ms < APP_CONTROL_POLL_MS ?
+           remaining_ms : APP_CONTROL_POLL_MS;
+}
+
 static void _control_run_home_complete(esp_err_t result, void *context)
 {
     (void)context;
@@ -515,35 +700,32 @@ static void _control_run_home_complete(esp_err_t result, void *context)
     {
         LOG_W("HOME navigation failed: %d", (int)result);
     }
-    atomic_store(&s_home_pending_generation, 0U);
     atomic_store(&s_home_inflight, false);
 }
 
 void app_manager_control_process_pending_home(void)
 {
-    const uint32_t generation = atomic_load_explicit(
-                                    &s_home_pending_generation,
-                                    memory_order_acquire);
-    if (generation == 0U ||
-            !atomic_load_explicit(&s_control_admitted,
-                                  memory_order_acquire) ||
-            atomic_load(&s_lifecycle_state) != CONTROL_READY)
+    /* Drain the queue-full fallback clicks first so their admission times
+     * are compared against the correct click windows. */
+    _control_home_click_drain_fallback();
+
+    const int64_t now_us = esp_timer_get_time();
+    if (atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_WAIT_SECOND &&
+            now_us > s_home_click_deadline_us)
+    {
+        _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+        atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
+        s_home_click_event_us = 0;
+        s_home_click_deadline_us = 0;
+    }
+    if (s_home_action_count == 0U)
     {
         return;
     }
-
-    if (_app_manager_control_home_sequence_is_wake(generation) ||
-            s_home_worker_wake_generation == generation)
+    if (!atomic_load_explicit(&s_control_admitted,
+                              memory_order_acquire) ||
+            atomic_load(&s_lifecycle_state) != CONTROL_READY)
     {
-        if (s_home_worker_wake_generation == generation)
-        {
-            s_home_worker_wake_generation = 0U;
-        }
-        uint32_t expected_generation = generation;
-        (void)atomic_compare_exchange_strong_explicit(
-            &s_home_pending_generation, &expected_generation, 0U,
-            memory_order_acq_rel, memory_order_acquire);
-        _app_manager_control_home_sequence_close(generation);
         return;
     }
 
@@ -551,21 +733,35 @@ void app_manager_control_process_pending_home(void)
     {
         app_manager_control_standby_generation_abort();
     }
-    _app_manager_control_home_sequence_close(generation);
 
+    const uint32_t action =
+        s_home_action_fifo[s_home_action_head % APP_MANAGER_HOME_ACTION_FIFO_DEPTH];
+    const bool task_switcher =
+        action == APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s_home_inflight, &expected, true))
     {
         return;
     }
 
-    const app_manager_nav_request_t request =
+    esp_err_t result;
+    if (task_switcher)
     {
-        .operation = APP_MANAGER_NAV_OP_RUN,
-        .app_id = APP_MANAGER_ID_HOME,
-    };
-    esp_err_t result = app_manager_navigate_async(
-                           &request, _control_run_home_complete, NULL);
+        result = app_manager_navigation_submit_system_op(
+                     APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW,
+                     _control_run_home_complete, NULL);
+    }
+    else
+    {
+        const app_manager_nav_request_t request =
+        {
+            .operation = APP_MANAGER_NAV_OP_OPEN_PAGE,
+            .app_id = APP_MANAGER_ID_HOME,
+            .page_id = APP_MANAGER_ID_HOME_ROOT,
+        };
+        result = app_manager_navigate_async(&request,
+                                            _control_run_home_complete, NULL);
+    }
     if (result != ESP_OK)
     {
         atomic_store(&s_home_inflight, false);
@@ -573,7 +769,13 @@ void app_manager_control_process_pending_home(void)
         {
             LOG_W("HOME navigation dispatch failed: %d", (int)result);
         }
+        return;
     }
+    s_home_action_fifo[s_home_action_head % APP_MANAGER_HOME_ACTION_FIFO_DEPTH] =
+        APP_MANAGER_HOME_ACTION_NONE;
+    s_home_action_head =
+        (s_home_action_head + 1U) % APP_MANAGER_HOME_ACTION_FIFO_DEPTH;
+    s_home_action_count--;
 }
 
 static esp_err_t _control_handle_power_input(
@@ -628,7 +830,7 @@ static esp_err_t _control_handle_power_input(
 
 static esp_err_t _control_handle_home_input(
     app_manager_key_event_t event, uint32_t generation, bool screen_off,
-    bool *handled)
+    bool *handled, int64_t event_us)
 {
     /* The atomic state protects producers and queue fallback; this worker-only
      * generation preserves the decision after a newer sequence is admitted. */
@@ -639,6 +841,7 @@ static esp_err_t _control_handle_home_input(
         s_home_worker_wake_generation = screen_off ? generation : 0U;
         if (screen_off)
         {
+            _control_home_click_cancel();
             if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
             {
                 app_manager_control_standby_generation_abort();
@@ -650,6 +853,7 @@ static esp_err_t _control_handle_home_input(
     else if (event == APP_MANAGER_KEY_EVENT_LONG_PRESS ||
              event == APP_MANAGER_KEY_EVENT_DOUBLE_CLICK)
     {
+        _control_home_click_cancel();
         if (s_home_worker_wake_generation == generation)
         {
             s_home_worker_wake_generation = 0U;
@@ -665,10 +869,6 @@ static esp_err_t _control_handle_home_input(
         {
             s_home_worker_wake_generation = 0U;
         }
-        uint32_t expected_generation = generation;
-        (void)atomic_compare_exchange_strong_explicit(
-            &s_home_pending_generation, &expected_generation, 0U,
-            memory_order_acq_rel, memory_order_acquire);
         _app_manager_control_home_sequence_close(generation);
         if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)
         {
@@ -684,12 +884,13 @@ static esp_err_t _control_handle_home_input(
             s_home_worker_wake_generation = 0U;
         }
         _app_manager_control_home_sequence_close(generation);
+        _control_home_click_on_active(generation, event_us);
     }
     return result;
 }
 
 esp_err_t app_manager_control_handle_input(app_manager_key_t key,
-        app_manager_key_event_t event, uint32_t generation)
+        app_manager_key_event_t event, uint32_t generation, int64_t event_us)
 {
     esp_err_t result = ESP_OK;
     const bool screen_off = app_manager_control_screen_needs_wake();
@@ -706,7 +907,7 @@ esp_err_t app_manager_control_handle_input(app_manager_key_t key,
     {
         bool handled = false;
         result = _control_handle_home_input(event, generation,
-                                            screen_off, &handled);
+                                            screen_off, &handled, event_us);
         if (handled)
         {
             return result;

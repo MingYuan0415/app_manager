@@ -292,6 +292,12 @@ esp_err_t app_manager_lifecycle_navigate(
     return ESP_OK;
 }
 
+esp_err_t app_manager_lifecycle_clear_background_tasks(void)
+{
+    assert(s_ui_worker);
+    return ESP_OK;
+}
+
 const char *app_manager_lifecycle_callback_app_id(void)
 {
     assert(s_ui_worker);
@@ -403,6 +409,122 @@ static void _test_ui_worker_rejected(void)
            ESP_ERR_INVALID_STATE);
     s_ui_worker = false;
     assert(_post_count() == 0U);
+}
+
+static void _system_completion(esp_err_t result, void *context)
+{
+    assert(context == &s_completion_count);
+    assert(result == ESP_OK);
+    atomic_fetch_add(&s_completion_count, 1U);
+}
+
+static void _test_system_command_serialization(void)
+{
+    extern unsigned host_task_switcher_show_count;
+    extern unsigned host_task_switcher_navigation_begin_count;
+    extern unsigned host_task_switcher_clear_all_finished_count;
+
+    assert(app_manager_navigation_submit_system_op(
+               APP_MANAGER_NAV_SYSTEM_NONE, NULL, NULL) ==
+           ESP_ERR_INVALID_ARG);
+    assert(app_manager_navigation_submit_system_op(
+               APP_MANAGER_NAV_SYSTEM_END, NULL, NULL) ==
+           ESP_ERR_INVALID_ARG);
+
+    /* SHOW executes on the UI worker without touching the lifecycle. */
+    const unsigned posts_before = _post_count();
+    assert(app_manager_navigation_submit_system_op(
+               APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW,
+               _system_completion, &s_completion_count) == ESP_OK);
+    assert(_post_count() == posts_before + 1U);
+    assert(host_task_switcher_show_count == 0U);
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(host_task_switcher_show_count == 1U);
+    assert(s_lifecycle_call_count == 0U);
+    assert(atomic_load(&s_completion_count) == 1U);
+    assert(atomic_load(&s_screen_access_count) == 0U);
+
+    /* Ordinary navigation hides the switcher; a switcher EXIT does not. */
+    const unsigned begin_before = host_task_switcher_navigation_begin_count;
+    app_manager_nav_request_t request = _request();
+    assert(app_manager_navigate_async(&request, NULL, NULL) == ESP_OK);
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(host_task_switcher_navigation_begin_count == begin_before + 1U);
+
+    /* A command queued before the switcher EXIT still hides the switcher:
+     * preservation belongs to the EXIT command alone, never to global state. */
+    const app_manager_nav_request_t exit_request =
+    {
+        .operation = APP_MANAGER_NAV_OP_EXIT,
+        .app_id = "weather",
+    };
+    assert(app_manager_navigate_async(&request, NULL, NULL) == ESP_OK);
+    assert(app_manager_navigation_submit_switcher_exit(
+               &exit_request, NULL, NULL) == ESP_OK);
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(host_task_switcher_navigation_begin_count == begin_before + 2U);
+
+    /* A standalone switcher EXIT keeps the surface visible. */
+    const unsigned lifecycle_before_exit = s_lifecycle_call_count;
+    assert(app_manager_navigation_submit_switcher_exit(
+               &exit_request, NULL, NULL) == ESP_OK);
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(host_task_switcher_navigation_begin_count == begin_before + 2U);
+    assert(s_lifecycle_call_count == lifecycle_before_exit + 1U);
+    assert(strcmp(s_observed_app_id, "weather") == 0);
+
+    /* Non-EXIT requests are rejected by the switcher-exit path. */
+    assert(app_manager_navigation_submit_switcher_exit(
+               &request, NULL, NULL) == ESP_ERR_INVALID_ARG);
+    assert(_post_count() == 0U);
+
+    /* The switcher-exit request is copied by value: a page_id survives
+     * caller mutation before the UI worker executes it. */
+    char page_storage[APP_MANAGER_ID_BYTES];
+    (void)snprintf(page_storage, sizeof(page_storage), "%s", "detail");
+    const app_manager_nav_request_t exit_with_page =
+    {
+        .operation = APP_MANAGER_NAV_OP_EXIT,
+        .app_id = "weather",
+        .page_id = page_storage,
+    };
+    assert(app_manager_navigation_submit_switcher_exit(
+               &exit_with_page, NULL, NULL) == ESP_OK);
+    memset(page_storage, 'x', sizeof(page_storage));
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(strcmp(s_observed_page_id, "detail") == 0);
+
+    /* CLEAR_ALL foregrounds Home through the lifecycle, then reports back. */
+    const unsigned clear_before = host_task_switcher_clear_all_finished_count;
+    const unsigned lifecycle_before = s_lifecycle_call_count;
+    assert(host_task_switcher_navigation_begin_count == begin_before + 2U);
+    assert(app_manager_navigation_submit_system_op(
+               APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_CLEAR_ALL,
+               _system_completion, &s_completion_count) == ESP_OK);
+    while (_post_count() > 0U)
+    {
+        _run_one_post();
+    }
+    assert(s_lifecycle_call_count == lifecycle_before + 1U);
+    assert(strcmp(s_observed_app_id, APP_MANAGER_ID_HOME) == 0);
+    assert(host_task_switcher_clear_all_finished_count == clear_before + 1U);
+    assert(atomic_load(&s_completion_count) == 2U);
+    assert(atomic_load(&s_screen_access_count) == 0U);
 }
 
 static void _test_gesture_token_and_conditional_back(void)
@@ -797,6 +919,8 @@ int main(void)
     assert(app_manager_navigation_init() == ESP_OK);
     _reset_observation();
     _test_ui_worker_rejected();
+    _reset_observation();
+    _test_system_command_serialization();
     _reset_observation();
     _test_gesture_token_and_conditional_back();
     _reset_observation();

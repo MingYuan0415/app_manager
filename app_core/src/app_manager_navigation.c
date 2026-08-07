@@ -15,9 +15,11 @@
 #include "app_manager.h"
 #include "app_manager_back_gesture.h"
 #include "app_manager_lifecycle.h"
+#include "app_manager_lifecycle_internal.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
 #include "app_manager_presentation.h"
+#include "app_manager_task_switcher.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -32,6 +34,8 @@ typedef struct navigation_command
     bool cancelled;
     bool screen_access_owned;
     bool navigation_started;
+    bool keep_switcher_alive;
+    app_manager_nav_system_op_t system_op;
     app_manager_nav_request_t request;
     char app_id[APP_MANAGER_ID_BYTES];
     char page_id[APP_MANAGER_ID_BYTES];
@@ -90,7 +94,12 @@ static navigation_command_t *_navigation_alloc_locked(
             command->cancelled = false;
             command->screen_access_owned = false;
             command->navigation_started = false;
-            command->request = *request;
+            command->keep_switcher_alive = false;
+            command->system_op = APP_MANAGER_NAV_SYSTEM_NONE;
+            if (request != NULL)
+            {
+                command->request = *request;
+            }
             command->completion = NULL;
             command->completion_context = NULL;
             command->result = ESP_OK;
@@ -112,6 +121,8 @@ static void _navigation_free_locked(navigation_command_t *command)
     command->cancelled = false;
     command->screen_access_owned = false;
     command->navigation_started = false;
+    command->keep_switcher_alive = false;
+    command->system_op = APP_MANAGER_NAV_SYSTEM_NONE;
     memset(&command->request, 0, sizeof(command->request));
     memset(command->app_id, 0, sizeof(command->app_id));
     memset(command->page_id, 0, sizeof(command->page_id));
@@ -263,11 +274,47 @@ static void _navigation_complete(esp_err_t result, void *context)
     }
 }
 
+static void _navigation_clear_all_home_complete(esp_err_t result,
+        void *context)
+{
+    navigation_command_t *command = context;
+    if (result == ESP_OK)
+    {
+        result = app_manager_lifecycle_clear_background_tasks();
+    }
+    app_manager_task_switcher_clear_all_finished(result);
+    _navigation_complete(result, command);
+}
+
+static void _navigation_execute_clear_all(navigation_command_t *command)
+{
+    /* Foreground Home, then stop every eligible task inside the same
+     * gateway command so no queued navigation can interleave. */
+    const app_manager_nav_request_t request =
+    {
+        .operation = APP_MANAGER_NAV_OP_RUN,
+        .app_id = APP_MANAGER_ID_HOME,
+        .transition =
+        {
+            .effect = APP_MANAGER_TRANSITION_DEFAULT,
+        },
+    };
+    esp_err_t result = app_manager_lifecycle_navigate(
+                           &request, _navigation_clear_all_home_complete,
+                           command);
+    if (result != ESP_OK)
+    {
+        app_manager_task_switcher_clear_all_finished(result);
+        _navigation_complete(result, command);
+    }
+}
+
 static void _navigation_execute(void *context)
 {
     navigation_command_t *command = context;
     bool cancelled = false;
     bool release_screen_access = false;
+    esp_err_t system_result = ESP_OK;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (command->cancelled)
@@ -299,6 +346,23 @@ static void _navigation_execute(void *context)
 
     app_manager_back_gesture_navigation_begin();
     app_manager_navigation_finish_transition();
+
+    if (command->system_op == APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW)
+    {
+        system_result = app_manager_task_switcher_show();
+        _navigation_complete(system_result, command);
+        return;
+    }
+    if (command->system_op == APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_CLEAR_ALL)
+    {
+        _navigation_execute_clear_all(command);
+        return;
+    }
+    if (!command->keep_switcher_alive)
+    {
+        app_manager_task_switcher_navigation_begin();
+    }
+
     esp_err_t result = app_manager_lifecycle_navigate(
                            &command->request, _navigation_complete, command);
     if (result != ESP_OK)
@@ -652,6 +716,120 @@ access_end:
     {
         xSemaphoreGive(s_lock);
     }
+    if (screen_access_owned)
+    {
+        app_manager_lifecycle_screen_access_end();
+    }
+    _navigation_access_end();
+    return result;
+}
+
+esp_err_t app_manager_navigation_submit_system_op(
+    app_manager_nav_system_op_t op, app_manager_nav_completion_cb_t completion,
+    void *context)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    bool lock_owned = false;
+    bool screen_access_owned = false;
+
+    if (op <= APP_MANAGER_NAV_SYSTEM_NONE ||
+            op >= APP_MANAGER_NAV_SYSTEM_END ||
+            !_navigation_access_begin())
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!app_manager_lifecycle_screen_access_begin())
+    {
+        goto access_end;
+    }
+    screen_access_owned = true;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    lock_owned = true;
+    if (!atomic_load(&s_accepting))
+    {
+        goto exit;
+    }
+    navigation_command_t *command = _navigation_alloc_locked(NULL);
+    if (command == NULL)
+    {
+        result = ESP_ERR_NO_MEM;
+        goto exit;
+    }
+    command->system_op = op;
+    command->completion = completion;
+    command->completion_context = context;
+    result = app_manager_ui_post(_navigation_execute, command);
+    if (result != ESP_OK)
+    {
+        _navigation_free_locked(command);
+        goto exit;
+    }
+    command->screen_access_owned = true;
+    s_pending_count++;
+    _navigation_epoch_advance_locked();
+    screen_access_owned = false;
+
+exit:
+    if (lock_owned)
+    {
+        xSemaphoreGive(s_lock);
+    }
+access_end:
+    if (screen_access_owned)
+    {
+        app_manager_lifecycle_screen_access_end();
+    }
+    _navigation_access_end();
+    return result;
+}
+
+esp_err_t app_manager_navigation_submit_switcher_exit(
+    const app_manager_nav_request_t *request,
+    app_manager_nav_completion_cb_t completion, void *context)
+{
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    bool lock_owned = false;
+    bool screen_access_owned = false;
+    const char *app_id = NULL;
+
+    if (request == NULL ||
+            request->operation != APP_MANAGER_NAV_OP_EXIT ||
+            request->app_id == NULL || !_navigation_access_begin())
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!app_manager_lifecycle_screen_access_begin())
+    {
+        goto access_end;
+    }
+    screen_access_owned = true;
+
+    app_id = request->app_id;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    lock_owned = true;
+    if (!atomic_load(&s_accepting))
+    {
+        goto exit;
+    }
+    /* The shared submit path copies the request by value (including any
+     * page_id) before the UI worker executes it. */
+    navigation_command_t *command = NULL;
+    result = _navigation_post_locked(request, app_id, false, completion,
+                                     context, &command);
+    if (result != ESP_OK)
+    {
+        goto exit;
+    }
+    command->keep_switcher_alive = true;
+    screen_access_owned = false;
+
+exit:
+    if (lock_owned)
+    {
+        xSemaphoreGive(s_lock);
+    }
+access_end:
     if (screen_access_owned)
     {
         app_manager_lifecycle_screen_access_end();
