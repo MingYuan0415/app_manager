@@ -168,7 +168,7 @@ typedef struct app_manager_page_route
 typedef struct app_manager_app_desc
 {
     const char *name;             /**< Human-readable application name. */
-    const void *icon;             /**< Optional application icon resource. */
+    uint32_t icon_id;             /**< Semantic application icon ID, or zero. */
     const char *id;               /**< Stable application identifier. */
     const char *root_page_id;     /**< ID of the statically described root page. */
     const app_manager_page_route_t *page_routes; /**< Owned static route array. */
@@ -256,6 +256,7 @@ typedef struct app_manager_recent_task
 {
     const char *app_id;           /**< Stable application identifier. */
     const char *display_name;     /**< Localized name, or descriptor name. */
+    uint32_t icon_id;             /**< Semantic application icon ID, or zero. */
     const char *page_id;          /**< Retained current page identifier. */
     bool preview_valid;           /**< preview contains a captured thumbnail. */
     const lv_draw_buf_t *preview; /**< Fixed preview draw buffer, or NULL. */

@@ -2678,6 +2678,7 @@ esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque)
         task->display_name = app->descriptor->display_name != NULL ?
                              app->descriptor->display_name :
                              app->descriptor->name;
+        task->icon_id = app->descriptor->icon_id;
         task->page_id = app->current_page != NULL &&
                         app->current_page->route != NULL ?
                         app->current_page->route->page_id : NULL;

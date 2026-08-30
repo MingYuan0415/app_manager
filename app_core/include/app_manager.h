@@ -386,19 +386,19 @@ esp_err_t app_manager_get_image(uint32_t semantic_id,
 /**
  * @brief Export one builtin application descriptor.
  * @param n is the descriptor symbol suffix and display name.
- * @param icn is the optional icon pointer.
+ * @param icon_id is the semantic icon ID, or zero for no icon.
  * @param nm is the localized display name, or NULL to use n.
  * @param aid is the stable application identifier.
  * @param root_id identifies the application's static root page.
  * @param app_flags is a bitwise app_manager_app_flag_t value.
  * @param routes is the application's static page-route array.
  */
-#define APP_MANAGER_APP_EXPORT(n, icn, nm, aid, root_id, app_flags, routes) \
+#define APP_MANAGER_APP_EXPORT(n, icon_value, nm, aid, root_id, app_flags, routes) \
     __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
     static const app_manager_app_desc_t _app_manager_app_##n = \
     { \
         .name = #n, \
-        .icon = (const void *)(icn), \
+        .icon_id = (icon_value), \
         .id = (aid), \
         .root_page_id = (root_id), \
         .page_routes = (routes), \

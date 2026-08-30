@@ -1,0 +1,2 @@
+set(MICROTECH_THEME_RESOURCE_RECORDS
+    "${CMAKE_CURRENT_LIST_DIR}/assets/font.ttf|font.ttf|0|0|0|FONT")

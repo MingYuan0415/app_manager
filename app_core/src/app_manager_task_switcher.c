@@ -480,6 +480,48 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         }
     }
 
+    /* The icon is an overlay so the existing preview/card geometry remains
+     * stable.  Missing or zero IDs intentionally use the same neutral symbol
+     * fallback as an unavailable preview. */
+    lv_obj_t *icon = lv_obj_create(button);
+    if (icon != NULL)
+    {
+        lv_obj_set_size(icon, 44, 44);
+        lv_obj_set_pos(icon, 14, 14);
+        lv_obj_set_style_radius(icon, 6, 0);
+        lv_obj_set_style_bg_color(icon, lv_color_hex(0x101517), 0);
+        lv_obj_set_style_bg_opa(icon, LV_OPA_90, 0);
+        lv_obj_set_style_border_width(icon, 0, 0);
+        lv_obj_add_flag(icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        const lv_image_dsc_t *icon_image = NULL;
+        if (task->icon_id != 0U &&
+                app_manager_get_image(task->icon_id, &icon_image) == ESP_OK &&
+                icon_image != NULL)
+        {
+            lv_obj_t *image = lv_image_create(icon);
+            if (image != NULL)
+            {
+                lv_image_set_src(image, icon_image);
+                lv_obj_set_size(image, 40, 40);
+                lv_obj_center(image);
+                lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE |
+                                   LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+        else
+        {
+            lv_obj_t *symbol = lv_label_create(icon);
+            if (symbol != NULL)
+            {
+                lv_label_set_text(symbol, LV_SYMBOL_IMAGE);
+                lv_obj_set_style_text_font(symbol, LV_FONT_DEFAULT, 0);
+                lv_obj_set_style_text_color(symbol, lv_color_hex(0x4A555A), 0);
+                lv_obj_center(symbol);
+            }
+        }
+    }
+
     lv_obj_t *name = lv_label_create(button);
     if (name != NULL)
     {

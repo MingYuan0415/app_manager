@@ -496,6 +496,7 @@ static const app_manager_app_desc_t s_apps[] =
     {
         .name = "B",
         .id = "b",
+        .icon_id = 0x1234U,
         .root_page_id = "root",
         .page_routes = s_b_routes,
         .page_route_count = sizeof(s_b_routes) / sizeof(s_b_routes[0]),
@@ -503,6 +504,7 @@ static const app_manager_app_desc_t s_apps[] =
     {
         .name = "C",
         .id = "c",
+        .icon_id = 0x5678U,
         .root_page_id = "root",
         .page_routes = s_c_routes,
         .page_route_count = sizeof(s_c_routes) / sizeof(s_c_routes[0]),
@@ -1608,9 +1610,11 @@ static void _test_recent_tasks_snapshot(void)
     assert(count == 2U);
     assert(strcmp(tasks[0].app_id, "c") == 0);
     assert(strcmp(tasks[0].display_name, "C") == 0);
+    assert(tasks[0].icon_id == 0x5678U);
     assert(strcmp(tasks[0].page_id, "root") == 0);
     assert(!tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "b") == 0);
+    assert(tasks[1].icon_id == 0x1234U);
     assert(!tasks[1].preview_valid);
 
     /* Capture is unavailable by default; recent previews stay invalid. */

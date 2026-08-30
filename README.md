@@ -82,8 +82,11 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 | Typed Blob | 96 字节，其中 payload 88 字节 | `ESP_ERR_INVALID_ARG` |
 | 动画时长 | 1..2000 ms，0 表示使用默认值 | `ESP_ERR_INVALID_ARG` |
 
-构建生成的只读图片由装配层使用 `app_manager_image_resource_config_t` 将产品语义 ID 映射
-到 mmap asset index。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
+构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
+`app_manager_image_resource_config_t` 将产品语义 ID 映射
+到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
+复制该 ID，任务切换器在预览上叠加 40--48 px 图标，资源缺失或 ID 为零时回退 LVGL
+symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
 BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
 始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
 `app_manager_deinit()`，因此全部 LVGL Image 对象必须先由正常页面生命周期销毁。
@@ -133,7 +136,7 @@ static const app_manager_page_route_t s_example_routes[] =
     },
 };
 
-APP_MANAGER_APP_EXPORT(example, NULL, "example", "root",
+APP_MANAGER_APP_EXPORT(example, 0U, "example", "example", "root",
                        APP_MANAGER_APP_FLAG_NONE, s_example_routes);
 ```
 
