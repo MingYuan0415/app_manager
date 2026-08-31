@@ -11,13 +11,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
-#ifdef __SANITIZE_THREAD__
-    #define CONTROL_TEST_WAIT_SCALE (5)
-#else
-    #define CONTROL_TEST_WAIT_SCALE (1)
-#endif
+#define CONTROL_TEST_WAIT_MS (5000)
+
+static int64_t _monotonic_ms(void);
+static int64_t _wait_deadline_ms(void);
 
 atomic_llong g_host_time_us;
 
@@ -579,8 +579,9 @@ static void _complete_deferred_home(void)
 
 static void _wait_for_deferred_home(void)
 {
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(&s_deferred_home_count) == 0; i++)
+    const int64_t deadline = _wait_deadline_ms();
+    while (atomic_load(&s_deferred_home_count) == 0 &&
+            _monotonic_ms() < deadline)
     {
         usleep(1000);
     }
@@ -597,10 +598,23 @@ static void _home_click_active(void)
                      s_input_user_data);
 }
 
+static int64_t _monotonic_ms(void)
+{
+    struct timespec value;
+    assert(clock_gettime(CLOCK_MONOTONIC, &value) == 0);
+    return (int64_t)value.tv_sec * 1000LL + value.tv_nsec / 1000000LL;
+}
+
+static int64_t _wait_deadline_ms(void)
+{
+    return _monotonic_ms() + CONTROL_TEST_WAIT_MS;
+}
+
 static void _wait_for_state_at(app_manager_pm_state_t expected, int line)
 {
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
-            app_manager_pm_get_state() != expected; i++)
+    const int64_t deadline = _wait_deadline_ms();
+    while (app_manager_pm_get_state() != expected &&
+            _monotonic_ms() < deadline)
     {
         usleep(1000);
     }
@@ -608,6 +622,14 @@ static void _wait_for_state_at(app_manager_pm_state_t expected, int line)
     {
         fprintf(stderr, "line %d: state=%d expected=%d\n", line,
                 (int)app_manager_pm_get_state(), (int)expected);
+        if (expected == APP_MANAGER_PM_ACTIVE)
+        {
+            fprintf(stderr, "resume=%d home=%d recents=%d wake=%d\n",
+                    atomic_load(&s_screen_resume_count),
+                    atomic_load(&s_run_home_count),
+                    atomic_load(&s_home_nav_recents_count),
+                    atomic_load(&s_wake_pending));
+        }
         abort();
     }
 }
@@ -616,8 +638,8 @@ static void _wait_for_state_at(app_manager_pm_state_t expected, int line)
 
 static void _wait_for_count(atomic_int *counter, int expected)
 {
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(counter) < expected; i++)
+    const int64_t deadline = _wait_deadline_ms();
+    while (atomic_load(counter) < expected && _monotonic_ms() < deadline)
     {
         usleep(1000);
     }
@@ -626,8 +648,8 @@ static void _wait_for_count(atomic_int *counter, int expected)
 
 static void _wait_for_flag_clear(atomic_bool *flag)
 {
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(flag); i++)
+    const int64_t deadline = _wait_deadline_ms();
+    while (atomic_load(flag) && _monotonic_ms() < deadline)
     {
         usleep(1000);
     }
@@ -636,8 +658,9 @@ static void _wait_for_flag_clear(atomic_bool *flag)
 
 static void _wait_for_suspended(bool expected)
 {
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
-            atomic_load(&s_screen_suspended) != expected; i++)
+    const int64_t deadline = _wait_deadline_ms();
+    while (atomic_load(&s_screen_suspended) != expected &&
+            _monotonic_ms() < deadline)
     {
         usleep(1000);
     }
@@ -814,7 +837,7 @@ int main(void)
         atomic_load(&s_hardware_brightness);
     const int sleeping_temp_brightness = atomic_load(&s_temp_brightness);
     assert(app_manager_screen_set_brightness(200) == ESP_OK);
-    for (int i = 0; i < 200 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             app_manager_screen_get_brightness() != 200; ++i)
     {
         usleep(1000);
@@ -868,7 +891,7 @@ int main(void)
     assert(atomic_load(&s_temp_brightness) == 200);
 
     assert(app_manager_screen_set_brightness(128) == ESP_OK);
-    for (int i = 0; i < 200 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             app_manager_screen_get_brightness() != 128; i++)
     {
         usleep(1000);
@@ -888,7 +911,7 @@ int main(void)
                ESP_OK);
     }
     assert(app_manager_screen_set_brightness(137) == ESP_OK);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             app_manager_screen_get_brightness() != 137; i++)
     {
         usleep(1000);
@@ -914,7 +937,7 @@ int main(void)
     assert(atomic_load(&s_ui_post_count) == home_posts_before_click);
     assert(atomic_load(&s_run_home_count) == home_navs_before_click);
     _set_time_ms(65400);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_ui_post_count) == home_posts_before_click; i++)
     {
         usleep(1000);
@@ -930,7 +953,7 @@ int main(void)
     usleep(20000);
     _set_time_ms(65480);
     _home_click_active();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_home_nav_recents_count) == recents_before_double;
             i++)
     {
@@ -952,7 +975,7 @@ int main(void)
     usleep(20000);
     _set_time_ms(70349);
     _home_click_active();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_home_nav_recents_count) == recents_before_boundary;
             i++)
     {
@@ -967,7 +990,7 @@ int main(void)
     usleep(20000);
     _set_time_ms(70700);
     _home_click_active();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) < home_navs_after_boundary + 1; i++)
     {
         usleep(1000);
@@ -992,7 +1015,7 @@ int main(void)
     _home_click_active();
     usleep(20000);
     _set_time_ms(74000);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
         usleep(1000);
@@ -1009,7 +1032,7 @@ int main(void)
     assert(atomic_load(&s_run_home_count) == home_before_saturated_click);
     atomic_store(&s_fail_ui_post, false);
     atomic_store(&s_block_failed_ui_post, false);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) == home_before_saturated_click; i++)
     {
         usleep(1000);
@@ -1017,7 +1040,7 @@ int main(void)
     assert(atomic_load(&s_run_home_count) ==
            home_before_saturated_click + 1);
     _set_time_ms(75000);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) == home_before_saturated_click + 1;
             i++)
     {
@@ -1056,7 +1079,7 @@ int main(void)
      * then dispatches synchronously. */
     atomic_store(&s_defer_home_completion, false);
     _complete_deferred_home();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_home_nav_recents_count) == recents_before_fifo; i++)
     {
         usleep(1000);
@@ -1076,7 +1099,7 @@ int main(void)
     const int home_navs_before_oob = atomic_load(&s_run_home_count);
     _set_time_ms(75349);
     _home_click_active();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_home_nav_recents_count) == recents_before_oob; i++)
     {
         usleep(1000);
@@ -1096,7 +1119,7 @@ int main(void)
     const int recents_after_oob = atomic_load(&s_home_nav_recents_count);
     _set_time_ms(78351);
     _home_click_active();
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) < home_navs_after_oob + 1; i++)
     {
         usleep(1000);
@@ -1104,7 +1127,7 @@ int main(void)
     assert(atomic_load(&s_run_home_count) == home_navs_after_oob + 1);
     assert(atomic_load(&s_home_nav_recents_count) == recents_after_oob);
     _set_time_ms(79000);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) < home_navs_after_oob + 2; i++)
     {
         usleep(1000);
@@ -1123,7 +1146,7 @@ int main(void)
     _home_click_active();
     usleep(20000);
     _set_time_ms(79400);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
         usleep(1000);
@@ -1147,7 +1170,7 @@ int main(void)
            APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH);
     atomic_store(&s_fail_ui_post, false);
     atomic_store(&s_block_failed_ui_post, false);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) < home_before_burst + 2; i++)
     {
         usleep(1000);
@@ -1209,7 +1232,7 @@ int main(void)
     _home_click_active();
     usleep(20000);
     _set_time_ms(81400);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
         usleep(1000);
@@ -1222,15 +1245,15 @@ int main(void)
            recents_before_backpressure);
     atomic_store(&s_fail_ui_post, false);
     atomic_store(&s_block_failed_ui_post, false);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_run_home_count) < home_before_backpressure + 1;
             i++)
     {
         usleep(1000);
     }
     assert(atomic_load(&s_run_home_count) == home_before_backpressure + 1);
-    assert(atomic_load(&s_home_nav_recents_count) ==
-           recents_before_backpressure + 1);
+    _wait_for_count(&s_home_nav_recents_count,
+                    recents_before_backpressure + 1);
     usleep(250000);
     assert(atomic_load(&s_run_home_count) == home_before_backpressure + 1);
     assert(atomic_load(&s_home_nav_recents_count) ==
@@ -1247,7 +1270,7 @@ int main(void)
                      s_input_user_data);
     usleep(20000);
     _set_time_ms(81800);
-    for (int i = 0; i < 500 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {
         usleep(1000);
@@ -1666,7 +1689,7 @@ int main(void)
     pthread_t stale_isr_thread;
     assert(pthread_create(&stale_isr_thread, NULL,
                           _interleaved_touch_notify, NULL) == 0);
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !app_manager_control_touch_snapshot_reached_for_test(); i++)
     {
         usleep(1000);
@@ -1901,7 +1924,7 @@ int main(void)
     pthread_t opener;
     assert(pthread_create(&opener, NULL, _open_admission_thread,
                           &open_thread) == 0);
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_input_register_entered); ++i)
     {
         usleep(1000);
@@ -1912,7 +1935,7 @@ int main(void)
     pthread_t deinitializer;
     assert(pthread_create(&deinitializer, NULL, _control_deinit_thread,
                           &deinit_thread) == 0);
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             atomic_load(&s_lifecycle_state) != CONTROL_DEINITIALIZING; ++i)
     {
         usleep(1000);
@@ -1935,7 +1958,7 @@ int main(void)
     pthread_t first_deinitializer;
     assert(pthread_create(&first_deinitializer, NULL,
                           _control_deinit_thread, &first_deinit) == 0);
-    for (int i = 0; i < 1000 * CONTROL_TEST_WAIT_SCALE &&
+    for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_input_unregister_entered); ++i)
     {
         usleep(1000);

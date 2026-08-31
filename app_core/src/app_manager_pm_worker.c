@@ -243,8 +243,8 @@ static bool _control_process_pending_touch_restore(void)
 
 static void _control_process_pending_standby_commit(void)
 {
-    if (!atomic_exchange_explicit(&s_standby_commit_pending, false,
-                                  memory_order_acq_rel))
+    if (!atomic_load_explicit(&s_standby_commit_pending,
+                              memory_order_acquire))
     {
         return;
     }
@@ -254,11 +254,43 @@ static void _control_process_pending_standby_commit(void)
     const uint32_t commit_generation = atomic_load_explicit(
                                            &s_standby_commit_generation,
                                            memory_order_acquire);
+    const bool current = commit_epoch != 0U &&
+                         commit_epoch == atomic_load_explicit(
+                             &s_standby_generation, memory_order_acquire) &&
+                         commit_epoch == atomic_load_explicit(
+                             &s_standby_bound_epoch, memory_order_acquire) &&
+                         commit_generation == atomic_load_explicit(
+                             &s_standby_system_generation,
+                             memory_order_acquire) &&
+                         !atomic_load_explicit(&s_standby_abort_pending,
+                             memory_order_acquire);
+    if (!current)
+    {
+        bool expected = true;
+        (void)atomic_compare_exchange_strong_explicit(
+            &s_standby_commit_pending, &expected, false,
+            memory_order_acq_rel, memory_order_acquire);
+        return;
+    }
+
+    /* Keep a valid commit pending until the prepare transition is visible to
+     * the worker.  This closes the callback/worker scheduling window without
+     * weakening generation and abort checks. */
+    if (s_state != APP_MANAGER_PM_STANDBY_PREPARING)
+    {
+        return;
+    }
+
+    bool expected = true;
+    if (!atomic_compare_exchange_strong_explicit(
+                &s_standby_commit_pending, &expected, false,
+                memory_order_acq_rel, memory_order_acquire))
+    {
+        return;
+    }
+
     if (s_state == APP_MANAGER_PM_STANDBY_PREPARING &&
-            commit_epoch != 0U &&
             commit_epoch == atomic_load_explicit(&s_standby_generation,
-                    memory_order_acquire) &&
-            commit_epoch == atomic_load_explicit(&s_standby_bound_epoch,
                     memory_order_acquire) &&
             commit_generation == atomic_load_explicit(
                 &s_standby_system_generation, memory_order_acquire) &&
@@ -266,6 +298,14 @@ static void _control_process_pending_standby_commit(void)
                                   memory_order_acquire))
     {
         app_manager_control_state_set(APP_MANAGER_PM_STANDBY);
+    }
+    else if (!atomic_load_explicit(&s_standby_abort_pending,
+                                   memory_order_acquire))
+    {
+        /* State changed without aborting the same generation; leave the
+         * request available for the next worker pass. */
+        atomic_store_explicit(&s_standby_commit_pending, true,
+                              memory_order_release);
     }
 }
 

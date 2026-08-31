@@ -424,11 +424,6 @@ static esp_err_t _lifecycle_start_page(app_manager_page_node_t *page)
     {
         return ESP_OK;
     }
-    const size_t memory_size = page->route->definition->memory_size;
-    if (page->private_memory != NULL && memory_size > 0U)
-    {
-        memset(page->private_memory, 0, memory_size);
-    }
     return _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTART);
 }
 

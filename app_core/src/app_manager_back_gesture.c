@@ -657,11 +657,11 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
     {
         return ESP_ERR_NO_MEM;
     }
-    lv_label_set_text(s_gesture.arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(s_gesture.arrow,
                                 lv_color_hex(APP_MANAGER_GESTURE_ARROW_COLOR),
                                 0);
     lv_obj_set_style_text_font(s_gesture.arrow, LV_FONT_DEFAULT, 0);
+    lv_label_set_text(s_gesture.arrow, LV_SYMBOL_LEFT);
     lv_obj_add_flag(s_gesture.arrow, LV_OBJ_FLAG_IGNORE_LAYOUT |
                     LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(s_gesture.arrow, LV_OBJ_FLAG_CLICKABLE |

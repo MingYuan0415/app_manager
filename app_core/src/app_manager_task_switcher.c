@@ -446,9 +446,15 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_size(icon, 44, 44);
         lv_obj_set_style_radius(icon, 6, 0);
         lv_obj_set_style_bg_color(icon, lv_color_hex(0x101517), 0);
-        lv_obj_set_style_bg_opa(icon, LV_OPA_90, 0);
+        lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(icon, 0, 0);
-        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE |
+                           LV_OBJ_FLAG_CLICKABLE |
+                           LV_OBJ_FLAG_CLICK_FOCUSABLE |
+                           LV_OBJ_FLAG_GESTURE_BUBBLE |
+                           LV_OBJ_FLAG_SCROLL_CHAIN |
+                           LV_OBJ_FLAG_SCROLL_ELASTIC |
+                           LV_OBJ_FLAG_SCROLL_MOMENTUM);
         const lv_image_dsc_t *icon_image = NULL;
         if (task->icon_id != 0U &&
                 app_manager_get_image(task->icon_id, &icon_image) == ESP_OK &&
@@ -461,7 +467,12 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                 lv_obj_set_size(image, 40, 40);
                 lv_obj_center(image);
                 lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE |
-                                   LV_OBJ_FLAG_CLICKABLE);
+                                   LV_OBJ_FLAG_CLICKABLE |
+                                   LV_OBJ_FLAG_CLICK_FOCUSABLE |
+                                   LV_OBJ_FLAG_GESTURE_BUBBLE |
+                                   LV_OBJ_FLAG_SCROLL_CHAIN |
+                                   LV_OBJ_FLAG_SCROLL_ELASTIC |
+                                   LV_OBJ_FLAG_SCROLL_MOMENTUM);
             }
         }
         else
@@ -469,9 +480,9 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             lv_obj_t *symbol = lv_label_create(icon);
             if (symbol != NULL)
             {
-                lv_label_set_text(symbol, LV_SYMBOL_IMAGE);
                 lv_obj_set_style_text_font(symbol, LV_FONT_DEFAULT, 0);
                 lv_obj_set_style_text_color(symbol, lv_color_hex(0x4A555A), 0);
+                lv_label_set_text(symbol, LV_SYMBOL_IMAGE);
                 lv_obj_center(symbol);
             }
         }
@@ -480,14 +491,15 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
     lv_obj_t *name = lv_label_create(button);
     if (name != NULL)
     {
+        lv_obj_set_width(name, 0);
+        lv_obj_set_flex_grow(name, 1);
+        lv_obj_set_style_text_color(name, lv_color_hex(0xF4F7F8), 0);
+        lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY), 0);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_label_set_text_fmt(name, "%s%s",
                               task->display_name != NULL ?
                               task->display_name : task->app_id,
                               card->current ? " · 当前" : "");
-        lv_obj_set_flex_grow(name, 1);
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_set_style_text_color(name, lv_color_hex(0xF4F7F8), 0);
-        lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY), 0);
     }
 
     s_switcher.card_count++;
@@ -554,6 +566,15 @@ static void _switcher_content_event(lv_event_t *event)
 
     if (code == LV_EVENT_PRESSED)
     {
+        if (lv_obj_is_scrolling(s_switcher.content))
+        {
+            /* A press during a card animation belongs to the moving card or
+             * is an indeterminate background hit.  Do not let the content
+             * click handler dismiss the new switcher session on release. */
+            s_switcher.content_gesture_active = false;
+            s_switcher.content_click_suppressed = true;
+            return;
+        }
         lv_indev_t *indev = lv_event_get_indev(event);
         if (indev == NULL)
         {
@@ -807,17 +828,16 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_t *clear_text = lv_label_create(s_switcher.clear_button);
     if (clear_text != NULL)
     {
-        lv_label_set_text(clear_text, "清除");
         lv_obj_set_style_text_color(clear_text, lv_color_hex(0xF4F7F8), 0);
         lv_obj_set_style_text_font(clear_text,
                                    app_manager_get_font(APP_THEME_FONT_SMALL), 0);
+        lv_label_set_text(clear_text, "清除");
         lv_obj_center(clear_text);
     }
 
     s_switcher.empty_label = lv_label_create(s_switcher.root);
     if (s_switcher.empty_label != NULL)
     {
-        lv_label_set_text(s_switcher.empty_label, "暂无任务");
         lv_obj_set_width(s_switcher.empty_label, LV_PCT(100));
         lv_obj_set_style_text_align(s_switcher.empty_label,
                                     LV_TEXT_ALIGN_CENTER, 0);
@@ -826,6 +846,7 @@ esp_err_t app_manager_task_switcher_init(void *display)
         lv_obj_set_style_text_font(s_switcher.empty_label,
                                    app_manager_get_font(APP_THEME_FONT_BODY),
                                    0);
+        lv_label_set_text(s_switcher.empty_label, "暂无任务");
         lv_obj_align(s_switcher.empty_label, LV_ALIGN_CENTER, 0, 0);
         lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
     }
