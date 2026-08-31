@@ -73,8 +73,6 @@ typedef struct presentation_mock
     unsigned start_failures;
     unsigned starts;
     unsigned finishes;
-    unsigned capture_calls;
-    lv_obj_t *last_capture_screen;
     bool last_start_had_page_target;
     bool last_start_target_active;
     bool last_start_source_inactive;
@@ -102,7 +100,6 @@ static presentation_mock_t s_presentation;
 static FILE *s_lifecycle_log_output;
 static int s_saved_stderr = -1;
 static const char *s_callback_owner_app_id;
-static const lv_draw_buf_t *s_test_capture_result;
 
 static void _lifecycle_log_capture_begin(void)
 {
@@ -677,18 +674,6 @@ void app_manager_presentation_finish_now(void)
 bool app_manager_presentation_is_running(void)
 {
     return s_presentation.running;
-}
-
-esp_err_t app_manager_presentation_capture_source(
-    lv_obj_t *screen, const lv_draw_buf_t **snapshot)
-{
-    s_presentation.capture_calls++;
-    s_presentation.last_capture_screen = screen;
-    if (snapshot != NULL)
-    {
-        *snapshot = s_test_capture_result;
-    }
-    return s_test_capture_result != NULL ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
 }
 
 lv_result_t lv_draw_buf_init(lv_draw_buf_t *draw_buf, uint32_t width,
@@ -1583,8 +1568,6 @@ static void _test_empty_ops_are_noop(void)
 
 static void _test_recent_tasks_snapshot(void)
 {
-    static uint8_t s_test_source_pixels[368U * 448U * 2U];
-    static lv_draw_buf_t s_test_source_draw_buf;
     app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
     size_t count = 0U;
     nav_call_t call;
@@ -1612,85 +1595,40 @@ static void _test_recent_tasks_snapshot(void)
     assert(strcmp(tasks[0].display_name, "C") == 0);
     assert(tasks[0].icon_id == 0x5678U);
     assert(strcmp(tasks[0].page_id, "root") == 0);
-    assert(!tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "b") == 0);
     assert(tasks[1].icon_id == 0x1234U);
-    assert(!tasks[1].preview_valid);
 
-    /* Capture is unavailable by default; recent previews stay invalid. */
-    s_test_capture_result = NULL;
-    const unsigned captures_before_invalid =
-        s_presentation.capture_calls;
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
-    assert(s_presentation.capture_calls == captures_before_invalid + 1U);
-    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
-    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
-                                        &count) == ESP_OK);
-    assert(count == 2U);
-    assert(!tasks[0].preview_valid);
-
-    /* Enable source capture; leaving an app refreshes its preview. */
-    memset(s_test_source_pixels, 0xAA, sizeof(s_test_source_pixels));
-    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
-    s_test_source_draw_buf.header.w = 368U;
-    s_test_source_draw_buf.header.h = 448U;
-    s_test_source_draw_buf.header.stride = 368U * 2U;
-    s_test_source_draw_buf.data = s_test_source_pixels;
-    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
-    s_test_capture_result = &s_test_source_draw_buf;
-    const unsigned captures_before_valid = s_presentation.capture_calls;
     call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
-    assert(s_presentation.capture_calls == captures_before_valid + 1U);
-    assert(s_presentation.last_capture_screen == s_b_root.last_screen);
     call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
     assert(_navigate(&call) == ESP_OK);
     _trace_reset();
     call = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
     assert(_navigate(&call) == ESP_OK);
-    assert(s_presentation.capture_calls == captures_before_valid + 2U);
-    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
     assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "d") == 0);
-    assert(!tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "c") == 0);
-    assert(tasks[1].preview_valid);
-    assert(tasks[1].preview != NULL);
-    assert(tasks[1].preview->header.w == APP_MANAGER_RECENT_PREVIEW_WIDTH);
-    assert(tasks[1].preview->header.h == APP_MANAGER_RECENT_PREVIEW_HEIGHT);
-    assert(tasks[1].preview->header.stride ==
-           APP_MANAGER_RECENT_PREVIEW_WIDTH * 2U);
-    const uint8_t *pixels = tasks[1].preview->data;
-    assert(pixels[0] == 0xAAU && pixels[1] == 0xAAU);
-    assert(pixels[(APP_MANAGER_RECENT_PREVIEW_HEIGHT - 1U) *
-                  APP_MANAGER_RECENT_PREVIEW_WIDTH * 2U] == 0xAAU);
     assert(strcmp(tasks[2].app_id, "b") == 0);
-    assert(tasks[2].preview_valid);
 
-    /* A fifth task evicts the oldest background task and its preview. */
+    /* A fifth task evicts the oldest background task. */
     _trace_reset();
-    const unsigned captures_before_eviction = s_presentation.capture_calls;
     call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
     assert(_navigate(&call) == ESP_OK);
-    assert(s_presentation.capture_calls == captures_before_eviction + 1U);
-    assert(s_presentation.last_capture_screen != NULL);
     assert(!app_manager_is_page_present("b", "root"));
     assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "e") == 0);
-    assert(!tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "d") == 0);
-    assert(tasks[1].preview_valid);
     assert(strcmp(tasks[2].app_id, "c") == 0);
-    assert(tasks[2].preview_valid);
 
-    /* EXIT invalidates the preview binding; re-running recaptures it. */
+    /* EXIT removes the task; re-running restores it at MRU position. */
     _trace_reset();
     call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
     assert(_navigate(&call) == ESP_OK);
@@ -1699,19 +1637,14 @@ static void _test_recent_tasks_snapshot(void)
     assert(count == 2U);
     assert(strcmp(tasks[0].app_id, "d") == 0);
 
-    const unsigned captures_before_recapture = s_presentation.capture_calls;
     call = _request(APP_MANAGER_NAV_OP_RUN, "e", NULL);
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
-    /* RUN e captures d; RUN a captures e. */
-    assert(s_presentation.capture_calls == captures_before_recapture + 2U);
-    assert(s_presentation.last_capture_screen == s_e_root.last_screen);
     assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "e") == 0);
-    assert(tasks[0].preview_valid);
 
     /* Re-running an evicted task evicts the now-oldest background task. */
     _trace_reset();
@@ -1722,10 +1655,8 @@ static void _test_recent_tasks_snapshot(void)
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "b") == 0);
-    assert(!tasks[0].preview_valid);
 
     _trace_reset();
-    s_test_capture_result = NULL;
     call = _request(APP_MANAGER_NAV_OP_EXIT, "b", NULL);
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
@@ -1738,8 +1669,6 @@ static void _test_recent_tasks_snapshot(void)
 
 static void _test_product_eviction_recents(void)
 {
-    static uint8_t s_test_source_pixels[368U * 448U * 2U];
-    static lv_draw_buf_t s_test_source_draw_buf;
     app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
     size_t count = 0U;
     nav_call_t call;
@@ -1751,15 +1680,6 @@ static void _test_product_eviction_recents(void)
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
     assert(_navigate(&call) == ESP_OK);
-    memset(s_test_source_pixels, 0x55, sizeof(s_test_source_pixels));
-    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
-    s_test_source_draw_buf.header.w = 368U;
-    s_test_source_draw_buf.header.h = 448U;
-    s_test_source_draw_buf.header.stride = 368U * 2U;
-    s_test_source_draw_buf.data = s_test_source_pixels;
-    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
-    s_test_capture_result = &s_test_source_draw_buf;
-
     call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_RUN, "d", NULL);
@@ -1782,13 +1702,10 @@ static void _test_product_eviction_recents(void)
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "e") == 0);
-    assert(!tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "d") == 0);
-    assert(tasks[1].preview_valid);
     assert(strcmp(tasks[2].app_id, "c") == 0);
-    assert(tasks[2].preview_valid);
 
-    /* Leaving e refreshes its preview; the active task is never evicted. */
+    /* Leaving e keeps it resident; the active task is never evicted. */
     _trace_reset();
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
@@ -1796,14 +1713,10 @@ static void _test_product_eviction_recents(void)
                                         &count) == ESP_OK);
     assert(count == 3U);
     assert(strcmp(tasks[0].app_id, "e") == 0);
-    assert(tasks[0].preview_valid);
     assert(strcmp(tasks[1].app_id, "d") == 0);
-    assert(tasks[1].preview_valid);
     assert(strcmp(tasks[2].app_id, "c") == 0);
-    assert(tasks[2].preview_valid);
 
     _trace_reset();
-    s_test_capture_result = NULL;
     call = _request(APP_MANAGER_NAV_OP_EXIT, "e", NULL);
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_EXIT, "d", NULL);
@@ -1814,12 +1727,6 @@ static void _test_product_eviction_recents(void)
     assert(_navigate(&call) == ESP_OK);
 }
 
-static __attribute__((unused)) esp_err_t _capture_active_on_ui(void *context)
-{
-    (void)context;
-    return app_manager_lifecycle_capture_active_recents();
-}
-
 static __attribute__((unused)) esp_err_t _clear_tasks_on_ui(void *context)
 {
     (void)context;
@@ -1828,8 +1735,6 @@ static __attribute__((unused)) esp_err_t _clear_tasks_on_ui(void *context)
 
 static void _test_task_switcher_helpers(void)
 {
-    static uint8_t s_test_source_pixels[368U * 448U * 2U];
-    static lv_draw_buf_t s_test_source_draw_buf;
     app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
     size_t count = 0U;
     nav_call_t call;
@@ -1850,25 +1755,6 @@ static void _test_task_switcher_helpers(void)
     assert(strcmp(tasks[1].app_id, "b") == 0);
     assert(!tasks[1].active);
     assert(!tasks[1].cleanup_pending);
-
-    memset(s_test_source_pixels, 0x33, sizeof(s_test_source_pixels));
-    s_test_source_draw_buf.header.cf = LV_COLOR_FORMAT_RGB565;
-    s_test_source_draw_buf.header.w = 368U;
-    s_test_source_draw_buf.header.h = 448U;
-    s_test_source_draw_buf.header.stride = 368U * 2U;
-    s_test_source_draw_buf.data = s_test_source_pixels;
-    s_test_source_draw_buf.data_size = sizeof(s_test_source_pixels);
-    s_test_capture_result = &s_test_source_draw_buf;
-    const unsigned captures_before = s_presentation.capture_calls;
-    assert(app_manager_ui_call(_capture_active_on_ui, NULL,
-                               TEST_TIMEOUT_MS) == ESP_OK);
-    assert(s_presentation.capture_calls == captures_before + 1U);
-    assert(s_presentation.last_capture_screen == s_c_root.last_screen);
-    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
-                                        &count) == ESP_OK);
-    assert(count == 2U);
-    assert(strcmp(tasks[0].app_id, "c") == 0);
-    assert(tasks[0].preview_valid);
 
     call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
     assert(_navigate(&call) == ESP_OK);

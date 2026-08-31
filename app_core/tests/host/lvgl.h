@@ -97,7 +97,7 @@ typedef struct lv_image_dsc
 /** @brief Byte alignment required for draw-buffer data. */
 #define LV_DRAW_BUF_ALIGN 16U
 
-/** @brief Minimal fake LVGL draw buffer used by recent-tasks previews. */
+/** @brief Minimal fake LVGL draw buffer used by task-switcher tests. */
 typedef struct lv_draw_buf
 {
     lv_image_header_t header;

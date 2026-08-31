@@ -111,9 +111,8 @@ uint32_t    app_manager_get_running_apps(void);
  * @brief Copy the most-recently-used background task snapshot.
  *
  * Tasks are ordered from most recently used to oldest and exclude the home
- * application and hidden applications. Each preview is a fixed App
- * Manager-owned PSRAM draw buffer; `preview_valid` reports whether a captured
- * thumbnail is available for that task.
+ * application and hidden applications. Records contain application metadata
+ * only and do not retain screen pixels.
  *
  * @param tasks receives up to capacity copied task records.
  * @param capacity is the number of app_manager_recent_task_t slots in tasks.
@@ -405,6 +404,27 @@ esp_err_t app_manager_get_image(uint32_t semantic_id,
         .page_route_count = sizeof(routes) / sizeof((routes)[0]), \
         .flags = (app_flags), \
         .display_name = (nm), \
+    }
+
+/**
+ * @brief Export an application with launcher ordering and subtitle metadata.
+ * @param order is the stable product launcher order; zero means unspecified.
+ * @param subtitle is optional text shown below the display name.
+ */
+#define APP_MANAGER_APP_EXPORT_META(n, icon_value, nm, aid, root_id, app_flags, routes, order, subtitle) \
+    __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
+    static const app_manager_app_desc_t _app_manager_app_##n = \
+    { \
+        .name = #n, \
+        .icon_id = (icon_value), \
+        .id = (aid), \
+        .root_page_id = (root_id), \
+        .page_routes = (routes), \
+        .page_route_count = sizeof(routes) / sizeof((routes)[0]), \
+        .flags = (app_flags), \
+        .display_name = (nm), \
+        .launcher_order = (order), \
+        .launcher_subtitle = (subtitle), \
     }
 
 #ifdef __cplusplus

@@ -75,16 +75,6 @@ esp_err_t app_manager_lifecycle_running_count_call(void *opaque);
 esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque);
 
 /**
- * @brief Capture the current foreground task preview on the lifecycle worker.
- *
- * @note The task switcher calls this before building its cards so that every
- *       preview image refers to a freshly captured immutable slot.
- *
- * @return ESP_OK when a preview was captured or skipped, otherwise an error.
- */
-esp_err_t app_manager_lifecycle_capture_active_recents(void);
-
-/**
  * @brief Stop every eligible background task on the lifecycle worker.
  *
  * @note UI-worker context only, after the active task is Home. Destroys all

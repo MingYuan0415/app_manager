@@ -18,5 +18,13 @@
 #define APP_MANAGER_ID_SETUP    "setup"
 /** @brief Stable identifier of the weather application. */
 #define APP_MANAGER_ID_WEATHER  "weather"
+/** @brief Stable identifier of the clock application. */
+#define APP_MANAGER_ID_CLOCK    "clock"
+/** @brief Stable identifier of the recorder application. */
+#define APP_MANAGER_ID_RECORDER "recorder"
+/** @brief Stable identifier of the level application. */
+#define APP_MANAGER_ID_LEVEL    "level"
+/** @brief Stable identifier of the hidden diagnostics application. */
+#define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
 
 #endif /* __APP_MANAGER_IDS_H__ */

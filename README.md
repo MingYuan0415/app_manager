@@ -41,7 +41,6 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
-| `app_core/src/app_manager_recents.c` | 最近任务三槽 PSRAM 预览缓存与降采样 |
 | `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：卡片、上滑关闭、清除与生命周期协作 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
@@ -85,7 +84,7 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
 `app_manager_image_resource_config_t` 将产品语义 ID 映射
 到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
-复制该 ID，任务切换器在预览上叠加 40--48 px 图标，资源缺失或 ID 为零时回退 LVGL
+复制该 ID，任务切换器以 40--48 px 图标显示，资源缺失或 ID 为零时回退 LVGL
 symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
 BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
 始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
@@ -529,11 +528,10 @@ HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby �
 
 最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
 App 或 Page：它在 LVGL Sys Layer 创建全屏表面，原前台 App 保持运行且不收到
-PAUSE/UNMOUNT，触摸由切换器完全接管。打开时先调用
-`app_manager_lifecycle_capture_active_recents()` 采集当前前台任务预览，再经
+PAUSE/UNMOUNT，触摸由切换器完全接管。打开时经
 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含当前任务与
-`cleanup_pending` 状态）并构建横向卡片；每张卡片绑定固定预览 draw buffer，任何
-EXIT、淘汰、重新捕获、suspend 或 deinit 之前都先删除全部预览 Image。点击当前任务
+`cleanup_pending` 状态）并构建紧凑横向卡片；每张卡片显示应用图标和名称，不保留屏幕
+像素缓存。点击当前任务
 卡片或空白背景关闭切换器并回原任务；点击后台任务卡片通过普通 RUN 恢复（导航
 gateway 在执行前自动隐藏切换器）；上滑卡片经 `EXIT` 关闭该任务并原地刷新列表；
 横向滑动不跟手：卡片行永久禁用原生指针滚动（无 SCROLLABLE/scroll chain/snap），
@@ -550,21 +548,16 @@ gateway 在执行前自动隐藏切换器）；上滑卡片经 `EXIT` 关闭该�
 非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行前
 同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记保持
 可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列并销毁切换器对象，再
-进入页面 PAUSE；resume 后保持关闭。deinit 先删除切换器，再释放预览缓存和
-presentation Sys Layer 对象。
+进入页面 PAUSE；resume 后保持关闭。deinit 删除切换器和 presentation Sys Layer 对象。
 
 最近任务数据由 `app_manager_get_recent_tasks()` 提供：按 MRU 顺序返回最多
 `APP_MANAGER_MAX_RECENT_TASKS` 个非 pinned、非 hidden 的驻留 App，每项包含静态
-descriptor（含 `display_name`）、保留的当前 Page ID、`active` 与 `cleanup_pending`
-状态和固定预览 draw buffer。预览是 App Manager 私有 `app_manager_recents.c` 的三槽
-PSRAM 缓存（230 x 280 RGB565，约 386 KiB），在 App 即将离开前台时由 lifecycle
-调用 presentation 的 `app_manager_presentation_capture_source()` 采集全屏 source
-快照并最近邻降采样；转场快照不可用或页面不满足采集条件时保留旧预览。App 销毁
-（EXIT、淘汰、回滚清理、deinit）时通过 `_lifecycle_free_app()` 统一失效对应槽位。
+descriptor（含 `display_name` 和 `icon_id`）、保留的当前 Page ID、`active` 与
+`cleanup_pending` 状态。App 销毁（EXIT、淘汰、回滚清理、deinit）时由生命周期统一
+释放实例；图标缺失时切换器使用符号回退。
 清理失败的任务保留在列表中并标记 `cleanup_pending`，允许再次重试；处于该状态的
 实例从公共拓扑查询（`app_manager_is_page_present` 等）保守隐藏，但保留驻留计数、
-保留在 recent-tasks 列表中，下一次导航先重试其清理再继续。预览缓冲生命周期覆盖
-整个 manager 运行期，页面销毁不释放。
+保留在 recent-tasks 列表中，下一次导航先重试其清理再继续。
 
 Screen suspend 不播放动画：
 
@@ -736,7 +729,7 @@ STOP 成功后才清空对应 handle。
 Weather 的 root、forecast、alerts 和 alert-detail 使用类型化 ops；alert-detail 通过
 Typed Blob 接收预警标识并处理 NEWINTENT：已挂载实例立即刷新，后台实例保留复制后的参数
 并在 RESUME 时刷新。Weather 同时是订阅 handle、immutable snapshot 和 PAUSE 所有权的
-现有参考。其他 demo 保持 raw handler。
+现有参考。主页、应用目录、设置、网络设置、时钟、录音、水平仪和诊断页面均采用同一 typed ops 约定。
 
 ### 12.4 并发与资源边界
 

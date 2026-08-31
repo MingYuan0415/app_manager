@@ -43,10 +43,6 @@ extern "C" {
 #define APP_MANAGER_PAGE_STATE_BYTES CONFIG_APP_MANAGER_PAGE_STATE_BYTES
 /** Maximum tasks reported by the recent-tasks snapshot. */
 #define APP_MANAGER_MAX_RECENT_TASKS  3U
-/** Preview width in pixels of one retained task thumbnail. */
-#define APP_MANAGER_RECENT_PREVIEW_WIDTH 230U
-/** Preview height in pixels of one retained task thumbnail. */
-#define APP_MANAGER_RECENT_PREVIEW_HEIGHT 280U
 
 #ifdef __cplusplus
 static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
@@ -175,6 +171,8 @@ typedef struct app_manager_app_desc
     size_t page_route_count;      /**< Number of entries in page_routes. */
     uint32_t flags;               /**< Bitwise app_manager_app_flag_t values. */
     const char *display_name;     /**< Localized display name, or NULL to use name. */
+    uint16_t launcher_order;      /**< Stable order in the Applications page. */
+    const char *launcher_subtitle; /**< Optional launcher summary text. */
 } app_manager_app_desc_t;
 
 /** @brief Native screen-transition effects. */
@@ -248,9 +246,8 @@ typedef enum
 /**
  * @brief One task reported by the recent-tasks snapshot.
  *
- * The preview points to a fixed App Manager-owned PSRAM draw buffer that is
- * valid only until the owning application is destroyed or the manager stops.
- * Callers must never modify the preview data.
+ * The snapshot contains stable descriptor metadata only; it does not retain
+ * screen pixels.
  */
 typedef struct app_manager_recent_task
 {
@@ -258,8 +255,6 @@ typedef struct app_manager_recent_task
     const char *display_name;     /**< Localized name, or descriptor name. */
     uint32_t icon_id;             /**< Semantic application icon ID, or zero. */
     const char *page_id;          /**< Retained current page identifier. */
-    bool preview_valid;           /**< preview contains a captured thumbnail. */
-    const lv_draw_buf_t *preview; /**< Fixed preview draw buffer, or NULL. */
     bool active;                  /**< This task is the current foreground task. */
     bool cleanup_pending;         /**< Cleanup failed; the instance retains resources. */
 } app_manager_recent_task_t;

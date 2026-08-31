@@ -11,7 +11,6 @@ idf_component_register(
          "src/app_manager_presentation.c"
          "src/app_manager_lifecycle.c"
          "src/app_manager_lifecycle_api.c"
-         "src/app_manager_recents.c"
          "src/app_manager_task_switcher.c"
          "src/app_manager_display_diagnostics.c"
          "src/app_manager_lvgl_adapter.c"

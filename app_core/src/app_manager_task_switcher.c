@@ -16,7 +16,7 @@
 #include <string.h>
 
 #define APP_MANAGER_TASK_SWITCHER_CARD_WIDTH  230
-#define APP_MANAGER_TASK_SWITCHER_CARD_HEIGHT 336
+#define APP_MANAGER_TASK_SWITCHER_CARD_HEIGHT 104
 #define APP_MANAGER_TASK_SWITCHER_CARD_GAP    12
 #define APP_MANAGER_TASK_SWITCHER_CARD_PITCH  \
     (APP_MANAGER_TASK_SWITCHER_CARD_WIDTH + APP_MANAGER_TASK_SWITCHER_CARD_GAP)
@@ -211,8 +211,7 @@ static void _switcher_close_task(app_manager_task_switcher_card_t *card)
         return;
     }
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_MANAGING;
-    /* Drop every preview-bearing card first so the EXIT transition can never
-     * overwrite or invalidate a slot still bound to a visible image. */
+    /* Remove stale task objects before the lifecycle changes residency. */
     const char *app_id = card->app_id;
     _switcher_destroy_cards();
     lv_obj_clean(s_switcher.content);
@@ -420,24 +419,19 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
     lv_obj_set_style_transform_width(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_transform_height(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_set_style_pad_all(button, 8, 0);
-    lv_obj_set_style_pad_gap(button, 8, 0);
+    lv_obj_set_style_pad_all(button, 12, 0);
+    lv_obj_set_style_pad_gap(button, 12, 0);
     if (card->current)
     {
         lv_obj_set_style_border_width(button, 2, 0);
         lv_obj_set_style_border_color(button, lv_color_hex(0x4FC3F7), 0);
-        /* The preview is as wide as the card and overflows the 210 px
-         * content area by 10 px per side, covering the border during the
-         * main draw pass. Drawing the highlight border after the children
-         * keeps both vertical edges visible at rest; the default theme's
-         * pressed grow would otherwise make the border pop in and out. */
         lv_obj_set_style_border_post(button, true, 0);
     }
     else
     {
         lv_obj_set_style_border_width(button, 0, 0);
     }
-    lv_obj_set_flex_flow(button, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE |
@@ -446,53 +440,14 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                        LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_add_event_cb(button, _switcher_card_event, LV_EVENT_ALL, card);
 
-    if (task->preview_valid && task->preview != NULL)
-    {
-        lv_obj_t *preview = lv_image_create(button);
-        if (preview != NULL)
-        {
-            lv_image_set_src(preview, task->preview);
-            lv_obj_set_size(preview, APP_MANAGER_RECENT_PREVIEW_WIDTH,
-                            APP_MANAGER_RECENT_PREVIEW_HEIGHT);
-            lv_obj_remove_flag(preview, LV_OBJ_FLAG_SCROLLABLE);
-        }
-    }
-    else
-    {
-        lv_obj_t *placeholder = lv_obj_create(button);
-        if (placeholder != NULL)
-        {
-            lv_obj_set_size(placeholder, APP_MANAGER_RECENT_PREVIEW_WIDTH,
-                            APP_MANAGER_RECENT_PREVIEW_HEIGHT);
-            lv_obj_set_style_bg_color(placeholder, lv_color_hex(0x101517), 0);
-            lv_obj_set_style_bg_opa(placeholder, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(placeholder, 2, 0);
-            lv_obj_remove_flag(placeholder,
-                               LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_t *symbol = lv_label_create(placeholder);
-            if (symbol != NULL)
-            {
-                lv_label_set_text(symbol, LV_SYMBOL_IMAGE);
-                lv_obj_set_style_text_font(symbol, LV_FONT_DEFAULT, 0);
-                lv_obj_set_style_text_color(symbol, lv_color_hex(0x4A555A), 0);
-                lv_obj_center(symbol);
-            }
-        }
-    }
-
-    /* The icon is an overlay so the existing preview/card geometry remains
-     * stable.  Missing or zero IDs intentionally use the same neutral symbol
-     * fallback as an unavailable preview. */
     lv_obj_t *icon = lv_obj_create(button);
     if (icon != NULL)
     {
         lv_obj_set_size(icon, 44, 44);
-        lv_obj_set_pos(icon, 14, 14);
         lv_obj_set_style_radius(icon, 6, 0);
         lv_obj_set_style_bg_color(icon, lv_color_hex(0x101517), 0);
         lv_obj_set_style_bg_opa(icon, LV_OPA_90, 0);
         lv_obj_set_style_border_width(icon, 0, 0);
-        lv_obj_add_flag(icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
         lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         const lv_image_dsc_t *icon_image = NULL;
         if (task->icon_id != 0U &&
@@ -529,8 +484,8 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                               task->display_name != NULL ?
                               task->display_name : task->app_id,
                               card->current ? " · 当前" : "");
-        lv_obj_set_width(name, LV_PCT(100));
-        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_flex_grow(name, 1);
+        lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_set_style_text_color(name, lv_color_hex(0xF4F7F8), 0);
         lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY), 0);
     }
@@ -545,11 +500,9 @@ static void _switcher_rebuild(void)
     {
         return;
     }
-    /* Destroy every preview-bearing card before the capture so a freed slot
-     * can never be overwritten while an image still references it. */
+    /* Rebuild from the latest lifecycle snapshot. */
     _switcher_destroy_cards();
     lv_obj_clean(s_switcher.content);
-    (void)app_manager_lifecycle_capture_active_recents();
     app_manager_lifecycle_request_t request =
     {
         .tasks = s_switcher.tasks,
@@ -706,8 +659,7 @@ static void _switcher_clear_clicked(lv_event_t *event)
         return;
     }
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_MANAGING;
-    /* Drop every preview-bearing card before the Home activation captures
-     * the leaving foreground task. */
+    /* Remove stale task objects before activating Home. */
     _switcher_destroy_cards();
     lv_obj_clean(s_switcher.content);
     if (s_switcher.empty_label != NULL)
@@ -909,7 +861,6 @@ esp_err_t app_manager_task_switcher_show(void)
         _switcher_hide();
         return ESP_OK;
     }
-    (void)app_manager_lifecycle_capture_active_recents();
     app_manager_lifecycle_request_t request =
     {
         .tasks = s_switcher.tasks,

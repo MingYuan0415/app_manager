@@ -17,18 +17,17 @@ extern "C" {
 esp_err_t app_manager_task_switcher_init(void *display);
 
 /**
- * @brief Delete the task-switcher surface and every preview reference.
+ * @brief Delete the task-switcher surface.
  * @return ESP_OK when released, otherwise an ESP-IDF error.
- * @note Call only from the LVGL worker before the lifecycle releases the
- *       recent-tasks preview cache.
+ * @note Call only from the LVGL worker.
  */
 esp_err_t app_manager_task_switcher_deinit(void);
 
 /**
  * @brief Open the task switcher, or close it when already visible.
  *
- * Captures the current foreground task preview, copies the MRU task list and
- * builds the cards before the surface becomes interactive. A repeated open
+ * Copies the MRU task list and builds the cards before the surface becomes
+ * interactive. A repeated open
  * while visible closes the surface back to the previous application.
  *
  * @return ESP_OK when the surface reached the intended state.

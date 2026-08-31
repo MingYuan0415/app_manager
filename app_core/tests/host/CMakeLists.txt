@@ -93,7 +93,6 @@ function(add_lifecycle_test name target lifecycle_log)
         "${APP_CORE_DIR}/src/app_manager_lifecycle_api.c"
         "${APP_CORE_DIR}/src/app_manager_nav_model.c"
         "${APP_CORE_DIR}/src/app_manager_navigation.c"
-        "${APP_CORE_DIR}/src/app_manager_recents.c"
     )
     configure_host_test(${target})
     target_compile_definitions(${target} PRIVATE

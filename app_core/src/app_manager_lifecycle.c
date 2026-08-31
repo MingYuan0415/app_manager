@@ -2,15 +2,15 @@
 #define DBG_LVL DBG_INFO
 
 #ifndef HOST_TEST
-    #include "mt_log.h"
-    #include "freertos/FreeRTOS.h"
-    #include "freertos/task.h"
+#include "mt_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #else
-    #include <stdio.h>
-    #include <unistd.h>
-    #define LOG_E(fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
-    #define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
-    #define LOG_I(fmt, ...) fprintf(stderr, "[I][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+#include <stdio.h>
+#include <unistd.h>
+#define LOG_E(fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+#define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+#define LOG_I(fmt, ...) fprintf(stderr, "[I][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
 #endif
 
 #include "app_manager.h"
@@ -20,7 +20,6 @@
 #include "app_manager_mailbox.h"
 #include "app_manager_nav_model.h"
 #include "app_manager_presentation.h"
-#include "app_manager_recents.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -102,7 +101,7 @@ static atomic_uint s_screen_accesses;
 static atomic_uint s_paused_running_apps;
 
 #ifdef HOST_TEST
-    static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
+static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
 #endif
 
 #if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
@@ -622,10 +621,6 @@ static void _lifecycle_activate_app(app_manager_app_node_t *app)
 static esp_err_t _lifecycle_free_app(app_manager_app_node_t *app)
 {
     esp_err_t result = ESP_OK;
-    if (app->descriptor != NULL)
-    {
-        app_manager_recents_invalidate(app->descriptor->id);
-    }
     for (app_manager_page_node_t *page = app->current_page;
             page != NULL; page = page->previous)
     {
@@ -1553,31 +1548,6 @@ static esp_err_t _lifecycle_prepare_target(app_manager_page_node_t *target,
     return result;
 }
 
-static void _lifecycle_capture_recents_source(
-    app_manager_app_node_t *source_app)
-{
-    app_manager_page_node_t *source_page = NULL;
-    const lv_draw_buf_t *snapshot = NULL;
-
-    if (source_app == NULL || source_app->descriptor == NULL ||
-            (source_app->descriptor->flags &
-             (APP_MANAGER_APP_FLAG_PINNED | APP_MANAGER_APP_FLAG_HIDDEN)) !=
-            0U ||
-            source_app->current_page == NULL)
-    {
-        return;
-    }
-    source_page = source_app->current_page;
-    if (!source_page->mounted || source_page->screen == NULL ||
-            app_manager_presentation_capture_source(
-                source_page->screen, &snapshot) != ESP_OK ||
-            snapshot == NULL)
-    {
-        return;
-    }
-    app_manager_recents_capture(source_app->descriptor->id, snapshot);
-}
-
 static esp_err_t _lifecycle_run_app(
     const app_manager_nav_request_t *request,
     app_manager_lifecycle_nav_complete_t completion, void *context)
@@ -1614,10 +1584,6 @@ static esp_err_t _lifecycle_run_app(
     {
         completion(ESP_OK, context);
         return ESP_OK;
-    }
-    if (target_app != source_app)
-    {
-        _lifecycle_capture_recents_source(source_app);
     }
     result = _lifecycle_prepare_target(target_page, source_page);
     if (result != ESP_OK)
@@ -1715,11 +1681,6 @@ static esp_err_t _lifecycle_open_page(
                 return result;
             }
         }
-    }
-
-    if (target_app != source_app)
-    {
-        _lifecycle_capture_recents_source(source_app);
     }
 
     result = _lifecycle_prepare_target(target_page, source_page);
@@ -2130,17 +2091,10 @@ esp_err_t app_manager_lifecycle_init(void)
     {
         goto fail;
     }
-    result = app_manager_recents_init();
-    if (result != ESP_OK)
-    {
-        app_manager_nav_model_deinit(&s_model);
-        goto fail;
-    }
     if (app_manager_presentation_neutral_screen() == NULL)
     {
         result = ESP_ERR_INVALID_STATE;
         app_manager_nav_model_deinit(&s_model);
-        app_manager_recents_deinit();
         goto fail;
     }
     memset(&s_transition, 0, sizeof(s_transition));
@@ -2190,7 +2144,6 @@ void app_manager_lifecycle_force_deinit(void)
         app_manager_presentation_finish_now();
         _lifecycle_force_release_nodes();
         app_manager_nav_model_deinit(&s_model);
-        app_manager_recents_deinit();
     }
     memset(&s_transition, 0, sizeof(s_transition));
     s_handler_page = NULL;
@@ -2254,7 +2207,6 @@ esp_err_t app_manager_lifecycle_deinit(void)
         }
     }
     app_manager_nav_model_deinit(&s_model);
-    app_manager_recents_deinit();
     s_initialized = false;
     s_tearing_down = false;
     s_recovery_pending = false;
@@ -2682,25 +2634,11 @@ esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque)
         task->page_id = app->current_page != NULL &&
                         app->current_page->route != NULL ?
                         app->current_page->route->page_id : NULL;
-        task->preview_valid = app_manager_recents_lookup(task->app_id,
-                              &task->preview);
         task->active = app == s_model.active_app;
         task->cleanup_pending = app->cleanup_pending;
         filled++;
     }
     request->tasks_filled = filled;
-    return ESP_OK;
-}
-
-esp_err_t app_manager_lifecycle_capture_active_recents(void)
-{
-    if (!s_initialized || s_tearing_down ||
-            !app_manager_mailbox_is_worker() ||
-            !_lifecycle_topology_query_allowed())
-    {
-        return ESP_ERR_INVALID_STATE;
-    }
-    _lifecycle_capture_recents_source(s_model.active_app);
     return ESP_OK;
 }
 
