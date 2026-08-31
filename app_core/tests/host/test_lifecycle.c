@@ -27,7 +27,7 @@ typedef struct page_state
 {
     const char *name;
     const char *app_id;
-    unsigned messages[APP_MANAGER_MSG_USER_END];
+    unsigned messages[APP_MANAGER_MSG_COUNT];
     unsigned pause_failures;
     unsigned stop_failures;
     bool mounted;
@@ -100,6 +100,11 @@ static presentation_mock_t s_presentation;
 static FILE *s_lifecycle_log_output;
 static int s_saved_stderr = -1;
 static const char *s_callback_owner_app_id;
+
+_Static_assert(APP_MANAGER_MSG_COUNT == APP_MANAGER_MSG_ONNEWINTENT + 1,
+               "Lifecycle message count must follow the final message");
+_Static_assert(APP_MANAGER_MSG_USER_END == APP_MANAGER_MSG_COUNT,
+               "Legacy lifecycle boundary must remain compatible");
 
 static void _lifecycle_log_capture_begin(void)
 {
@@ -194,7 +199,7 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     assert(s_callback_owner_app_id != NULL);
     assert(strcmp(s_callback_owner_app_id, state->app_id) == 0);
     assert(app_manager_this_page_userdata() == user_data);
-    assert(message < APP_MANAGER_MSG_USER_END);
+    assert(message < APP_MANAGER_MSG_COUNT);
     assert(s_trace_count < TEST_TRACE_CAPACITY);
     s_trace[s_trace_count++] = (trace_event_t)
     {
@@ -231,7 +236,6 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     case APP_MANAGER_MSG_ONNEWINTENT:
         state->new_intent_had_screen = screen != NULL;
         break;
-    case APP_MANAGER_MSG_USER_END:
     default:
         assert(false);
         break;
@@ -284,7 +288,6 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
         break;
     case APP_MANAGER_MSG_ONSTOP:
     case APP_MANAGER_MSG_ONNEWINTENT:
-    case APP_MANAGER_MSG_USER_END:
     default:
         break;
     }

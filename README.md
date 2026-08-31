@@ -651,6 +651,9 @@ App Manager Kconfig 只保留 diagnostics 和显示静态资源/功能 gate。
 输出 `START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT` 的 INFO trace。关闭时编译器会
 裁剪事件名表和日志调用，不影响 lifecycle callback、observer 或状态迁移。
 
+`APP_MANAGER_MSG_COUNT` 是生命周期消息数量和数组边界，不是可分发消息。旧名称
+`APP_MANAGER_MSG_USER_END` 仅作为源码兼容别名保留，新代码不得使用。
+
 ## 12. 应用开发契约
 
 本节描述 `layers/apps` 中内置 App/Page 的现行契约。公共类型和容量以
@@ -670,8 +673,9 @@ App Manager Kconfig 只保留 diagnostics 和显示静态资源/功能 gate。
 | 参数 | START 或 NEWINTENT，以及所需 UI 阶段 | Typed Blob、route data |
 
 Page definition 必须且只能设置 `.ops` 或 `.handler`。类型化 ops 用于普通生命周期阶段；
-raw handler 保留直接接收 `app_manager_msg_type_t` 和 route `user_data` 的兼容能力。未提供
-的 ops 回调是成功的 no-op。
+raw handler 仅保留直接接收 `app_manager_msg_type_t` 和 route `user_data` 的兼容能力，不作为
+新应用首选接口。应用只需实现实际需要的 ops，未提供的回调是成功的 no-op。`STOP` 即使当前
+产品页面暂无使用，仍保留为最终实例清理边界。
 
 Page state 只保存实例私有状态，其 `memory_size` 不超过
 `APP_MANAGER_PAGE_STATE_BYTES`；大 payload 独立分配，不放入 Page state，也不通过跨实例

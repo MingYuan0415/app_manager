@@ -105,7 +105,7 @@ static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
 #endif
 
 #if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
-static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_USER_END] =
+static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_COUNT] =
 {
     [APP_MANAGER_MSG_ONSTART] = "START",
     [APP_MANAGER_MSG_ONMOUNT] = "MOUNT",
@@ -115,6 +115,9 @@ static const char *const s_lifecycle_message_names[APP_MANAGER_MSG_USER_END] =
     [APP_MANAGER_MSG_ONSTOP] = "STOP",
     [APP_MANAGER_MSG_ONNEWINTENT] = "NEW_INTENT",
 };
+_Static_assert(sizeof(s_lifecycle_message_names) /
+               sizeof(s_lifecycle_message_names[0]) == APP_MANAGER_MSG_COUNT,
+               "Lifecycle message names must cover every message");
 #endif
 
 static bool _lifecycle_topology_query_allowed(void);
@@ -312,7 +315,6 @@ static void _lifecycle_call_ops(const app_manager_page_ops_t *ops,
             ops->new_intent(&context);
         }
         break;
-    case APP_MANAGER_MSG_USER_END:
     default:
         break;
     }
@@ -411,7 +413,6 @@ static esp_err_t _lifecycle_call_handler(app_manager_page_node_t *page,
         page->started = false;
         break;
     case APP_MANAGER_MSG_ONNEWINTENT:
-    case APP_MANAGER_MSG_USER_END:
     default:
         break;
     }
@@ -2095,7 +2096,7 @@ esp_err_t app_manager_lifecycle_init(void)
     memset(&s_transition, 0, sizeof(s_transition));
     s_handler_page = NULL;
     s_handler_cleanup_error = ESP_OK;
-    s_handler_message = APP_MANAGER_MSG_USER_END;
+    s_handler_message = APP_MANAGER_MSG_COUNT;
     s_tearing_down = false;
     s_recovery_pending = false;
     s_recovery_app = NULL;
@@ -2143,7 +2144,7 @@ void app_manager_lifecycle_force_deinit(void)
     memset(&s_transition, 0, sizeof(s_transition));
     s_handler_page = NULL;
     s_handler_cleanup_error = ESP_OK;
-    s_handler_message = APP_MANAGER_MSG_USER_END;
+    s_handler_message = APP_MANAGER_MSG_COUNT;
     s_tearing_down = false;
     s_recovery_pending = false;
     s_recovery_app = NULL;

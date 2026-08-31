@@ -82,8 +82,14 @@ typedef enum
     APP_MANAGER_MSG_ONUNMOUNT,  /**< Destroy UI owned by the page screen. */
     APP_MANAGER_MSG_ONSTOP,     /**< Release the remaining retained page state. */
     APP_MANAGER_MSG_ONNEWINTENT, /**< Receive updated navigation arguments. */
-    APP_MANAGER_MSG_USER_END,   /**< First application-defined message value. */
+    APP_MANAGER_MSG_COUNT,      /**< Number of lifecycle messages; not a message. */
 } app_manager_msg_type_t;
+
+/**
+ * @brief Compatibility alias for the former lifecycle message boundary.
+ * @deprecated Use APP_MANAGER_MSG_COUNT. This value is not dispatched.
+ */
+#define APP_MANAGER_MSG_USER_END APP_MANAGER_MSG_COUNT
 
 /**
  * @brief Receive one lifecycle message for an application page.
@@ -122,7 +128,17 @@ typedef void (*app_manager_page_stage_cb_t)(
 typedef esp_err_t (*app_manager_page_cleanup_cb_t)(
     const app_manager_page_context_t *context);
 
-/** @brief Optional typed lifecycle operations for one Page definition. */
+/**
+ * @brief Optional typed lifecycle operations for one Page definition.
+ *
+ * Applications implement only the stages required by their resource model;
+ * omitted callbacks are successful no-ops. Typical declarations are:
+ * - static Page: mount and unmount;
+ * - refreshing Page: mount, resume, pause and unmount;
+ * - retained session Page: start, the required visual/foreground stages and
+ *   stop;
+ * - argument Page: new_intent together with the stages needed to render it.
+ */
 typedef struct app_manager_page_ops
 {
     app_manager_page_stage_cb_t start; /**< Initialize nonvisual state. */
