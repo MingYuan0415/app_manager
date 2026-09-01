@@ -99,6 +99,8 @@ static atomic_bool s_transitioning;
 static atomic_int s_screen_phase = ATOMIC_VAR_INIT(LIFECYCLE_SCREEN_CLOSED);
 static atomic_uint s_screen_accesses;
 static atomic_uint s_paused_running_apps;
+static atomic_bool s_active_home_valid;
+static atomic_bool s_active_is_home;
 
 #ifdef HOST_TEST
 static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
@@ -121,6 +123,16 @@ _Static_assert(sizeof(s_lifecycle_message_names) /
 #endif
 
 static bool _lifecycle_topology_query_allowed(void);
+
+static void _lifecycle_publish_active_home(void)
+{
+    const app_manager_app_node_t *active = s_model.active_app;
+    const bool is_home = active != NULL && active->descriptor != NULL &&
+                         active->descriptor->id != NULL &&
+                         strcmp(active->descriptor->id, APP_MANAGER_ID_HOME) == 0;
+    atomic_store_explicit(&s_active_is_home, is_home, memory_order_release);
+    atomic_store_explicit(&s_active_home_valid, true, memory_order_release);
+}
 
 static app_manager_transition_t _lifecycle_default_transition(
     app_manager_transition_effect_t effect)
@@ -612,6 +624,7 @@ static void _lifecycle_activate_app(app_manager_app_node_t *app)
         app_manager_nav_model_push_app(&s_model, app);
     }
     app->active = true;
+    _lifecycle_publish_active_home();
 }
 
 static esp_err_t _lifecycle_free_app(app_manager_app_node_t *app)
@@ -1081,6 +1094,7 @@ static void _lifecycle_commit_target(void)
     else
     {
         s_model.active_app = NULL;
+        _lifecycle_publish_active_home();
     }
 }
 
@@ -2102,6 +2116,8 @@ esp_err_t app_manager_lifecycle_init(void)
     s_recovery_app = NULL;
     s_recovery_page = NULL;
     s_target_recovery_pending = false;
+    atomic_store(&s_active_home_valid, false);
+    atomic_store(&s_active_is_home, false);
     atomic_store(&s_paused_running_apps, 0U);
     atomic_store(&s_transitioning, false);
     s_initialized = true;
@@ -2150,6 +2166,8 @@ void app_manager_lifecycle_force_deinit(void)
     s_recovery_app = NULL;
     s_recovery_page = NULL;
     s_target_recovery_pending = false;
+    atomic_store(&s_active_home_valid, false);
+    atomic_store(&s_active_is_home, false);
     s_initialized = false;
     atomic_store(&s_transitioning, false);
     atomic_store(&s_paused_running_apps, 0U);
@@ -2209,6 +2227,8 @@ esp_err_t app_manager_lifecycle_deinit(void)
     s_recovery_app = NULL;
     s_recovery_page = NULL;
     s_target_recovery_pending = false;
+    atomic_store(&s_active_home_valid, false);
+    atomic_store(&s_active_is_home, false);
     atomic_store(&s_paused_running_apps, 0U);
     return ESP_OK;
 }
@@ -2217,6 +2237,18 @@ bool app_manager_lifecycle_screen_mutation_allowed(void)
 {
     return atomic_load_explicit(&s_screen_phase, memory_order_acquire) ==
            LIFECYCLE_SCREEN_ACTIVE;
+}
+
+bool app_manager_lifecycle_active_is_home_snapshot(bool *valid)
+{
+    const bool ready = atomic_load_explicit(&s_active_home_valid,
+                                            memory_order_acquire);
+    if (valid != NULL)
+    {
+        *valid = ready;
+    }
+    return ready && atomic_load_explicit(&s_active_is_home,
+                                         memory_order_acquire);
 }
 
 bool app_manager_lifecycle_screen_access_begin(void)

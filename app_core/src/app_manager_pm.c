@@ -12,6 +12,7 @@
 #include "app_manager_control.h"
 #include "app_manager_display.h"
 #include "app_manager_navigation.h"
+#include "app_manager_lifecycle.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
 #ifndef HOST_TEST
@@ -23,6 +24,18 @@
 static void _control_home_click_cancel(void);
 static void _control_home_click_on_active(uint32_t generation,
         int64_t event_us);
+
+static app_manager_home_action_t _control_home_single_action(void)
+{
+    bool valid = false;
+    const bool is_home = app_manager_lifecycle_active_is_home_snapshot(&valid);
+    if (!valid)
+    {
+        LOG_W("HOME single click ignored: active snapshot unavailable");
+        return APP_MANAGER_HOME_ACTION_NONE;
+    }
+    return is_home ? APP_MANAGER_HOME_ACTION_MENU : APP_MANAGER_HOME_ACTION_ROOT;
+}
 
 void app_manager_control_state_set(app_manager_pm_state_t state)
 {
@@ -601,7 +614,8 @@ static void _control_home_action_push(uint32_t action)
                 const uint32_t slot =
                     (s_home_action_head + index - 1U) %
                     APP_MANAGER_HOME_ACTION_FIFO_DEPTH;
-                if (s_home_action_fifo[slot] == APP_MANAGER_HOME_ACTION_ROOT)
+                if (s_home_action_fifo[slot] == APP_MANAGER_HOME_ACTION_ROOT ||
+                        s_home_action_fifo[slot] == APP_MANAGER_HOME_ACTION_MENU)
                 {
                     s_home_action_fifo[slot] =
                         APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
@@ -652,7 +666,7 @@ static void _control_home_click_on_active(uint32_t generation,
             }
             else
             {
-                _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+                _control_home_action_push(_control_home_single_action());
             }
             return;
         }
@@ -666,7 +680,7 @@ static void _control_home_click_on_active(uint32_t generation,
         }
         /* The previous window expired before this click; resolve the single
          * press first and treat this click as the start of a new window. */
-        _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+        _control_home_action_push(_control_home_single_action());
     }
     atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_WAIT_SECOND);
     atomic_store(&s_home_click_generation, generation);
@@ -713,7 +727,7 @@ void app_manager_control_process_pending_home(void)
     if (atomic_load(&s_home_click_state) == APP_MANAGER_HOME_CLICK_WAIT_SECOND &&
             now_us > s_home_click_deadline_us)
     {
-        _control_home_action_push(APP_MANAGER_HOME_ACTION_ROOT);
+        _control_home_action_push(_control_home_single_action());
         atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_IDLE);
         s_home_click_event_us = 0;
         s_home_click_deadline_us = 0;
@@ -738,6 +752,7 @@ void app_manager_control_process_pending_home(void)
         s_home_action_fifo[s_home_action_head % APP_MANAGER_HOME_ACTION_FIFO_DEPTH];
     const bool task_switcher =
         action == APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
+    const bool menu = action == APP_MANAGER_HOME_ACTION_MENU;
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s_home_inflight, &expected, true))
     {
@@ -750,6 +765,16 @@ void app_manager_control_process_pending_home(void)
         result = app_manager_navigation_submit_system_op(
                      APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW,
                      _control_run_home_complete, NULL);
+    }
+    else if (menu)
+    {
+        const app_manager_nav_request_t request =
+        {
+            .operation = APP_MANAGER_NAV_OP_RUN,
+            .app_id = APP_MANAGER_ID_MENU,
+        };
+        result = app_manager_navigate_async(&request,
+                                            _control_run_home_complete, NULL);
     }
     else
     {

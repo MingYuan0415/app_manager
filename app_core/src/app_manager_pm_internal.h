@@ -47,6 +47,7 @@ typedef enum
 {
     APP_MANAGER_HOME_ACTION_NONE = 0,     /**< Empty FIFO slot. */
     APP_MANAGER_HOME_ACTION_ROOT,         /**< OPEN_PAGE home/root. */
+    APP_MANAGER_HOME_ACTION_MENU,         /**< OPEN_APP applications menu. */
     APP_MANAGER_HOME_ACTION_TASK_SWITCHER, /**< SHOW system task switcher. */
 } app_manager_home_action_t;
 

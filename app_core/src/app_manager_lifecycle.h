@@ -117,6 +117,12 @@ esp_err_t app_manager_lifecycle_shutdown_begin_and_wait(void);
  */
 bool app_manager_lifecycle_screen_running_snapshot(uint32_t *count);
 
+/** @brief Read the last stable foreground Home classification.
+ * @param valid receives false until the first stable foreground commit.
+ * @return true when the active application is Home.
+ */
+bool app_manager_lifecycle_active_is_home_snapshot(bool *valid);
+
 #ifdef HOST_TEST
 /** @brief Observation points around a host-test lifecycle callback. */
 typedef enum app_manager_lifecycle_observer_phase

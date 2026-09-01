@@ -194,6 +194,7 @@ static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
     lv_indev_reset(s_touch, NULL);
     (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
     lv_indev_enable(s_touch, true);
+    LOG_D("touch input enabled");
     return ESP_OK;
 }
 
@@ -207,6 +208,7 @@ static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
     app_manager_back_gesture_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
+    LOG_D("touch input disabled");
     return ESP_OK;
 }
 

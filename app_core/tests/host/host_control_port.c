@@ -1,6 +1,7 @@
 #include "host_control_port.h"
 
 #include <assert.h>
+#include <stdbool.h>
 #include <pthread.h>
 #include <stdlib.h>
 
@@ -91,4 +92,13 @@ void vTaskDelete(TaskHandle_t task)
 int64_t esp_timer_get_time(void)
 {
     return atomic_load(&g_host_time_us);
+}
+
+bool app_manager_lifecycle_active_is_home_snapshot(bool *valid)
+{
+    if (valid != NULL)
+    {
+        *valid = true;
+    }
+    return false;
 }
