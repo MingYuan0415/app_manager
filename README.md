@@ -623,6 +623,8 @@ POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。st
 都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动
 的 input/PM admission 在 `app_manager_init()` 后仍保持关闭；`app_manager_startup_commit()`
 注册物理输入并从首屏真正可操作的时刻重置 inactivity epoch。
+正常亮度、DIM、熄屏和待机延迟由 App Manager 自身持久化；恢复出厂在初始化前调用
+`app_manager_factory_reset_persisted_state()` 幂等删除这些设置，后续初始化恢复默认值。
 
 显示恢复遵循 `resume_prepare -> adapter resume -> Page MOUNT/RESUME -> refresh/fence ->
 resume_commit`。面板显示和物理触摸只在完整恢复帧提交后启用，避免旧帧、触摸穿透和

@@ -3,6 +3,7 @@
 
 #include "app_manager.h"
 #include "app_manager_config.h"
+#include "app_manager_persistence.h"
 
 #ifndef HOST_TEST
     #include "esp_attr.h"
@@ -70,15 +71,6 @@ typedef struct app_manager_home_click_record
 #define HOME_SEQUENCE_WAKE_MASK          (UINT32_C(1) << 31)
 /** @brief Generation bits stored in the HOME sequence state. */
 #define HOME_SEQUENCE_GENERATION_MASK    (HOME_SEQUENCE_WAKE_MASK - 1U)
-
-/** @brief NVS key storing the normal display brightness. */
-#define NVS_KEY_BRIGHTNESS               "brightness"
-/** @brief NVS key storing the active-to-dim timeout. */
-#define NVS_KEY_DIM_TIMEOUT              "pm_dim_to"
-/** @brief NVS key storing the dim-to-off timeout. */
-#define NVS_KEY_OFF_TIMEOUT              "pm_timeout"
-/** @brief NVS key storing the standby delay. */
-#define NVS_KEY_STANDBY_TIMEOUT          "pm_stby_dly"
 
 /** @brief Commands serialized by the application-control task. */
 typedef enum

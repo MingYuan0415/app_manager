@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "src/app_manager_pm.c"
+         "src/app_manager_persistence.c"
          "src/app_manager_pm_api.c"
          "src/app_manager_pm_init.c"
          "src/app_manager_pm_worker.c"
@@ -26,6 +27,7 @@ idf_component_register(
         esp_lcd
         esp_driver_gpio
         mt_log
+        nvs_flash
         nv_storage
         esp_timer
         freertos

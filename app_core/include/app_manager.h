@@ -229,6 +229,16 @@ esp_err_t app_manager_screen_set_brightness_temp(uint8_t brightness);
  */
 uint8_t   app_manager_screen_get_brightness(void);
 
+/**
+ * @brief Delete every App Manager setting persisted in NVS.
+ *
+ * This idempotent factory-reset operation is valid after nv_storage_init()
+ * and before App Manager initialization.
+ *
+ * @return ESP_OK when all settings are absent, otherwise an NVS error.
+ */
+esp_err_t app_manager_factory_reset_persisted_state(void);
+
 /* ── 按键（input_cb_t / input_ops_t 定义在 app_manager_types.h） ── */
 
 /**

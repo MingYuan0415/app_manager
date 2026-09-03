@@ -83,6 +83,16 @@ add_executable(test_nav_model
 configure_host_test(test_nav_model)
 add_host_test(nav_model test_nav_model)
 
+add_executable(test_persistence
+    test_persistence.c
+    "${APP_CORE_DIR}/src/app_manager_persistence.c"
+)
+configure_host_test(test_persistence)
+target_include_directories(test_persistence PRIVATE
+    "${APP_CORE_DIR}/../../middleware/components/nv_storage/include"
+)
+add_host_test(persistence test_persistence)
+
 function(add_lifecycle_test name target lifecycle_log)
     add_executable(${target}
         test_lifecycle.c
