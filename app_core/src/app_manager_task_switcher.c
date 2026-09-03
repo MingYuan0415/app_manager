@@ -11,20 +11,33 @@
     #include "app_manager_mailbox.h"
 #endif
 
+#include "esp_heap_caps.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#define APP_MANAGER_TASK_SWITCHER_CARD_WIDTH  230
-#define APP_MANAGER_TASK_SWITCHER_CARD_HEIGHT 104
-#define APP_MANAGER_TASK_SWITCHER_CARD_GAP    12
-#define APP_MANAGER_TASK_SWITCHER_CARD_PITCH  \
-    (APP_MANAGER_TASK_SWITCHER_CARD_WIDTH + APP_MANAGER_TASK_SWITCHER_CARD_GAP)
-#define APP_MANAGER_TASK_SWITCHER_SWIPE_UP_PX   40
-#define APP_MANAGER_TASK_SWITCHER_SWIPE_X_SLOP_PX 60
-#define APP_MANAGER_TASK_SWITCHER_PAGE_SWIPE_PX 40
-#define APP_MANAGER_TASK_SWITCHER_TAP_SLOP_PX   10
-#define APP_MANAGER_TASK_SWITCHER_FADE_MS     180
+/* Palette mirrors layers/apps/common/include/app_ui_theme.h; app_manager has
+ * no dependency on the apps layer, so the tokens are duplicated here. */
+#define TS_COLOR_BACKGROUND     0x090D0F
+#define TS_COLOR_SURFACE        0x151B1F
+#define TS_COLOR_SURFACE_HI     0x20282D
+#define TS_COLOR_TEXT           0xF2F5F6
+#define TS_COLOR_MUTED          0x93A0A6
+#define TS_COLOR_RAIN           0x4FC4D8
+#define TS_COLOR_WARNING        0xFF756C
+#define TS_COLOR_ICON_BG        0x0E1315
+#define TS_COLOR_ICON_FALLBACK  0x4A555A
+
+#define TS_HEADER_HEIGHT  52
+#define TS_RAM_HEIGHT     92
+#define TS_CARD_HEIGHT    92
+#define TS_CARD_GAP       10
+#define TS_SIDE_PAD       16
+#define TS_ICON_SIZE      56
+#define TS_CLOSE_SIZE     40
+#define TS_FADE_MS        180
+#define TS_MEM_WARN_PCT   85
 
 typedef enum app_manager_task_switcher_state
 {
@@ -38,7 +51,6 @@ typedef struct app_manager_task_switcher_card
     const char *app_id;
     lv_obj_t *root;
     bool current;
-    bool click_suppressed;
 } app_manager_task_switcher_card_t;
 
 typedef struct app_manager_task_switcher_state_data
@@ -49,22 +61,15 @@ typedef struct app_manager_task_switcher_state_data
     lv_obj_t *busy;
     lv_obj_t *clear_button;
     lv_obj_t *empty_label;
+    lv_obj_t *ram_psram_row;
+    lv_obj_t *ram_internal_bar;
+    lv_obj_t *ram_internal_value;
+    lv_obj_t *ram_psram_bar;
+    lv_obj_t *ram_psram_value;
     app_manager_task_switcher_card_t cards[APP_MANAGER_MAX_RECENT_TASKS];
     size_t card_count;
     app_manager_task_switcher_state_t state;
     app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
-    bool gesture_active;
-    app_manager_task_switcher_card_t *gesture_card;
-    lv_point_t gesture_start;
-    int32_t gesture_max_abs_dx;
-    int32_t gesture_max_abs_dy;
-    lv_point_t content_press_start;
-    int32_t content_max_abs_dx;
-    int32_t content_max_abs_dy;
-    bool content_gesture_active;
-    bool content_click_suppressed;
-    size_t page_index;
-    int32_t page_scroll_x;
 } app_manager_task_switcher_state_data_t;
 
 static app_manager_task_switcher_state_data_t s_switcher;
@@ -72,12 +77,10 @@ static app_manager_task_switcher_state_data_t s_switcher;
 static void _switcher_rebuild(void);
 static void _switcher_exit_complete(esp_err_t result, void *context);
 static void _switcher_clear_complete(esp_err_t result, void *context);
-static void _switcher_gesture_cancel(void);
-static void _switcher_scroll_page(bool next);
+static void _switcher_update_memory(void);
 
 static void _switcher_destroy_cards(void)
 {
-    _switcher_gesture_cancel();
     for (size_t index = 0U; index < s_switcher.card_count; index++)
     {
         if (s_switcher.cards[index].root != NULL &&
@@ -88,56 +91,6 @@ static void _switcher_destroy_cards(void)
     }
     memset(s_switcher.cards, 0, sizeof(s_switcher.cards));
     s_switcher.card_count = 0U;
-}
-
-static void _switcher_gesture_cancel(void)
-{
-    s_switcher.gesture_active = false;
-    if (s_switcher.gesture_card != NULL &&
-            s_switcher.gesture_card->root != NULL &&
-            lv_obj_is_valid(s_switcher.gesture_card->root))
-    {
-        s_switcher.gesture_card->click_suppressed = false;
-    }
-    s_switcher.gesture_card = NULL;
-    s_switcher.gesture_max_abs_dx = 0;
-    s_switcher.gesture_max_abs_dy = 0;
-    /* A background press must never survive a hide: its late CLICKED would
-     * otherwise be accepted by the next visible session. */
-    s_switcher.content_gesture_active = false;
-    s_switcher.content_click_suppressed = false;
-    s_switcher.content_max_abs_dx = 0;
-    s_switcher.content_max_abs_dy = 0;
-    if (s_switcher.content != NULL)
-    {
-        lv_obj_stop_scroll_anim(s_switcher.content);
-        lv_obj_scroll_to_x(s_switcher.content, s_switcher.page_scroll_x,
-                           LV_ANIM_OFF);
-    }
-}
-
-static void _switcher_scroll_page(bool next)
-{
-    size_t target_page = s_switcher.page_index;
-    if (next && target_page + 1U < s_switcher.card_count)
-    {
-        target_page++;
-    }
-    else if (!next && target_page > 0U)
-    {
-        target_page--;
-    }
-    else
-    {
-        return;
-    }
-    s_switcher.page_index = target_page;
-    const int32_t target_x =
-        (int32_t)target_page * APP_MANAGER_TASK_SWITCHER_CARD_PITCH;
-    lv_obj_scroll_to_x(s_switcher.content, target_x, LV_ANIM_ON);
-    lv_point_t end;
-    lv_obj_get_scroll_end(s_switcher.content, &end);
-    s_switcher.page_scroll_x = end.x;
 }
 
 static void _switcher_set_busy(bool busy)
@@ -199,12 +152,12 @@ static void _switcher_start_fade(void)
     lv_anim_set_var(&animation, s_switcher.root);
     lv_anim_set_exec_cb(&animation, _switcher_fade_exec);
     lv_anim_set_values(&animation, 0, LV_OPA_COVER);
-    lv_anim_set_duration(&animation, APP_MANAGER_TASK_SWITCHER_FADE_MS);
+    lv_anim_set_duration(&animation, TS_FADE_MS);
     lv_anim_set_early_apply(&animation, true);
     (void)lv_anim_start(&animation);
 }
 
-static void _switcher_close_task(app_manager_task_switcher_card_t *card)
+static void _switcher_close_task(const char *app_id)
 {
     if (s_switcher.state != APP_MANAGER_TASK_SWITCHER_VISIBLE)
     {
@@ -212,7 +165,6 @@ static void _switcher_close_task(app_manager_task_switcher_card_t *card)
     }
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_MANAGING;
     /* Remove stale task objects before the lifecycle changes residency. */
-    const char *app_id = card->app_id;
     _switcher_destroy_cards();
     lv_obj_clean(s_switcher.content);
     if (s_switcher.empty_label != NULL)
@@ -230,7 +182,7 @@ static void _switcher_close_task(app_manager_task_switcher_card_t *card)
         .app_id = app_id,
     };
     esp_err_t result = app_manager_navigation_submit_switcher_exit(
-                           &request, _switcher_exit_complete, card);
+                           &request, _switcher_exit_complete, NULL);
     if (result != ESP_OK)
     {
         s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
@@ -262,134 +214,184 @@ static void _switcher_card_clicked(app_manager_task_switcher_card_t *card)
     (void)app_manager_navigate_async(&request, NULL, NULL);
 }
 
+/* Both actions delete the card tree (hide/close), so they must not run inside
+ * the CLICKED callback of the very object being destroyed. Defer to the next
+ * idle cycle via lv_async_call; the card struct lives in the static array and
+ * app_id points at stable descriptor storage, so the captured pointers stay
+ * valid until the deferred call runs. */
+static void _switcher_card_activate_async(void *user_data)
+{
+    _switcher_card_clicked((app_manager_task_switcher_card_t *)user_data);
+}
+
+static void _switcher_close_task_async(void *user_data)
+{
+    _switcher_close_task((const char *)user_data);
+}
+
+/* The card is a plain clickable button inside a vertically scrollable list.
+ * LVGL suppresses CLICKED once a drag turns into a scroll, so a tap selects
+ * and a swipe scrolls without any custom gesture classification. */
 static void _switcher_card_event(lv_event_t *event)
 {
-    lv_event_code_t code = lv_event_get_code(event);
-    app_manager_task_switcher_card_t *card = lv_event_get_user_data(event);
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+    {
+        return;
+    }
+    (void)lv_async_call(_switcher_card_activate_async,
+                        lv_event_get_user_data(event));
+}
 
-    if (code == LV_EVENT_PRESSED)
+static void _switcher_card_close_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED)
     {
-        if (s_switcher.state != APP_MANAGER_TASK_SWITCHER_VISIBLE)
-        {
-            return;
-        }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
-        {
-            return;
-        }
-        /* LVGL picked this card as the pointer target before the in-flight
-         * page animation is settled, so the finger is on the card that is
-         * about to move away. Sample the animation state before the cancel
-         * below stops it, then ignore the whole sequence instead of letting
-         * RELEASED/CLICKED act on the wrong card. */
-        const bool page_animating = lv_obj_is_scrolling(s_switcher.content);
-        _switcher_gesture_cancel();
-        if (page_animating)
-        {
-            card->click_suppressed = true;
-            return;
-        }
-        s_switcher.gesture_active = true;
-        s_switcher.gesture_card = card;
-        s_switcher.gesture_max_abs_dx = 0;
-        s_switcher.gesture_max_abs_dy = 0;
-        card->click_suppressed = false;
-        lv_indev_get_point(indev, &s_switcher.gesture_start);
+        return;
     }
-    else if (code == LV_EVENT_PRESSING)
+    const app_manager_task_switcher_card_t *card =
+        lv_event_get_user_data(event);
+    (void)lv_async_call(_switcher_close_task_async, (void *)card->app_id);
+}
+
+static void _switcher_format_mem(size_t free_bytes, size_t total_bytes,
+                                 bool megabytes, char *out, size_t out_size)
+{
+    if (total_bytes == 0U)
     {
-        if (!s_switcher.gesture_active || s_switcher.gesture_card != card)
-        {
-            return;
-        }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
-        {
-            return;
-        }
-        lv_point_t point;
-        lv_indev_get_point(indev, &point);
-        const int32_t dx = point.x - s_switcher.gesture_start.x;
-        const int32_t dy = point.y - s_switcher.gesture_start.y;
-        const int32_t abs_dx = dx < 0 ? -dx : dx;
-        const int32_t abs_dy = dy < 0 ? -dy : dy;
-        if (abs_dx > s_switcher.gesture_max_abs_dx)
-        {
-            s_switcher.gesture_max_abs_dx = abs_dx;
-        }
-        if (abs_dy > s_switcher.gesture_max_abs_dy)
-        {
-            s_switcher.gesture_max_abs_dy = abs_dy;
-        }
+        (void)snprintf(out, out_size, "--");
+        return;
     }
-    else if (code == LV_EVENT_RELEASED)
+    if (megabytes)
     {
-        if (!s_switcher.gesture_active || s_switcher.gesture_card != card)
+        (void)snprintf(out, out_size, "%u.%u/%u.%uM",
+                       (unsigned)(free_bytes / 1048576U),
+                       (unsigned)((free_bytes % 1048576U) * 10U / 1048576U),
+                       (unsigned)(total_bytes / 1048576U),
+                       (unsigned)((total_bytes % 1048576U) * 10U / 1048576U));
+    }
+    else
+    {
+        (void)snprintf(out, out_size, "%uk/%uk",
+                       (unsigned)(free_bytes / 1024U),
+                       (unsigned)(total_bytes / 1024U));
+    }
+}
+
+static void _switcher_set_memory_row(lv_obj_t *bar, lv_obj_t *value,
+                                     size_t free_bytes, size_t total_bytes,
+                                     bool megabytes)
+{
+    char text[40];
+    _switcher_format_mem(free_bytes, total_bytes, megabytes, text, sizeof(text));
+    lv_label_set_text(value, text);
+    const int used = total_bytes != 0U ?
+                     (int)(((total_bytes - free_bytes) * 100U) / total_bytes) :
+                     0;
+    lv_bar_set_value(bar, used, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(bar,
+                              lv_color_hex(used >= TS_MEM_WARN_PCT ?
+                                           TS_COLOR_WARNING : TS_COLOR_RAIN),
+                              LV_PART_INDICATOR);
+}
+
+static void _switcher_update_memory(void)
+{
+    const size_t internal_total = heap_caps_get_total_size(
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t internal_free = heap_caps_get_free_size(
+                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t psram_total = heap_caps_get_total_size(
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const size_t psram_free = heap_caps_get_free_size(
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (s_switcher.ram_internal_bar != NULL)
+    {
+        _switcher_set_memory_row(s_switcher.ram_internal_bar,
+                                 s_switcher.ram_internal_value,
+                                 internal_free, internal_total, false);
+    }
+    if (s_switcher.ram_psram_row != NULL)
+    {
+        if (psram_total == 0U)
         {
-            return;
+            lv_obj_add_flag(s_switcher.ram_psram_row, LV_OBJ_FLAG_HIDDEN);
         }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
+        else
         {
-            _switcher_gesture_cancel();
-            return;
-        }
-        lv_point_t point;
-        lv_indev_get_point(indev, &point);
-        const int32_t dx = point.x - s_switcher.gesture_start.x;
-        const int32_t dy = point.y - s_switcher.gesture_start.y;
-        const int32_t abs_dx = dx < 0 ? -dx : dx;
-        const int32_t abs_dy = dy < 0 ? -dy : dy;
-        /* The release sample can carry movement that never produced a
-         * PRESSING event, so fold it into the maxima before the slop test. */
-        if (abs_dx > s_switcher.gesture_max_abs_dx)
-        {
-            s_switcher.gesture_max_abs_dx = abs_dx;
-        }
-        if (abs_dy > s_switcher.gesture_max_abs_dy)
-        {
-            s_switcher.gesture_max_abs_dy = abs_dy;
-        }
-        const bool close =
-            dy <= -APP_MANAGER_TASK_SWITCHER_SWIPE_UP_PX &&
-            abs_dy >= abs_dx &&
-            abs_dx <= APP_MANAGER_TASK_SWITCHER_SWIPE_X_SLOP_PX;
-        const bool page =
-            abs_dx >= APP_MANAGER_TASK_SWITCHER_PAGE_SWIPE_PX &&
-            abs_dx > abs_dy;
-        /* Release gesture ownership first so the paths below that destroy
-         * cards or start animations can never see a dangling reference. */
-        s_switcher.gesture_active = false;
-        s_switcher.gesture_card = NULL;
-        card->click_suppressed =
-            s_switcher.gesture_max_abs_dx >=
-            APP_MANAGER_TASK_SWITCHER_TAP_SLOP_PX ||
-            s_switcher.gesture_max_abs_dy >=
-            APP_MANAGER_TASK_SWITCHER_TAP_SLOP_PX;
-        if (close)
-        {
-            _switcher_close_task(card);
-            return;
-        }
-        if (page)
-        {
-            _switcher_scroll_page(dx < 0);
+            lv_obj_remove_flag(s_switcher.ram_psram_row, LV_OBJ_FLAG_HIDDEN);
+            _switcher_set_memory_row(s_switcher.ram_psram_bar,
+                                     s_switcher.ram_psram_value,
+                                     psram_free, psram_total, true);
         }
     }
-    else if (code == LV_EVENT_CLICKED)
+}
+
+static lv_obj_t *_switcher_make_passive_row(lv_obj_t *parent)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
+                       LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    return row;
+}
+
+static void _switcher_build_memory_row(lv_obj_t *parent, const char *title,
+                                       lv_obj_t **bar_out,
+                                       lv_obj_t **value_out,
+                                       lv_obj_t **row_out)
+{
+    lv_obj_t *row = _switcher_make_passive_row(parent);
+
+    lv_obj_t *name = lv_label_create(row);
+    lv_obj_set_width(name, 76);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_color(name, lv_color_hex(TS_COLOR_MUTED), 0);
+    lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY),
+                               0);
+    lv_label_set_text(name, title);
+
+    lv_obj_t *bar = lv_bar_create(row);
+    lv_obj_set_width(bar, 0);
+    lv_obj_set_flex_grow(bar, 1);
+    lv_obj_set_height(bar, 6);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(bar, 3, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(TS_COLOR_SURFACE_HI),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(TS_COLOR_RAIN),
+                              LV_PART_INDICATOR);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_set_style_shadow_width(bar, 0, 0);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *value = lv_label_create(row);
+    lv_obj_set_width(value, 108);
+    lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_color(value, lv_color_hex(TS_COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(value,
+                               app_manager_get_font(APP_THEME_FONT_BODY), 0);
+    lv_label_set_text(value, "--");
+
+    if (bar_out != NULL)
     {
-        if (card->click_suppressed)
-        {
-            card->click_suppressed = false;
-            return;
-        }
-        _switcher_card_clicked(card);
+        *bar_out = bar;
     }
-    else if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_CANCEL ||
-             code == LV_EVENT_INDEV_RESET)
+    if (value_out != NULL)
     {
-        _switcher_gesture_cancel();
+        *value_out = value;
+    }
+    if (row_out != NULL)
+    {
+        *row_out = row;
     }
 }
 
@@ -406,25 +408,21 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         return;
     }
     card->root = button;
-    lv_obj_set_size(button, APP_MANAGER_TASK_SWITCHER_CARD_WIDTH,
-                    APP_MANAGER_TASK_SWITCHER_CARD_HEIGHT);
-    lv_obj_set_style_radius(button, 8, 0);
-    lv_obj_set_style_bg_color(button, lv_color_hex(0x171E22), 0);
-    lv_obj_set_style_bg_color(button, lv_color_hex(0x1D262B),
+    lv_obj_set_size(button, LV_PCT(100), TS_CARD_HEIGHT);
+    lv_obj_set_style_radius(button, 10, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE_HI),
                               LV_STATE_PRESSED);
-    /* The default theme grows pressed buttons by 2 px per side, but the
-     * children and the post-drawn border are still clipped to the original
-     * card rectangle, which would cut the highlight border while pressed.
-     * The pressed background color above is the only feedback wanted. */
     lv_obj_set_style_transform_width(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_transform_height(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_set_style_pad_all(button, 12, 0);
-    lv_obj_set_style_pad_gap(button, 12, 0);
+    lv_obj_set_style_pad_hor(button, 14, 0);
+    lv_obj_set_style_pad_ver(button, 12, 0);
+    lv_obj_set_style_pad_column(button, 12, 0);
     if (card->current)
     {
         lv_obj_set_style_border_width(button, 2, 0);
-        lv_obj_set_style_border_color(button, lv_color_hex(0x4FC3F7), 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(TS_COLOR_RAIN), 0);
         lv_obj_set_style_border_post(button, true, 0);
     }
     else
@@ -432,27 +430,26 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_style_border_width(button, 0, 0);
     }
     lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_SCROLL_CHAIN |
-                       LV_OBJ_FLAG_SCROLL_ELASTIC |
-                       LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_add_event_cb(button, _switcher_card_event, LV_EVENT_ALL, card);
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_CHAIN |
+                       LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    /* Click-only: releasing off the card after a drag that did not scroll must
+     * not select it. */
+    lv_obj_remove_flag(button, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_event_cb(button, _switcher_card_event, LV_EVENT_CLICKED, card);
 
     lv_obj_t *icon = lv_obj_create(button);
     if (icon != NULL)
     {
-        lv_obj_set_size(icon, 44, 44);
-        lv_obj_set_style_radius(icon, 6, 0);
-        lv_obj_set_style_bg_color(icon, lv_color_hex(0x101517), 0);
+        lv_obj_set_size(icon, TS_ICON_SIZE, TS_ICON_SIZE);
+        lv_obj_set_style_radius(icon, 10, 0);
+        lv_obj_set_style_bg_color(icon, lv_color_hex(TS_COLOR_ICON_BG), 0);
         lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(icon, 0, 0);
-        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE |
-                           LV_OBJ_FLAG_CLICKABLE |
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
                            LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                           LV_OBJ_FLAG_GESTURE_BUBBLE |
-                           LV_OBJ_FLAG_SCROLL_CHAIN |
+                           LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_SCROLL_CHAIN |
                            LV_OBJ_FLAG_SCROLL_ELASTIC |
                            LV_OBJ_FLAG_SCROLL_MOMENTUM);
         const lv_image_dsc_t *icon_image = NULL;
@@ -464,7 +461,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             if (image != NULL)
             {
                 lv_image_set_src(image, icon_image);
-                lv_obj_set_size(image, 40, 40);
+                lv_obj_set_size(image, 44, 44);
                 lv_obj_center(image);
                 lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE |
                                    LV_OBJ_FLAG_CLICKABLE |
@@ -481,25 +478,77 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             if (symbol != NULL)
             {
                 lv_obj_set_style_text_font(symbol, LV_FONT_DEFAULT, 0);
-                lv_obj_set_style_text_color(symbol, lv_color_hex(0x4A555A), 0);
+                lv_obj_set_style_text_color(symbol,
+                                            lv_color_hex(TS_COLOR_ICON_FALLBACK),
+                                            0);
                 lv_label_set_text(symbol, LV_SYMBOL_IMAGE);
                 lv_obj_center(symbol);
             }
         }
     }
 
-    lv_obj_t *name = lv_label_create(button);
-    if (name != NULL)
+    lv_obj_t *text = lv_obj_create(button);
+    if (text != NULL)
     {
-        lv_obj_set_width(name, 0);
-        lv_obj_set_flex_grow(name, 1);
-        lv_obj_set_style_text_color(name, lv_color_hex(0xF4F7F8), 0);
-        lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY), 0);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_SCROLL_CIRCULAR);
-        lv_label_set_text_fmt(name, "%s%s",
-                              task->display_name != NULL ?
-                              task->display_name : task->app_id,
-                              card->current ? " · 当前" : "");
+        lv_obj_remove_style_all(text);
+        lv_obj_set_width(text, 0);
+        lv_obj_set_flex_grow(text, 1);
+        lv_obj_set_height(text, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(text, 3, 0);
+        lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
+                           LV_OBJ_FLAG_CLICK_FOCUSABLE);
+
+        lv_obj_t *name = lv_label_create(text);
+        lv_obj_set_width(name, LV_PCT(100));
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(name, lv_color_hex(TS_COLOR_TEXT), 0);
+        lv_obj_set_style_text_font(name,
+                                   app_manager_get_font(APP_THEME_FONT_SMALL), 0);
+        lv_label_set_text(name, task->display_name != NULL ?
+                          task->display_name : task->app_id);
+
+        lv_obj_t *status = lv_label_create(text);
+        lv_obj_set_width(status, LV_PCT(100));
+        lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(status,
+                                    lv_color_hex(card->current ? TS_COLOR_RAIN :
+                                            TS_COLOR_MUTED), 0);
+        lv_obj_set_style_text_font(status,
+                                   app_manager_get_font(APP_THEME_FONT_BODY), 0);
+        lv_label_set_text(status, card->current ? "当前" : "点按切换");
+    }
+
+    if (!card->current)
+    {
+        lv_obj_t *close = lv_button_create(button);
+        if (close != NULL)
+        {
+            lv_obj_set_size(close, TS_CLOSE_SIZE, TS_CLOSE_SIZE);
+            lv_obj_set_style_radius(close, 8, 0);
+            lv_obj_set_style_bg_opa(close, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_color(close, lv_color_hex(TS_COLOR_BACKGROUND),
+                                      LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(close, 0, 0);
+            lv_obj_set_style_shadow_width(close, 0, 0);
+            lv_obj_set_style_pad_all(close, 0, 0);
+            lv_obj_remove_flag(close, LV_OBJ_FLAG_SCROLLABLE |
+                               LV_OBJ_FLAG_SCROLL_CHAIN |
+                               LV_OBJ_FLAG_SCROLL_ELASTIC |
+                               LV_OBJ_FLAG_SCROLL_MOMENTUM);
+            lv_obj_remove_flag(close, LV_OBJ_FLAG_PRESS_LOCK);
+            lv_obj_add_event_cb(close, _switcher_card_close_event,
+                                LV_EVENT_CLICKED, card);
+            lv_obj_t *mark = lv_label_create(close);
+            if (mark != NULL)
+            {
+                lv_obj_set_style_text_font(mark, LV_FONT_DEFAULT, 0);
+                lv_obj_set_style_text_color(mark, lv_color_hex(TS_COLOR_MUTED),
+                                            0);
+                lv_label_set_text(mark, LV_SYMBOL_CLOSE);
+                lv_obj_center(mark);
+            }
+        }
     }
 
     s_switcher.card_count++;
@@ -552,123 +601,22 @@ static void _switcher_rebuild(void)
     {
         _switcher_add_card(&s_switcher.tasks[index]);
     }
-    /* A changed list restarts at the first MRU card: a stale page index
-     * could point at a task that no longer exists. */
     lv_obj_update_layout(s_switcher.content);
-    s_switcher.page_index = 0U;
-    lv_obj_scroll_to_x(s_switcher.content, 0, LV_ANIM_OFF);
-    s_switcher.page_scroll_x = lv_obj_get_scroll_x(s_switcher.content);
+    lv_obj_scroll_to_y(s_switcher.content, 0, LV_ANIM_OFF);
+    _switcher_update_memory();
 }
 
 static void _switcher_content_event(lv_event_t *event)
 {
-    lv_event_code_t code = lv_event_get_code(event);
-
-    if (code == LV_EVENT_PRESSED)
+    /* A tap on the empty backdrop dismisses the switcher. LVGL withholds
+     * CLICKED while a drag scrolls the list, so scrolling never hides it. */
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED)
     {
-        if (lv_obj_is_scrolling(s_switcher.content))
-        {
-            /* A press during a card animation belongs to the moving card or
-             * is an indeterminate background hit.  Do not let the content
-             * click handler dismiss the new switcher session on release. */
-            s_switcher.content_gesture_active = false;
-            s_switcher.content_click_suppressed = true;
-            return;
-        }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
-        {
-            return;
-        }
-        lv_indev_get_point(indev, &s_switcher.content_press_start);
-        s_switcher.content_max_abs_dx = 0;
-        s_switcher.content_max_abs_dy = 0;
-        s_switcher.content_click_suppressed = false;
-        s_switcher.content_gesture_active = true;
+        return;
     }
-    else if (code == LV_EVENT_PRESSING)
+    if (s_switcher.state == APP_MANAGER_TASK_SWITCHER_VISIBLE)
     {
-        if (!s_switcher.content_gesture_active)
-        {
-            return;
-        }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
-        {
-            return;
-        }
-        lv_point_t point;
-        lv_indev_get_point(indev, &point);
-        const int32_t dx = point.x - s_switcher.content_press_start.x;
-        const int32_t dy = point.y - s_switcher.content_press_start.y;
-        const int32_t abs_dx = dx < 0 ? -dx : dx;
-        const int32_t abs_dy = dy < 0 ? -dy : dy;
-        if (abs_dx > s_switcher.content_max_abs_dx)
-        {
-            s_switcher.content_max_abs_dx = abs_dx;
-        }
-        if (abs_dy > s_switcher.content_max_abs_dy)
-        {
-            s_switcher.content_max_abs_dy = abs_dy;
-        }
-    }
-    else if (code == LV_EVENT_RELEASED)
-    {
-        if (!s_switcher.content_gesture_active)
-        {
-            return;
-        }
-        lv_indev_t *indev = lv_event_get_indev(event);
-        if (indev == NULL)
-        {
-            return;
-        }
-        lv_point_t point;
-        lv_indev_get_point(indev, &point);
-        const int32_t dx = point.x - s_switcher.content_press_start.x;
-        const int32_t dy = point.y - s_switcher.content_press_start.y;
-        const int32_t abs_dx = dx < 0 ? -dx : dx;
-        const int32_t abs_dy = dy < 0 ? -dy : dy;
-        if (abs_dx > s_switcher.content_max_abs_dx)
-        {
-            s_switcher.content_max_abs_dx = abs_dx;
-        }
-        if (abs_dy > s_switcher.content_max_abs_dy)
-        {
-            s_switcher.content_max_abs_dy = abs_dy;
-        }
-        s_switcher.content_click_suppressed =
-            s_switcher.content_max_abs_dx >=
-            APP_MANAGER_TASK_SWITCHER_TAP_SLOP_PX ||
-            s_switcher.content_max_abs_dy >=
-            APP_MANAGER_TASK_SWITCHER_TAP_SLOP_PX;
-    }
-    else if (code == LV_EVENT_CLICKED)
-    {
-        /* A hide cancels the sequence; a late CLICKED from a press that
-         * survived the hide must never dismiss the next session. */
-        if (!s_switcher.content_gesture_active)
-        {
-            return;
-        }
-        s_switcher.content_gesture_active = false;
-        if (s_switcher.content_click_suppressed)
-        {
-            s_switcher.content_click_suppressed = false;
-            return;
-        }
-        if (s_switcher.state == APP_MANAGER_TASK_SWITCHER_VISIBLE)
-        {
-            _switcher_hide();
-        }
-    }
-    else if (code == LV_EVENT_PRESS_LOST || code == LV_EVENT_CANCEL ||
-             code == LV_EVENT_INDEV_RESET)
-    {
-        s_switcher.content_gesture_active = false;
-        s_switcher.content_click_suppressed = false;
-        s_switcher.content_max_abs_dx = 0;
-        s_switcher.content_max_abs_dy = 0;
+        _switcher_hide();
     }
 }
 
@@ -756,6 +704,10 @@ esp_err_t app_manager_task_switcher_init(void *display)
 
     memset(&s_switcher, 0, sizeof(s_switcher));
 
+    const int32_t width = lv_display_get_horizontal_resolution(disp);
+    const int32_t height = lv_display_get_vertical_resolution(disp);
+    const int32_t list_height = height - TS_HEADER_HEIGHT - TS_RAM_HEIGHT;
+
     s_switcher.root = lv_obj_create(system_layer);
     if (s_switcher.root == NULL)
     {
@@ -763,13 +715,65 @@ esp_err_t app_manager_task_switcher_init(void *display)
     }
     lv_obj_remove_style_all(s_switcher.root);
     lv_obj_set_size(s_switcher.root, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(s_switcher.root, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_switcher.root, lv_color_hex(TS_COLOR_BACKGROUND),
+                              0);
     lv_obj_set_style_bg_opa(s_switcher.root, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN |
                     LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING);
     lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_SCROLLABLE |
                        LV_OBJ_FLAG_CLICKABLE);
 
+    /* Header: title on the left, clear-all on the right. */
+    lv_obj_t *header = lv_obj_create(s_switcher.root);
+    if (header == NULL)
+    {
+        lv_obj_delete(s_switcher.root);
+        memset(&s_switcher, 0, sizeof(s_switcher));
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, width, TS_HEADER_HEIGHT);
+    lv_obj_align(header, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(header, TS_SIDE_PAD, 0);
+    lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *title = lv_label_create(header);
+    lv_obj_set_style_text_color(title, lv_color_hex(TS_COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(title,
+                               app_manager_get_font(APP_THEME_FONT_HEAD), 0);
+    lv_label_set_text(title, "最近任务");
+
+    s_switcher.clear_button = lv_button_create(header);
+    if (s_switcher.clear_button == NULL)
+    {
+        lv_obj_delete(s_switcher.root);
+        memset(&s_switcher, 0, sizeof(s_switcher));
+        return ESP_ERR_NO_MEM;
+    }
+    lv_obj_set_size(s_switcher.clear_button, 72, 40);
+    lv_obj_set_style_radius(s_switcher.clear_button, 8, 0);
+    lv_obj_set_style_bg_color(s_switcher.clear_button,
+                              lv_color_hex(TS_COLOR_SURFACE), 0);
+    lv_obj_set_style_bg_color(s_switcher.clear_button,
+                              lv_color_hex(TS_COLOR_SURFACE_HI),
+                              LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(s_switcher.clear_button, 0, 0);
+    lv_obj_add_event_cb(s_switcher.clear_button, _switcher_clear_clicked,
+                        LV_EVENT_CLICKED, NULL);
+    lv_obj_t *clear_text = lv_label_create(s_switcher.clear_button);
+    if (clear_text != NULL)
+    {
+        lv_obj_set_style_text_color(clear_text, lv_color_hex(TS_COLOR_TEXT), 0);
+        lv_obj_set_style_text_font(clear_text,
+                                   app_manager_get_font(APP_THEME_FONT_BODY), 0);
+        lv_label_set_text(clear_text, "清除");
+        lv_obj_center(clear_text);
+    }
+
+    /* Scrollable vertical list of retained tasks. */
     s_switcher.content = lv_obj_create(s_switcher.root);
     if (s_switcher.content == NULL)
     {
@@ -778,77 +782,63 @@ esp_err_t app_manager_task_switcher_init(void *display)
         return ESP_ERR_NO_MEM;
     }
     lv_obj_remove_style_all(s_switcher.content);
-    lv_obj_set_size(s_switcher.content, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_flex_flow(s_switcher.content, LV_FLEX_FLOW_ROW);
-    /* Start-aligned row with half-viewport side padding: the first card is
-     * centered and every page target (index * card pitch) is exactly
-     * reachable, so programmatic paging never clamps mid-page. */
+    lv_obj_set_size(s_switcher.content, width, list_height);
+    lv_obj_align_to(s_switcher.content, header, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_flex_flow(s_switcher.content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_switcher.content, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    /* Native pointer scrolling is disabled for the whole gesture: card
-     * swipes are classified from the cumulative displacement and paged
-     * programmatically on release, so no scroll object can ever take the
-     * gesture over or leave a residual offset. */
+    lv_obj_set_style_pad_hor(s_switcher.content, TS_SIDE_PAD, 0);
+    lv_obj_set_style_pad_ver(s_switcher.content, 8, 0);
+    lv_obj_set_style_pad_row(s_switcher.content, TS_CARD_GAP, 0);
     lv_obj_set_scrollbar_mode(s_switcher.content, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_remove_flag(s_switcher.content, LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_SCROLL_CHAIN |
-                       LV_OBJ_FLAG_SCROLL_ELASTIC |
-                       LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_set_style_pad_column(s_switcher.content,
-                                APP_MANAGER_TASK_SWITCHER_CARD_GAP, 0);
-    const int32_t edge_pad =
-        (lv_display_get_horizontal_resolution(disp) -
-         APP_MANAGER_TASK_SWITCHER_CARD_WIDTH) / 2;
-    lv_obj_set_style_pad_left(s_switcher.content, edge_pad, 0);
-    lv_obj_set_style_pad_right(s_switcher.content, edge_pad, 0);
+    lv_obj_set_scroll_dir(s_switcher.content, LV_DIR_VER);
     lv_obj_remove_flag(s_switcher.content, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_switcher.content, _switcher_content_event,
-                        LV_EVENT_ALL, NULL);
-
-    s_switcher.clear_button = lv_button_create(s_switcher.root);
-    if (s_switcher.clear_button == NULL)
-    {
-        lv_obj_delete(s_switcher.content);
-        lv_obj_delete(s_switcher.root);
-        memset(&s_switcher, 0, sizeof(s_switcher));
-        return ESP_ERR_NO_MEM;
-    }
-    lv_obj_set_size(s_switcher.clear_button, 64, 48);
-    lv_obj_align(s_switcher.clear_button, LV_ALIGN_TOP_RIGHT, -8, 8);
-    lv_obj_set_style_radius(s_switcher.clear_button, 6, 0);
-    lv_obj_set_style_bg_color(s_switcher.clear_button, lv_color_hex(0x171E22),
-                              0);
-    lv_obj_set_style_bg_color(s_switcher.clear_button, lv_color_hex(0x1D262B),
-                              LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(s_switcher.clear_button, 0, 0);
-    lv_obj_add_flag(s_switcher.clear_button, LV_OBJ_FLAG_IGNORE_LAYOUT |
-                    LV_OBJ_FLAG_FLOATING);
-    lv_obj_add_event_cb(s_switcher.clear_button, _switcher_clear_clicked,
                         LV_EVENT_CLICKED, NULL);
-    lv_obj_t *clear_text = lv_label_create(s_switcher.clear_button);
-    if (clear_text != NULL)
-    {
-        lv_obj_set_style_text_color(clear_text, lv_color_hex(0xF4F7F8), 0);
-        lv_obj_set_style_text_font(clear_text,
-                                   app_manager_get_font(APP_THEME_FONT_SMALL), 0);
-        lv_label_set_text(clear_text, "清除");
-        lv_obj_center(clear_text);
-    }
 
     s_switcher.empty_label = lv_label_create(s_switcher.root);
     if (s_switcher.empty_label != NULL)
     {
         lv_obj_set_width(s_switcher.empty_label, LV_PCT(100));
-        lv_obj_set_style_text_align(s_switcher.empty_label,
-                                    LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(s_switcher.empty_label, LV_TEXT_ALIGN_CENTER,
+                                    0);
         lv_obj_set_style_text_color(s_switcher.empty_label,
-                                    lv_color_hex(0xAAB5BA), 0);
+                                    lv_color_hex(TS_COLOR_MUTED), 0);
         lv_obj_set_style_text_font(s_switcher.empty_label,
-                                   app_manager_get_font(APP_THEME_FONT_BODY),
-                                   0);
+                                   app_manager_get_font(APP_THEME_FONT_BODY), 0);
         lv_label_set_text(s_switcher.empty_label, "暂无任务");
-        lv_obj_align(s_switcher.empty_label, LV_ALIGN_CENTER, 0, 0);
+        /* Child of the root, not the list: lv_obj_clean(content) must never
+         * free it. Center it over the list viewport. */
+        lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_IGNORE_LAYOUT |
+                        LV_OBJ_FLAG_FLOATING);
+        lv_obj_align_to(s_switcher.empty_label, s_switcher.content,
+                        LV_ALIGN_CENTER, 0, 0);
         lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    /* Footer: device memory usage (internal RAM and PSRAM). */
+    lv_obj_t *ram = lv_obj_create(s_switcher.root);
+    if (ram != NULL)
+    {
+        lv_obj_set_size(ram, width, TS_RAM_HEIGHT);
+        lv_obj_align(ram, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(ram, lv_color_hex(TS_COLOR_SURFACE), 0);
+        lv_obj_set_style_bg_opa(ram, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(ram, 0, 0);
+        lv_obj_set_style_radius(ram, 0, 0);
+        lv_obj_set_style_pad_all(ram, 14, 0);
+        lv_obj_set_style_pad_row(ram, 10, 0);
+        lv_obj_set_flex_flow(ram, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(ram, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_remove_flag(ram, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        _switcher_build_memory_row(ram, "内部内存",
+                                   &s_switcher.ram_internal_bar,
+                                   &s_switcher.ram_internal_value, NULL);
+        _switcher_build_memory_row(ram, "PSRAM",
+                                   &s_switcher.ram_psram_bar,
+                                   &s_switcher.ram_psram_value,
+                                   &s_switcher.ram_psram_row);
     }
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_HIDDEN;
@@ -925,9 +915,8 @@ esp_err_t app_manager_task_switcher_show(void)
     }
 
     lv_obj_update_layout(s_switcher.content);
-    s_switcher.page_index = 0U;
-    lv_obj_scroll_to_x(s_switcher.content, 0, LV_ANIM_OFF);
-    s_switcher.page_scroll_x = lv_obj_get_scroll_x(s_switcher.content);
+    lv_obj_scroll_to_y(s_switcher.content, 0, LV_ANIM_OFF);
+    _switcher_update_memory();
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
     lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN);

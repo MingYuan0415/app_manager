@@ -41,8 +41,12 @@ extern "C" {
 #define APP_MANAGER_MAX_PAGE_INSTANCES CONFIG_APP_MANAGER_MAX_PAGE_INSTANCES
 /** Maximum private-state bytes owned by one retained Page instance. */
 #define APP_MANAGER_PAGE_STATE_BYTES CONFIG_APP_MANAGER_PAGE_STATE_BYTES
-/** Maximum tasks reported by the recent-tasks snapshot. */
-#define APP_MANAGER_MAX_RECENT_TASKS  3U
+/**
+ * Maximum tasks reported by the recent-tasks snapshot. Kept equal to the
+ * resident-application capacity so the task switcher can surface every
+ * switchable app; pinned/hidden launchers are filtered out at snapshot time.
+ */
+#define APP_MANAGER_MAX_RECENT_TASKS  APP_MANAGER_MAX_RESIDENT_APPS
 
 #ifdef __cplusplus
 static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
