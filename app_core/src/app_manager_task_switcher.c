@@ -35,7 +35,7 @@
 #define TS_CARD_GAP       10
 #define TS_SIDE_PAD       16
 #define TS_ICON_SIZE      56
-#define TS_CLOSE_SIZE     40
+#define TS_CLOSE_SIZE     48
 #define TS_FADE_MS        180
 #define TS_MEM_WARN_PCT   85
 
@@ -50,6 +50,7 @@ typedef struct app_manager_task_switcher_card
 {
     const char *app_id;
     lv_obj_t *root;
+    lv_obj_t *status;
     bool current;
 } app_manager_task_switcher_card_t;
 
@@ -182,7 +183,8 @@ static void _switcher_close_task(const char *app_id)
         .app_id = app_id,
     };
     esp_err_t result = app_manager_navigation_submit_switcher_exit(
-                           &request, _switcher_exit_complete, NULL);
+                           &request, _switcher_exit_complete,
+                           (void *)app_id);
     if (result != ESP_OK)
     {
         s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
@@ -253,7 +255,7 @@ static void _switcher_card_close_event(lv_event_t *event)
     (void)lv_async_call(_switcher_close_task_async, (void *)card->app_id);
 }
 
-static void _switcher_format_mem(size_t free_bytes, size_t total_bytes,
+static void _switcher_format_mem(size_t used_bytes, size_t total_bytes,
                                  bool megabytes, char *out, size_t out_size)
 {
     if (total_bytes == 0U)
@@ -264,15 +266,15 @@ static void _switcher_format_mem(size_t free_bytes, size_t total_bytes,
     if (megabytes)
     {
         (void)snprintf(out, out_size, "%u.%u/%u.%uM",
-                       (unsigned)(free_bytes / 1048576U),
-                       (unsigned)((free_bytes % 1048576U) * 10U / 1048576U),
+                       (unsigned)(used_bytes / 1048576U),
+                       (unsigned)((used_bytes % 1048576U) * 10U / 1048576U),
                        (unsigned)(total_bytes / 1048576U),
                        (unsigned)((total_bytes % 1048576U) * 10U / 1048576U));
     }
     else
     {
         (void)snprintf(out, out_size, "%uk/%uk",
-                       (unsigned)(free_bytes / 1024U),
+                       (unsigned)(used_bytes / 1024U),
                        (unsigned)(total_bytes / 1024U));
     }
 }
@@ -282,7 +284,12 @@ static void _switcher_set_memory_row(lv_obj_t *bar, lv_obj_t *value,
                                      bool megabytes)
 {
     char text[40];
-    _switcher_format_mem(free_bytes, total_bytes, megabytes, text, sizeof(text));
+    /* Bar and text both speak "used": a full bar next to a large free number
+     * read as a contradiction. */
+    const size_t used_bytes = total_bytes > free_bytes ?
+                              total_bytes - free_bytes : 0U;
+    _switcher_format_mem(used_bytes, total_bytes, megabytes, text,
+                         sizeof(text));
     lv_label_set_text(value, text);
     const int used = total_bytes != 0U ?
                      (int)(((total_bytes - free_bytes) * 100U) / total_bytes) :
@@ -401,6 +408,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         &s_switcher.cards[s_switcher.card_count];
     card->app_id = task->app_id;
     card->current = task->active;
+    card->status = NULL;
 
     lv_obj_t *button = lv_button_create(s_switcher.content);
     if (button == NULL)
@@ -517,6 +525,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_style_text_font(status,
                                    app_manager_get_font(APP_THEME_FONT_BODY), 0);
         lv_label_set_text(status, card->current ? "当前" : "点按切换");
+        card->status = status;
     }
 
     if (!card->current)
@@ -653,13 +662,27 @@ static void _switcher_clear_clicked(lv_event_t *event)
 
 static void _switcher_exit_complete(esp_err_t result, void *context)
 {
-    (void)result;
-    (void)context;
+    const char *app_id = (const char *)context;
+
     if (s_switcher.state == APP_MANAGER_TASK_SWITCHER_MANAGING)
     {
         s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
         _switcher_set_busy(false);
         _switcher_rebuild();
+        if (result != ESP_OK)
+        {
+            for (size_t index = 0U; index < s_switcher.card_count; ++index)
+            {
+                app_manager_task_switcher_card_t *card =
+                    &s_switcher.cards[index];
+                if (card->status != NULL && card->app_id == app_id)
+                {
+                    lv_label_set_text(card->status, "关闭失败");
+                    lv_obj_set_style_text_color(
+                        card->status, lv_color_hex(TS_COLOR_WARNING), 0);
+                }
+            }
+        }
     }
 }
 
@@ -753,7 +776,7 @@ esp_err_t app_manager_task_switcher_init(void *display)
         memset(&s_switcher, 0, sizeof(s_switcher));
         return ESP_ERR_NO_MEM;
     }
-    lv_obj_set_size(s_switcher.clear_button, 72, 40);
+    lv_obj_set_size(s_switcher.clear_button, 72, 44);
     lv_obj_set_style_radius(s_switcher.clear_button, 8, 0);
     lv_obj_set_style_bg_color(s_switcher.clear_button,
                               lv_color_hex(TS_COLOR_SURFACE), 0);
