@@ -10,6 +10,7 @@
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
 #ifndef HOST_TEST
+    #include "app_manager_mailbox.h"
     #include "esp_timer.h"
     #include "nv_storage.h"
 #endif
@@ -596,6 +597,16 @@ esp_err_t app_manager_control_call(control_command_t command)
     esp_err_t result = ESP_ERR_INVALID_STATE;
     bool access_owned = false;
     bool lock_owned = false;
+#ifndef HOST_TEST
+    /* The PM worker answers synchronous commands by dispatching parts of
+     * them onto the UI worker; calling from the UI worker would deadlock.
+     * Non-UI callers use this, UI callers must use app_manager_control_post.
+     */
+    if (app_manager_mailbox_is_worker())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
     if (!app_manager_control_access_begin())
     {
         goto exit;

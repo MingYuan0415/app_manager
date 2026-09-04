@@ -110,8 +110,8 @@ uint32_t    app_manager_get_running_apps(void);
 /**
  * @brief Copy the most-recently-used background task snapshot.
  *
- * Tasks are ordered from most recently used to oldest and exclude the home
- * application and hidden applications. Records contain application metadata
+ * Tasks are ordered from most recently used to oldest and exclude pinned and
+ * hidden applications. Records contain application metadata
  * only and do not retain screen pixels.
  *
  * @param tasks receives up to capacity copied task records.
@@ -306,8 +306,18 @@ int32_t  app_manager_pm_get_timeout_ms(void);
  * @brief Set and persist the screen-off inactivity timeout.
  * @param timeout_ms is -1 to disable or a valid timeout in milliseconds.
  * @return ESP_OK when persisted, otherwise an ESP-IDF error.
+ *         Must not run on the UI worker (returns ESP_ERR_INVALID_STATE);
+ *         UI callers use the async variant.
  */
 esp_err_t app_manager_pm_set_timeout_ms(int32_t timeout_ms);
+/**
+ * @brief Enqueue a screen-off timeout change; persistence runs on the app-control task.
+ * @param timeout_ms is -1 to disable or a valid timeout in milliseconds.
+ * @return ESP_OK when queued (completion is observed via the getter),
+ *         ESP_ERR_INVALID_ARG or ESP_ERR_INVALID_STATE/ESP_ERR_NO_MEM when rejected.
+ *         Safe from the UI worker, unlike the synchronous setter.
+ */
+esp_err_t app_manager_pm_set_timeout_ms_async(int32_t timeout_ms);
 /**
  * @brief Return the screen-off to standby delay in milliseconds.
  * @return Configured delay, or -1 when disabled.
@@ -317,8 +327,18 @@ int32_t  app_manager_pm_get_standby_delay_ms(void);
  * @brief Set and persist the screen-off to standby delay.
  * @param timeout_ms is -1 to disable or a valid delay in milliseconds.
  * @return ESP_OK when persisted, otherwise an ESP-IDF error.
+ *         Must not run on the UI worker (returns ESP_ERR_INVALID_STATE);
+ *         UI callers use the async variant.
  */
 esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms);
+/**
+ * @brief Enqueue a standby delay change; persistence runs on the app-control task.
+ * @param timeout_ms is -1 to disable or a valid delay in milliseconds.
+ * @return ESP_OK when queued (completion is observed via the getter),
+ *         ESP_ERR_INVALID_ARG or ESP_ERR_INVALID_STATE/ESP_ERR_NO_MEM when rejected.
+ *         Safe from the UI worker, unlike the synchronous setter.
+ */
+esp_err_t app_manager_pm_set_standby_delay_ms_async(int32_t timeout_ms);
 
 /* ── Builtin registry discovery ── */
 

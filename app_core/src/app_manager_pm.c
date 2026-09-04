@@ -682,6 +682,14 @@ static void _control_home_click_on_active(uint32_t generation,
          * press first and treat this click as the start of a new window. */
         _control_home_action_push(_control_home_single_action());
     }
+    else if (state == APP_MANAGER_HOME_CLICK_WAIT_SECOND &&
+             window_generation == generation)
+    {
+        /* Duplicate CLICK record of the same press: it must never pair with
+         * itself into a double; resolve the pending single press and re-arm
+         * the window from this record. */
+        _control_home_action_push(_control_home_single_action());
+    }
     atomic_store(&s_home_click_state, APP_MANAGER_HOME_CLICK_WAIT_SECOND);
     atomic_store(&s_home_click_generation, generation);
     s_home_click_event_us = event_us;

@@ -1123,6 +1123,45 @@ static void _test_forward_unmount_and_target_pause_failure(void)
     assert(app_page_is_actived("a", "root"));
 }
 
+static void _test_back_app_abort_drops_stopped_children(void)
+{
+    /* EXIT of a multi-page app stops the pages below the visible one before
+     * the transition starts. When the transition aborts, those already
+     * STOPped instances must be dropped from the stack (exactly like an
+     * uncommitted target), never left linked waiting for a second ONSTART
+     * on stale memory. */
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_page_present("a", "root"));
+
+    s_presentation.start_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
+    _trace_reset();
+    assert(_navigate(&call) == ESP_FAIL);
+    assert(app_manager_is_actived("a"));
+    assert(app_page_is_actived("a", "one"));
+    assert(!app_manager_is_page_present("a", "root"));
+
+    /* Re-opening the dropped page yields a fresh instance with a new START. */
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "root");
+    _trace_reset();
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_page_present("a", "root"));
+    assert(s_a_root.messages[APP_MANAGER_MSG_ONSTART] >= 2U);
+
+    /* Restore the state the following tests expect: "a" active on root,
+     * "one" no longer present. */
+    call = _request(APP_MANAGER_NAV_OP_REMOVE_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_actived("a"));
+    assert(app_page_is_actived("a", "root"));
+    _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_APP, "a");
+}
+
 static void _test_shared_definition_and_target_pause_rollback(void)
 {
     nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
@@ -1839,6 +1878,7 @@ int main(void)
     _test_presentation_start_failure_rollback();
     _test_forward_unmount_and_target_pause_failure();
     _test_pause_and_stop_rollback();
+    _test_back_app_abort_drops_stopped_children();
     _test_shared_definition_and_target_pause_rollback();
     _test_uncommitted_cleanup_ownership();
     _test_async_transition_queries();

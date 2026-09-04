@@ -2,15 +2,15 @@
 #define DBG_LVL DBG_INFO
 
 #ifndef HOST_TEST
-#include "mt_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+    #include "mt_log.h"
+    #include "freertos/FreeRTOS.h"
+    #include "freertos/task.h"
 #else
-#include <stdio.h>
-#include <unistd.h>
-#define LOG_E(fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
-#define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
-#define LOG_I(fmt, ...) fprintf(stderr, "[I][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+    #include <stdio.h>
+    #include <unistd.h>
+    #define LOG_E(fmt, ...) fprintf(stderr, "[E][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+    #define LOG_W(fmt, ...) fprintf(stderr, "[W][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
+    #define LOG_I(fmt, ...) fprintf(stderr, "[I][%s] " fmt "\n", DBG_TAG, ##__VA_ARGS__)
 #endif
 
 #include "app_manager.h"
@@ -103,7 +103,7 @@ static atomic_bool s_active_home_valid;
 static atomic_bool s_active_is_home;
 
 #ifdef HOST_TEST
-static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
+    static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
 #endif
 
 #if CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG
@@ -1763,6 +1763,8 @@ static esp_err_t _lifecycle_back_app(
     app_manager_page_node_t *target_page = target_app != NULL ?
                                            target_app->current_page : NULL;
     esp_err_t result = ESP_OK;
+    app_manager_page_node_t *stopped[APP_MANAGER_MAX_PAGE_INSTANCES];
+    size_t stopped_count = 0U;
 
     for (app_manager_page_node_t *page = source_page->previous;
             page != NULL; page = page->previous)
@@ -1770,27 +1772,46 @@ static esp_err_t _lifecycle_back_app(
         result = _lifecycle_stop_page(page);
         if (result != ESP_OK)
         {
-            return result;
+            break;
         }
+        stopped[stopped_count++] = page;
     }
-    if (target_page != NULL)
+    if (result == ESP_OK && target_page != NULL)
     {
         result = _lifecycle_start_page(target_page);
         if (result == ESP_OK)
         {
             result = _lifecycle_mount_page(target_page);
         }
-        if (result != ESP_OK)
+    }
+    if (result == ESP_OK)
+    {
+        app_manager_transition_t transition =
+            _lifecycle_resolve_request_transition(request, &s_settings.app_back);
+        result = _lifecycle_begin_transition(
+                     LIFECYCLE_TRANSITION_BACK_APP, source_app, source_page,
+                     target_app, target_page, false, false, &transition,
+                     completion, context);
+    }
+    if (result != ESP_OK)
+    {
+        /* The child pages were fully stopped for this exit; their instances
+         * are dead. Keep them linked would let the next BACK re-issue
+         * ONSTART on released private memory, violating one START per
+         * instance. Drop them like an uncommitted target instead; the app
+         * resumes from the source page as its only page. */
+        while (stopped_count > 0U)
         {
-            return result;
+            app_manager_page_node_t *page = stopped[--stopped_count];
+            const esp_err_t cleanup_result = _lifecycle_free_page(page);
+            if (cleanup_result != ESP_OK && page->in_use)
+            {
+                page->cleanup_pending = true;
+                LOG_W("back abort cleanup deferred: %s",
+                      esp_err_to_name(cleanup_result));
+            }
         }
     }
-    app_manager_transition_t transition =
-        _lifecycle_resolve_request_transition(request, &s_settings.app_back);
-    result = _lifecycle_begin_transition(
-                 LIFECYCLE_TRANSITION_BACK_APP, source_app, source_page,
-                 target_app, target_page, false, false, &transition,
-                 completion, context);
     return result;
 }
 
@@ -2350,7 +2371,7 @@ esp_err_t app_manager_lifecycle_screen_pause(void)
                 &s_screen_phase, &expected, LIFECYCLE_SCREEN_PAUSING,
                 memory_order_acq_rel, memory_order_acquire))
     {
-        return result;
+        return ESP_ERR_INVALID_STATE;
     }
     result = _lifecycle_pause_page(page);
     if (result != ESP_OK)

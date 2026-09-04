@@ -38,6 +38,7 @@
 #define TS_CLOSE_SIZE     48
 #define TS_FADE_MS        180
 #define TS_MEM_WARN_PCT   85
+#define TS_DRAG_SLOP      10
 
 typedef enum app_manager_task_switcher_state
 {
@@ -51,6 +52,9 @@ typedef struct app_manager_task_switcher_card
     const char *app_id;
     lv_obj_t *root;
     lv_obj_t *status;
+    int32_t press_x;
+    int32_t press_y;
+    bool press_moved;
     bool current;
 } app_manager_task_switcher_card_t;
 
@@ -74,6 +78,7 @@ typedef struct app_manager_task_switcher_state_data
 } app_manager_task_switcher_state_data_t;
 
 static app_manager_task_switcher_state_data_t s_switcher;
+static uint32_t s_switcher_generation;
 
 static void _switcher_rebuild(void);
 static void _switcher_exit_complete(esp_err_t result, void *context);
@@ -82,6 +87,7 @@ static void _switcher_update_memory(void);
 
 static void _switcher_destroy_cards(void)
 {
+    s_switcher_generation++;
     for (size_t index = 0U; index < s_switcher.card_count; index++)
     {
         if (s_switcher.cards[index].root != NULL &&
@@ -193,13 +199,13 @@ static void _switcher_close_task(const char *app_id)
     }
 }
 
-static void _switcher_card_clicked(app_manager_task_switcher_card_t *card)
+static void _switcher_activate_task(const char *app_id, bool current)
 {
     if (s_switcher.state != APP_MANAGER_TASK_SWITCHER_VISIBLE)
     {
         return;
     }
-    if (card->current)
+    if (current)
     {
         _switcher_hide();
         return;
@@ -207,7 +213,7 @@ static void _switcher_card_clicked(app_manager_task_switcher_card_t *card)
     const app_manager_nav_request_t request =
     {
         .operation = APP_MANAGER_NAV_OP_RUN,
-        .app_id = card->app_id,
+        .app_id = app_id,
         .transition =
         {
             .effect = APP_MANAGER_TRANSITION_DEFAULT,
@@ -217,13 +223,30 @@ static void _switcher_card_clicked(app_manager_task_switcher_card_t *card)
 }
 
 /* Both actions delete the card tree (hide/close), so they must not run inside
- * the CLICKED callback of the very object being destroyed. Defer to the next
- * idle cycle via lv_async_call; the card struct lives in the static array and
- * app_id points at stable descriptor storage, so the captured pointers stay
- * valid until the deferred call runs. */
+ * the CLICKED callback of the very object being destroyed. Capture the values
+ * (app_id points at stable descriptor storage) plus the list generation at
+ * event time and defer via lv_async_call: an exit/clear completion can rebuild
+ * the list within the same frame, which would rebind a captured slot. */
+typedef struct
+{
+    const char *app_id;
+    bool current;
+    uint32_t generation;
+} switcher_click_capture_t;
+
+#define TS_CLICK_CAPTURE_SLOTS 4
+
+static switcher_click_capture_t s_click_captures[TS_CLICK_CAPTURE_SLOTS];
+static size_t s_click_capture_next;
+
 static void _switcher_card_activate_async(void *user_data)
 {
-    _switcher_card_clicked((app_manager_task_switcher_card_t *)user_data);
+    const switcher_click_capture_t *capture = user_data;
+    if (capture->generation != s_switcher_generation)
+    {
+        return; /* List rebuilt since the click. */
+    }
+    _switcher_activate_task(capture->app_id, capture->current);
 }
 
 static void _switcher_close_task_async(void *user_data)
@@ -231,17 +254,49 @@ static void _switcher_close_task_async(void *user_data)
     _switcher_close_task((const char *)user_data);
 }
 
-/* The card is a plain clickable button inside a vertically scrollable list.
- * LVGL suppresses CLICKED once a drag turns into a scroll, so a tap selects
- * and a swipe scrolls without any custom gesture classification. */
+/* LVGL withholds CLICKED only when a drag turns into a scroll, so a
+ * horizontal swipe (or vertical swipe on a non-overflowing list) released on
+ * the same card would still activate it. Track press displacement and drop
+ * the click beyond a small slop. */
+static void _switcher_drag_guard_event(lv_event_t *event)
+{
+    app_manager_task_switcher_card_t *card = lv_event_get_user_data(event);
+    lv_point_t point;
+    lv_indev_get_point(lv_indev_active(), &point);
+    if (lv_event_get_code(event) == LV_EVENT_PRESSED)
+    {
+        card->press_x = point.x;
+        card->press_y = point.y;
+        card->press_moved = false;
+        return;
+    }
+    const int32_t dx = point.x - card->press_x;
+    const int32_t dy = point.y - card->press_y;
+    if (dx * dx + dy * dy > TS_DRAG_SLOP * TS_DRAG_SLOP)
+    {
+        card->press_moved = true;
+    }
+}
+
 static void _switcher_card_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED)
     {
         return;
     }
-    (void)lv_async_call(_switcher_card_activate_async,
-                        lv_event_get_user_data(event));
+    app_manager_task_switcher_card_t *card = lv_event_get_user_data(event);
+    if (card->press_moved)
+    {
+        return;
+    }
+    switcher_click_capture_t *capture =
+        &s_click_captures[s_click_capture_next];
+    s_click_capture_next =
+        (s_click_capture_next + 1U) % TS_CLICK_CAPTURE_SLOTS;
+    capture->app_id = card->app_id;
+    capture->current = card->current;
+    capture->generation = s_switcher_generation;
+    (void)lv_async_call(_switcher_card_activate_async, capture);
 }
 
 static void _switcher_card_close_event(lv_event_t *event)
@@ -252,6 +307,10 @@ static void _switcher_card_close_event(lv_event_t *event)
     }
     const app_manager_task_switcher_card_t *card =
         lv_event_get_user_data(event);
+    if (card->press_moved)
+    {
+        return;
+    }
     (void)lv_async_call(_switcher_close_task_async, (void *)card->app_id);
 }
 
@@ -292,8 +351,7 @@ static void _switcher_set_memory_row(lv_obj_t *bar, lv_obj_t *value,
                          sizeof(text));
     lv_label_set_text(value, text);
     const int used = total_bytes != 0U ?
-                     (int)(((total_bytes - free_bytes) * 100U) / total_bytes) :
-                     0;
+                     (int)((used_bytes * 100U) / total_bytes) : 0;
     lv_bar_set_value(bar, used, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(bar,
                               lv_color_hex(used >= TS_MEM_WARN_PCT ?
@@ -445,6 +503,10 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
     /* Click-only: releasing off the card after a drag that did not scroll must
      * not select it. */
     lv_obj_remove_flag(button, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_event_cb(button, _switcher_drag_guard_event, LV_EVENT_PRESSED,
+                        card);
+    lv_obj_add_event_cb(button, _switcher_drag_guard_event, LV_EVENT_PRESSING,
+                        card);
     lv_obj_add_event_cb(button, _switcher_card_event, LV_EVENT_CLICKED, card);
 
     lv_obj_t *icon = lv_obj_create(button);
@@ -546,6 +608,10 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                                LV_OBJ_FLAG_SCROLL_ELASTIC |
                                LV_OBJ_FLAG_SCROLL_MOMENTUM);
             lv_obj_remove_flag(close, LV_OBJ_FLAG_PRESS_LOCK);
+            lv_obj_add_event_cb(close, _switcher_drag_guard_event,
+                                LV_EVENT_PRESSED, card);
+            lv_obj_add_event_cb(close, _switcher_drag_guard_event,
+                                LV_EVENT_PRESSING, card);
             lv_obj_add_event_cb(close, _switcher_card_close_event,
                                 LV_EVENT_CLICKED, card);
             lv_obj_t *mark = lv_label_create(close);
@@ -743,8 +809,13 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_set_style_bg_opa(s_switcher.root, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN |
                     LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING);
-    lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_CLICKABLE);
+    /* Stay CLICKABLE: the full-screen surface must intercept every touch while
+     * visible, including header and memory-footer bands, so nothing reaches
+     * the covered app. Taps landing on the surface itself dismiss the
+     * switcher, matching the empty backdrop behaviour. */
+    lv_obj_add_event_cb(s_switcher.root, _switcher_content_event,
+                        LV_EVENT_CLICKED, NULL);
+    lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Header: title on the left, clear-all on the right. */
     lv_obj_t *header = lv_obj_create(s_switcher.root);

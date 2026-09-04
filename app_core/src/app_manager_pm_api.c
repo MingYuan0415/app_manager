@@ -400,6 +400,20 @@ esp_err_t app_manager_pm_set_timeout_ms(int32_t timeout_ms)
     return app_manager_control_call(command);
 }
 
+esp_err_t app_manager_pm_set_timeout_ms_async(int32_t timeout_ms)
+{
+    if (timeout_ms < -1 || (timeout_ms >= 0 && timeout_ms < s_dim_timeout_ms))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    control_command_t command =
+    {
+        .type = CONTROL_SET_OFF_TIMEOUT,
+        .data.timeout_ms = timeout_ms,
+    };
+    return app_manager_control_post(command);
+}
+
 int32_t app_manager_pm_get_standby_delay_ms(void)
 {
     if (!app_manager_control_access_begin())
@@ -425,6 +439,20 @@ esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms)
         .data.timeout_ms = timeout_ms,
     };
     return app_manager_control_call(command);
+}
+
+esp_err_t app_manager_pm_set_standby_delay_ms_async(int32_t timeout_ms)
+{
+    if (timeout_ms < -1)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    control_command_t command =
+    {
+        .type = CONTROL_SET_STANDBY_TIMEOUT,
+        .data.timeout_ms = timeout_ms,
+    };
+    return app_manager_control_post(command);
 }
 
 esp_err_t app_manager_screen_suspend(void)

@@ -240,7 +240,15 @@ static void _navigation_complete(esp_err_t result, void *context)
     navigation_started = command->navigation_started;
     synchronous = command->synchronous;
     done = command->done;
-    if (!synchronous)
+    if (synchronous)
+    {
+        /* Publish the token in the same critical section as
+         * `completed = true`: a timed-out waiter frees the slot right
+         * after observing completion, and a give issued later would land
+         * on a reused slot whose drain at allocation time already ran. */
+        xSemaphoreGive(done);
+    }
+    else
     {
         completion = command->completion;
         completion_context = command->completion_context;
@@ -264,11 +272,7 @@ static void _navigation_complete(esp_err_t result, void *context)
         app_manager_back_gesture_navigation_settled();
     }
 
-    if (synchronous)
-    {
-        xSemaphoreGive(done);
-    }
-    else if (completion != NULL)
+    if (!synchronous && completion != NULL)
     {
         completion(result, completion_context);
     }
@@ -795,9 +799,13 @@ esp_err_t app_manager_navigation_submit_switcher_exit(
 
     if (request == NULL ||
             request->operation != APP_MANAGER_NAV_OP_EXIT ||
-            request->app_id == NULL || !_navigation_access_begin())
+            request->app_id == NULL)
     {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!_navigation_access_begin())
+    {
+        return ESP_ERR_INVALID_STATE;
     }
     if (!app_manager_lifecycle_screen_access_begin())
     {
