@@ -35,13 +35,13 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/include/app_manager_config.h` | 装配层使用的 BSP、资源、驻留策略和默认动画配置 |
 | `app_core/src/app_manager_builtin.c` | 静态 App registry、路由校验和查询 |
 | `app_core/src/app_manager_nav_model.c` | App/Page 固定槽、双向链表、arena 和模型不变量 |
-| `app_core/src/app_manager_navigation.c` | 24 槽 sync/async command gateway 和超时语义 |
+| `app_core/src/app_manager_navigation.c` | 固定容量 sync/async command gateway 和超时语义（产品基线 8 槽） |
 | `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
 | `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、全分辨率快照/Image 转场、原生回退和触摸屏障 |
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
-| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：卡片、上滑关闭、清除与生命周期协作 |
+| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：纵向卡片列表、逐卡关闭、全部清除、设备内存概览与生命周期协作 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
@@ -53,7 +53,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 ordinary task / UI callback / lifecycle callback / Sys Layer gesture
                     |
                     v
-        navigation command gateway (24)
+        navigation command gateway (8)
                     |
                     v
              UI worker mailbox
@@ -76,7 +76,7 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 | --- | ---: | --- |
 | 物理 App 槽 | 8 | 按驻留策略拒绝或淘汰 |
 | 物理 Page 槽 | 12 | `ESP_ERR_NO_MEM` |
-| 导航命令槽 | 24 | `ESP_ERR_NO_MEM` |
+| 导航命令槽 | `CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY`（产品基线 8，Kconfig 缺省 24） | `ESP_ERR_NO_MEM` |
 | App/Page ID | 最多 31 字节加 `\0` | `ESP_ERR_INVALID_ARG` |
 | Typed Blob | 96 字节，其中 payload 88 字节 | `ESP_ERR_INVALID_ARG` |
 | 动画时长 | 1..2000 ms，0 表示使用默认值 | `ESP_ERR_INVALID_ARG` |
@@ -84,8 +84,8 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
 `app_manager_image_resource_config_t` 将产品语义 ID 映射
 到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
-复制该 ID，任务切换器以 40--48 px 图标显示，资源缺失或 ID 为零时回退 LVGL
-symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
+复制该 ID，任务切换器以 56 px 图标底衬内嵌 44 px 图像显示，资源缺失或 ID 为零时
+回退 LVGL symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
 BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
 始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
 `app_manager_deinit()`，因此全部 LVGL Image 对象必须先由正常页面生命周期销毁。
@@ -112,7 +112,8 @@ context 访问同一 Page state。页面成功释放后不得继续保存该指�
 - `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
 
 `APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
-双击 HOME 打开系统任务切换器、单击 HOME 回到 HOME 根页（见第 10.1 节）。需要释放
+双击 HOME 打开系统任务切换器；单击 HOME 按当前活跃 App 路由：活跃为 Home 时回到
+HOME 根页，否则进入应用目录（见第 10.1 节）。需要释放
 其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
 ## 4. 静态 Registry 与 App-owned Routes
@@ -383,7 +384,7 @@ indicator，不产生导航命令；达到阈值后提交一条既有异步 `BAC
 按下时手势控制器会取得 navigation epoch token，并在移动和释放时持续校验。若期间已有
 其他导航获得准入，token 立即失效，本次手势只隐藏 indicator，不再提交过期 `BACK`；
 释放时的条件提交还会再次核对 epoch 和当前 source App。成功提交后命令仍进入统一的
-24 槽 FIFO，不建立第二套导航队列。
+固定容量命令 FIFO，不建立第二套导航队列。
 
 新导航开始、Screen suspend 或 deinit 会取消尚未提交的指针序列并隐藏 indicator；
 Screen resume 或导航稳定结束后重新计算当前页面是否允许捕获。已经成功准入 navigation
@@ -478,7 +479,7 @@ lifecycle callback 调用。返回值只表示 command slot 和 mailbox 准入�
 结果由 UI worker 上的 completion 给出。生命周期回调内的重入请求进入同一 FIFO，不会
 递归修改当前 nav model。
 
-固定 command pool 有 24 槽。池满或 mailbox 拒绝时立即返回 `ESP_ERR_NO_MEM`，此时
+固定 command pool 容量由 `CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY` 决定（产品基线 8）。池满或 mailbox 拒绝时立即返回 `ESP_ERR_NO_MEM`，此时
 completion 不会执行。
 
 ## 9. 清理失败与失败回滚
@@ -519,36 +520,35 @@ typed ops 的 `pause` 和 `stop` 直接返回 `esp_err_t`；未提供的回调�
 ### 10.1 双击 HOME 与系统任务切换器
 
 HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第二次点击提交
-`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时
-提交 `OPEN_PAGE(home, root)`。两种动作都经统一 navigation gateway 异步提交，且只有
+`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时按当前活跃 App 快照解析单击动作：活跃为
+Home 时提交 `OPEN_PAGE(home, root)`，否则提交 `RUN` 进入应用目录，快照不可用时
+不动作。两种动作都经统一 navigation gateway 异步提交，且只有
 worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被取消的先行命令。
 切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
 HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby 准备和 deinit 都取消
 待定窗口。worker 按窗口剩余时间缩短轮询等待，单击延迟不超过 350 ms 加一个轮询周期。
 
 最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
-App 或 Page：它在 LVGL Sys Layer 创建全屏表面，原前台 App 保持运行且不收到
-PAUSE/UNMOUNT，触摸由切换器完全接管。打开时经
-`app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含当前任务与
-`cleanup_pending` 状态）并构建紧凑横向卡片；每张卡片显示应用图标和名称，不保留屏幕
-像素缓存。点击当前任务
-卡片或空白背景关闭切换器并回原任务；点击后台任务卡片通过普通 RUN 恢复（导航
-gateway 在执行前自动隐藏切换器）；上滑卡片经 `EXIT` 关闭该任务并原地刷新列表；
-横向滑动不跟手：卡片行永久禁用原生指针滚动（无 SCROLLABLE/scroll chain/snap），
-拖动期间只累计位移，松手时若最终水平位移达到 40 px 且水平主导则按方向翻一张
-（页距为卡片宽 230 px 加间距 12 px = 242 px）；行按主轴起始对齐并在两侧留
-半屏边距，使每个页目标恰好可达、不会在分页中途被 LVGL 有界化钳制。未达阈值时
-位置不变，因此任何短上滑都绝不会产生残留位移或 LVGL throw/snap 接管。手势分类
-只看松手时相对按下的最终位移：垂直主导且 `dy <= -40`、`|dx| <= 60` 关闭；水平
-主导且 `|dx| >= 40` 分页；任一轴最大位移（含仅出现在释放样本中的位移）达到
-10 px 即抑制本次 CLICKED，背景区域拖动同样抑制。列表重建（EXIT 完成、淘汰、
-清除失败重试、重新打开）一律回到第一张 MRU 卡片；分页动画进行中再次按下会先
-稳定到已记录目标页。
-"清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁全部
-非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行前
-同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记保持
-可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列并销毁切换器对象，再
-进入页面 PAUSE；resume 后保持关闭。deinit 删除切换器和 presentation Sys Layer 对象。
+App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App 保持运行且不收到
+PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
+同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）关闭切换器并回
+原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
+当前任务与 `cleanup_pending` 状态），构建纵向可滚动卡片列表：每行全宽 92 px 卡片，
+含 56 px 图标底衬（44 px 图像）、名称、状态行（当前 / 点按切换 / 关闭失败）与右侧
+48 px 独立关闭按钮，不保留屏幕像素缓存；表面底部实时显示内部 RAM 与 PSRAM 的
+used/total 文本与使用条（≥85% 变红）；打开时表面 180 ms 淡入。点击后台任务卡片经
+普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；"关闭"经卡片右侧按钮提交
+`EXIT` 并原地刷新列表。CLICKED 抑制：跟随列表的滚动由 LVGL 原生 scroll 抑制；
+未形成滚动的拖拽（横向划动、列表未溢出时的纵向划动）在位移超过 10 px 时于松手
+吞掉点击，卡片与关闭按钮同样抑制。点击动作在事件时刻捕获 `app_id` 与列表
+generation 再经 `lv_async_call` 执行，同帧内的列表重建不会让延迟动作命中错误
+任务。列表重建（关闭完成、淘汰、清除失败重试、重新打开）回到列表顶部。
+"全部清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁
+全部非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行
+前同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记
+保持可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列、
+清空卡片与 busy 外壳并隐藏表面（root 骨架保留），再进入页面 PAUSE；resume 后保持
+关闭。deinit 删除切换器和 presentation Sys Layer 对象。
 
 最近任务数据由 `app_manager_get_recent_tasks()` 提供：按 MRU 顺序返回最多
 `APP_MANAGER_MAX_RECENT_TASKS` 个非 pinned、非 hidden 的驻留 App，每项包含静态
@@ -623,7 +623,10 @@ POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。st
 都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动
 的 input/PM admission 在 `app_manager_init()` 后仍保持关闭；`app_manager_startup_commit()`
 注册物理输入并从首屏真正可操作的时刻重置 inactivity epoch。
-正常亮度、DIM、熄屏和待机延迟由 App Manager 自身持久化；恢复出厂在初始化前调用
+正常亮度、DIM、熄屏和待机延迟由 App Manager 自身持久化；
+同步 PM setter 只接受非 UI worker 调用（UI worker 上返回
+`ESP_ERR_INVALID_STATE`），设置页通过 `*_async` post 提交并经 getter 观察持久化
+结果；恢复出厂在初始化前调用
 `app_manager_factory_reset_persisted_state()` 幂等删除这些设置，后续初始化恢复默认值。
 
 显示恢复遵循 `resume_prepare -> adapter resume -> Page MOUNT/RESUME -> refresh/fence ->
@@ -801,8 +804,9 @@ cmake --build /tmp/mt-app-core
 ctest --test-dir /tmp/mt-app-core --output-on-failure
 ```
 
-该套件包括 `mailbox`、`navigation`、`registry`、`nav_model`、`lifecycle`、`control`
-和 `adapter`。其中 navigation/lifecycle 测试覆盖边缘返回的 epoch 准入、条件 BACK、
+该套件包括 `mailbox`、`navigation`、`registry`、`nav_model`、`lifecycle`（含
+debug-log 变体）、`persistence`、`control`、`adapter`（含高度与 OS 组合变体）和
+`display_diagnostics`（含启用/禁用与单任务/无 OS 变体）。其中 navigation/lifecycle 测试覆盖边缘返回的 epoch 准入、条件 BACK、
 并发 FIFO 和稳定 back-target；Sys Layer 对象、几何识别及跨层资源清理由下述
 cross-layer 套件覆盖。ASan/UBSan 与 TSan 分别使用：
 
@@ -852,15 +856,7 @@ App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘�
 能够锁定水平，明显垂直或向外移动被取消，以及箭头在阈值前隐藏、ARMED 后显示、迟滞
 回撤后再次隐藏。
 
-提交前还应执行：
-
-```sh
-git diff --check
-idf.py set-target esp32s3
-idf.py build
-idf.py size
-```
-
+提交前清单以根仓库 `AGENTS.md` 与 `doc/code-style.md` §8.2 为准，本节不另立门禁。
 C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
 
 - App/Page 双向切换至少 100 次，无空白帧和触摸穿透；

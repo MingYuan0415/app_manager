@@ -4,8 +4,10 @@ These tests compile the production static registry, navigation model, command ga
 mailbox, lifecycle, control, and LVGL adapter sources with only the FreeRTOS/LVGL/hardware
 port surface replaced by host shims.
 
-The suites cover app-owned route and shared-definition validation, randomized model invariants, the fixed
-24-slot navigation pool, value-copy semantics, callback reentrancy, both timeout paths,
+The suites cover persistence, display diagnostics profiles, and app-owned
+route and shared-definition validation, randomized model invariants, the fixed-capacity
+navigation pool (`CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY`, product baseline 8),
+value-copy semantics, callback reentrancy, both timeout paths,
 seven-stage lifecycle order, new intent delivery, resident eviction, detached cleanup,
 Screen rollback, suspend/resume, and retryable PAUSE/STOP failures. The adapter test
 enables its filesystem and FreeType paths and injects failures at every initialization and
