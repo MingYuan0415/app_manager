@@ -3,6 +3,7 @@
 #include "mt_log.h"
 
 #include "app_manager.h"
+#include "app_theme_colors.h"
 #include "app_manager_lifecycle_internal.h"
 #include "app_manager_navigation.h"
 #include "app_manager_task_switcher.h"
@@ -17,17 +18,17 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Palette mirrors layers/apps/common/include/app_ui_theme.h; app_manager has
- * no dependency on the apps layer, so the tokens are duplicated here. */
-#define TS_COLOR_BACKGROUND     0x090D0F
-#define TS_COLOR_SURFACE        0x151B1F
-#define TS_COLOR_SURFACE_HI     0x20282D
-#define TS_COLOR_TEXT           0xF2F5F6
-#define TS_COLOR_MUTED          0x93A0A6
-#define TS_COLOR_RAIN           0x4FC4D8
-#define TS_COLOR_WARNING        0xFF756C
-#define TS_COLOR_ICON_BG        0x0E1315
-#define TS_COLOR_ICON_FALLBACK  0x4A555A
+/* Single source of raw colours: app_theme (app_core REQUIRES app_theme, so
+ * the shell shares the exact tokens every application page renders with). */
+#define TS_COLOR_BACKGROUND     APP_THEME_COLOR_VOID
+#define TS_COLOR_SURFACE        APP_THEME_COLOR_PLUME
+#define TS_COLOR_SURFACE_HI     APP_THEME_COLOR_PLUME_HI
+#define TS_COLOR_TEXT           APP_THEME_COLOR_INK
+#define TS_COLOR_MUTED          APP_THEME_COLOR_INK_SOFT
+#define TS_COLOR_RAIN           APP_THEME_COLOR_AZURE
+#define TS_COLOR_WARNING        APP_THEME_COLOR_CORAL
+#define TS_COLOR_ICON_BG        APP_THEME_COLOR_SUNKEN
+#define TS_COLOR_ICON_FALLBACK  APP_THEME_COLOR_HAIRLINE
 
 #define TS_HEADER_HEIGHT  52
 #define TS_RAM_HEIGHT     92

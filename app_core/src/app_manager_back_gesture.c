@@ -15,6 +15,7 @@
 #endif
 
 #include "app_manager.h"
+#include "app_theme_colors.h"
 #include "app_manager_back_gesture.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
@@ -47,8 +48,9 @@
 #define APP_MANAGER_GESTURE_INDICATOR_MAX_DEPTH  62
 #define APP_MANAGER_GESTURE_INDICATOR_OPA        220
 #define APP_MANAGER_GESTURE_INDICATOR_MARGIN      8
-#define APP_MANAGER_GESTURE_INDICATOR_COLOR       0x202124U
-#define APP_MANAGER_GESTURE_ARROW_COLOR           0xFFFFFFU
+#define APP_MANAGER_GESTURE_INDICATOR_COLOR \
+    APP_THEME_COLOR_PLUME_HI /* edge pill sits on VOID, not pure grey */
+#define APP_MANAGER_GESTURE_ARROW_COLOR APP_THEME_COLOR_INK
 #define APP_MANAGER_GESTURE_Q15_SHIFT             15U
 #define APP_MANAGER_GESTURE_Q15_ONE               (1U << APP_MANAGER_GESTURE_Q15_SHIFT)
 #define APP_MANAGER_GESTURE_Q15_HALF              (APP_MANAGER_GESTURE_Q15_ONE / 2U)
