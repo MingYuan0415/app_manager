@@ -29,16 +29,11 @@ cmake -S app_core/tests/host -B /tmp/mt-app-manager-host-tests
 cmake --build /tmp/mt-app-manager-host-tests
 ctest --test-dir /tmp/mt-app-manager-host-tests --output-on-failure
 
-cmake -S app_core/tests/host -B /tmp/mt-app-manager-host-asan \
-    -DAPP_MANAGER_SANITIZER=address
-cmake --build /tmp/mt-app-manager-host-asan
-ctest --test-dir /tmp/mt-app-manager-host-asan --output-on-failure
-
-cmake -S app_core/tests/host -B /tmp/mt-app-manager-host-tsan \
-    -DAPP_MANAGER_SANITIZER=thread
-cmake --build /tmp/mt-app-manager-host-tsan
-ctest --test-dir /tmp/mt-app-manager-host-tsan --output-on-failure
 ```
+
+`APP_MANAGER_SANITIZER=address` or `thread` is an additional profile for
+memory-ownership or concurrency changes. Select the profile matching the risk
+and use a separate build directory; both profiles are not required by default.
 
 On x86_64 Linux the TSan profile uses `setarch -R` when available. This avoids
 the GCC runtime's `unexpected memory mapping` failure under WSL2 ASLR.

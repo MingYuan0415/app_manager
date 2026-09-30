@@ -61,7 +61,7 @@ typedef enum
     APP_ADAPTER_DEINITIALIZING,
 } app_adapter_state_t;
 
-static atomic_int s_state = ATOMIC_VAR_INIT(APP_ADAPTER_UNINITIALIZED);
+static atomic_int s_state = APP_ADAPTER_UNINITIALIZED;
 static atomic_flag s_cleanup_busy = ATOMIC_FLAG_INIT;
 static bool s_theme_ready;
 static bool s_adapter_ready;

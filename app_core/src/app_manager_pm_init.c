@@ -51,7 +51,7 @@ int32_t s_dim_timeout_ms = APP_CONTROL_DEFAULT_DIM_MS;
 int32_t s_off_timeout_ms = APP_CONTROL_DEFAULT_OFF_MS;
 int32_t s_standby_timeout_ms = APP_CONTROL_DEFAULT_STANDBY_MS;
 uint8_t s_brightness = UINT8_MAX;
-atomic_int s_lifecycle_state = ATOMIC_VAR_INIT(CONTROL_UNINITIALIZED);
+atomic_int s_lifecycle_state = CONTROL_UNINITIALIZED;
 atomic_uint s_active_accesses;
 atomic_bool s_wake_pending;
 atomic_uint s_power_pending_events;

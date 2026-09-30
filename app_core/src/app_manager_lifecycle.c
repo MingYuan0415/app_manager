@@ -96,7 +96,7 @@ static app_manager_app_node_t *s_recovery_app;
 static app_manager_page_node_t *s_recovery_page;
 static atomic_bool s_target_recovery_pending;
 static atomic_bool s_transitioning;
-static atomic_int s_screen_phase = ATOMIC_VAR_INIT(LIFECYCLE_SCREEN_CLOSED);
+static atomic_int s_screen_phase = LIFECYCLE_SCREEN_CLOSED;
 static atomic_uint s_screen_accesses;
 static atomic_uint s_paused_running_apps;
 static atomic_bool s_active_home_valid;

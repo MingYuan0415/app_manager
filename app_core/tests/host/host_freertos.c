@@ -37,7 +37,7 @@ typedef struct host_timer
     uint64_t period_us;
 } host_timer_t;
 
-atomic_uint g_host_semaphore_timeout_count = ATOMIC_VAR_INIT(0U);
+atomic_uint g_host_semaphore_timeout_count = 0U;
 static atomic_uint s_host_semaphore_create_count;
 static atomic_uint s_host_semaphore_delete_count;
 static atomic_uint s_host_semaphore_null_delete_count;
