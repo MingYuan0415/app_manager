@@ -2,4 +2,4 @@ version: "0.6.0"
 description: "Application manager core for microtech"
 dependencies:
   idf: ">=5.0"
-  espressif/esp_lvgl_adapter: "*"
+  espressif/esp_lvgl_adapter: "0.7.2"

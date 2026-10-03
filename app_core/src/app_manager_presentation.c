@@ -7,20 +7,20 @@
 
 #if defined(CONFIG_APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION) && \
     CONFIG_APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION
-#define APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED 1
-#include "esp_heap_caps.h"
-#ifndef HOST_TEST
-#include "esp_log.h"
-#endif
+    #define APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED 1
+    #include "esp_heap_caps.h"
+    #ifndef HOST_TEST
+        #include "esp_log.h"
+    #endif
 #else
-#define APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED 0
+    #define APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED 0
 #endif
 
 #define APP_MANAGER_PRESENTATION_TIMER_MS 1U
 
 #if APP_MANAGER_PRESENTATION_SNAPSHOT_ENABLED
-#define APP_MANAGER_PRESENTATION_SNAPSHOT_PROGRESS_MAX 1000
-#define APP_MANAGER_PRESENTATION_LOG_TAG "app_presentation"
+    #define APP_MANAGER_PRESENTATION_SNAPSHOT_PROGRESS_MAX 1000
+    #define APP_MANAGER_PRESENTATION_LOG_TAG "app_presentation"
 #endif
 
 typedef struct app_manager_presentation_state
@@ -80,11 +80,11 @@ static void _presentation_set_blocked(bool blocked)
     if (blocked)
     {
         lv_obj_move_to_index(s_presentation.input_blocker, -1);
-        lv_obj_remove_flag(s_presentation.input_blocker, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_presentation.input_blocker, false);
     }
     else
     {
-        lv_obj_add_flag(s_presentation.input_blocker, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_presentation.input_blocker, true);
     }
 }
 
@@ -208,11 +208,11 @@ static void _presentation_snapshot_init_buffers(void)
 static bool _presentation_snapshot_tree_has_visible_overflow(
     const lv_obj_t *object)
 {
-    if (object == NULL || lv_obj_has_flag(object, LV_OBJ_FLAG_HIDDEN))
+    if (object == NULL || lv_obj_is_hidden(object))
     {
         return false;
     }
-    if (lv_obj_has_flag(object, LV_OBJ_FLAG_OVERFLOW_VISIBLE))
+    if (lv_obj_is_overflow_visible(object))
     {
         return true;
     }
@@ -246,7 +246,7 @@ static bool _presentation_snapshot_screen_is_eligible(lv_obj_t *screen)
     for (uint32_t index = 0U; index < child_count; ++index)
     {
         const lv_obj_t *root = lv_obj_get_child(screen, (int32_t)index);
-        if (root == NULL || lv_obj_has_flag(root, LV_OBJ_FLAG_HIDDEN) ||
+        if (root == NULL || lv_obj_is_hidden(root) ||
                 lv_obj_get_style_bg_opa(root, LV_PART_MAIN) != LV_OPA_COVER ||
                 lv_obj_get_style_opa(root, LV_PART_MAIN) != LV_OPA_COVER)
         {
@@ -438,9 +438,11 @@ static esp_err_t _presentation_start_snapshot(
     lv_obj_set_pos(overlay, 0, 0);
     lv_obj_set_size(overlay, (int32_t)s_presentation.snapshot_width,
                     (int32_t)s_presentation.snapshot_height);
-    lv_obj_add_flag(overlay, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_ignore_layout(overlay, true);
+    lv_obj_set_scrollable(overlay, false);
+    lv_obj_set_clickable(overlay, false);
+    lv_obj_set_event_bubble(overlay, false);
+    lv_obj_set_gesture_bubble(overlay, false);
 
     from_image = lv_image_create(overlay);
     s_presentation.snapshot_from_image = from_image;
@@ -456,10 +458,14 @@ static esp_err_t _presentation_start_snapshot(
                     (int32_t)s_presentation.snapshot_height);
     lv_obj_set_size(to_image, (int32_t)s_presentation.snapshot_width,
                     (int32_t)s_presentation.snapshot_height);
-    lv_obj_remove_flag(from_image, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_remove_flag(to_image, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_scrollable(from_image, false);
+    lv_obj_set_clickable(from_image, false);
+    lv_obj_set_event_bubble(from_image, false);
+    lv_obj_set_gesture_bubble(from_image, false);
+    lv_obj_set_scrollable(to_image, false);
+    lv_obj_set_clickable(to_image, false);
+    lv_obj_set_event_bubble(to_image, false);
+    lv_obj_set_gesture_bubble(to_image, false);
     if (effect >= APP_MANAGER_TRANSITION_REVEAL_LEFT &&
             effect <= APP_MANAGER_TRANSITION_REVEAL_DOWN)
     {
@@ -808,8 +814,7 @@ esp_err_t app_manager_presentation_init(void)
     lv_obj_set_style_bg_color(s_presentation.neutral_screen,
                               lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_presentation.neutral_screen, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_presentation.neutral_screen,
-                       LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(s_presentation.neutral_screen, false);
 
     system_layer = lv_display_get_layer_sys(s_presentation.display);
     if (system_layer == NULL)
@@ -827,12 +832,12 @@ esp_err_t app_manager_presentation_init(void)
     lv_obj_set_style_bg_opa(s_presentation.input_blocker, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_presentation.input_blocker, 0, 0);
     lv_obj_set_size(s_presentation.input_blocker, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(s_presentation.input_blocker,
-                    LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK |
-                    LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_presentation.input_blocker,
-                       LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_EVENT_BUBBLE |
-                       LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_clickable(s_presentation.input_blocker, true);
+    lv_obj_set_press_lock(s_presentation.input_blocker, true);
+    lv_obj_set_hidden(s_presentation.input_blocker, true);
+    lv_obj_set_scrollable(s_presentation.input_blocker, false);
+    lv_obj_set_event_bubble(s_presentation.input_blocker, false);
+    lv_obj_set_gesture_bubble(s_presentation.input_blocker, false);
 
     s_presentation.completion_timer = lv_timer_create(
                                           _presentation_completion_timer_cb,
@@ -925,7 +930,7 @@ lv_obj_t *app_manager_presentation_create_page_screen(void)
     lv_obj_t *screen = lv_obj_create(NULL);
     if (screen != NULL)
     {
-        lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(screen, false);
     }
     return screen;
 }

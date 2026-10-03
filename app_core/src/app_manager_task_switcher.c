@@ -113,9 +113,9 @@ static void _switcher_set_busy(bool busy)
         lv_obj_remove_style_all(s_switcher.busy);
         lv_obj_set_size(s_switcher.busy, LV_PCT(100), LV_PCT(100));
         lv_obj_set_style_bg_opa(s_switcher.busy, LV_OPA_TRANSP, 0);
-        lv_obj_add_flag(s_switcher.busy, LV_OBJ_FLAG_IGNORE_LAYOUT |
-                        LV_OBJ_FLAG_FLOATING);
-        lv_obj_remove_flag(s_switcher.busy, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_ignore_layout(s_switcher.busy, true);
+        lv_obj_set_floating(s_switcher.busy, true);
+        lv_obj_set_scrollable(s_switcher.busy, false);
         lv_obj_move_to_index(s_switcher.busy, -1);
     }
     else if (!busy && s_switcher.busy != NULL)
@@ -144,7 +144,7 @@ static void _switcher_hide(void)
     }
     if (s_switcher.root != NULL)
     {
-        lv_obj_add_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.root, true);
     }
 }
 
@@ -177,11 +177,11 @@ static void _switcher_close_task(const char *app_id)
     lv_obj_clean(s_switcher.content);
     if (s_switcher.empty_label != NULL)
     {
-        lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.empty_label, true);
     }
     if (s_switcher.clear_button != NULL)
     {
-        lv_obj_add_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.clear_button, true);
     }
     _switcher_set_busy(true);
     const app_manager_nav_request_t request =
@@ -381,11 +381,11 @@ static void _switcher_update_memory(void)
     {
         if (psram_total == 0U)
         {
-            lv_obj_add_flag(s_switcher.ram_psram_row, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.ram_psram_row, true);
         }
         else
         {
-            lv_obj_remove_flag(s_switcher.ram_psram_row, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.ram_psram_row, false);
             _switcher_set_memory_row(s_switcher.ram_psram_bar,
                                      s_switcher.ram_psram_value,
                                      psram_free, psram_total, true);
@@ -403,8 +403,9 @@ static lv_obj_t *_switcher_make_passive_row(lv_obj_t *parent)
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 10, 0);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_set_scrollable(row, false);
+    lv_obj_set_clickable(row, false);
+    lv_obj_set_click_focusable(row, false);
     return row;
 }
 
@@ -436,7 +437,8 @@ static void _switcher_build_memory_row(lv_obj_t *parent, const char *title,
                               LV_PART_INDICATOR);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_shadow_width(bar, 0, 0);
-    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(bar, false);
+    lv_obj_set_clickable(bar, false);
 
     lv_obj_t *value = lv_label_create(row);
     lv_obj_set_width(value, 108);
@@ -499,11 +501,13 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
     lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_CHAIN |
-                       LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_set_scrollable(button, false);
+    lv_obj_set_scroll_chain(button, false);
+    lv_obj_set_scroll_elastic(button, false);
+    lv_obj_set_scroll_momentum(button, false);
     /* Click-only: releasing off the card after a drag that did not scroll must
      * not select it. */
-    lv_obj_remove_flag(button, LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_set_press_lock(button, false);
     lv_obj_add_event_cb(button, _switcher_drag_guard_event, LV_EVENT_PRESSED,
                         card);
     lv_obj_add_event_cb(button, _switcher_drag_guard_event, LV_EVENT_PRESSING,
@@ -518,11 +522,13 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_style_bg_color(icon, lv_color_hex(TS_COLOR_ICON_BG), 0);
         lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(icon, 0, 0);
-        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                           LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                           LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_SCROLL_CHAIN |
-                           LV_OBJ_FLAG_SCROLL_ELASTIC |
-                           LV_OBJ_FLAG_SCROLL_MOMENTUM);
+        lv_obj_set_scrollable(icon, false);
+        lv_obj_set_clickable(icon, false);
+        lv_obj_set_click_focusable(icon, false);
+        lv_obj_set_gesture_bubble(icon, false);
+        lv_obj_set_scroll_chain(icon, false);
+        lv_obj_set_scroll_elastic(icon, false);
+        lv_obj_set_scroll_momentum(icon, false);
         const lv_image_dsc_t *icon_image = NULL;
         if (task->icon_id != 0U &&
                 app_manager_get_image(task->icon_id, &icon_image) == ESP_OK &&
@@ -534,13 +540,13 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                 lv_image_set_src(image, icon_image);
                 lv_obj_set_size(image, 44, 44);
                 lv_obj_center(image);
-                lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE |
-                                   LV_OBJ_FLAG_CLICKABLE |
-                                   LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                                   LV_OBJ_FLAG_GESTURE_BUBBLE |
-                                   LV_OBJ_FLAG_SCROLL_CHAIN |
-                                   LV_OBJ_FLAG_SCROLL_ELASTIC |
-                                   LV_OBJ_FLAG_SCROLL_MOMENTUM);
+                lv_obj_set_scrollable(image, false);
+                lv_obj_set_clickable(image, false);
+                lv_obj_set_click_focusable(image, false);
+                lv_obj_set_gesture_bubble(image, false);
+                lv_obj_set_scroll_chain(image, false);
+                lv_obj_set_scroll_elastic(image, false);
+                lv_obj_set_scroll_momentum(image, false);
             }
         }
         else
@@ -567,8 +573,9 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_height(text, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(text, 3, 0);
-        lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE |
-                           LV_OBJ_FLAG_CLICK_FOCUSABLE);
+        lv_obj_set_scrollable(text, false);
+        lv_obj_set_clickable(text, false);
+        lv_obj_set_click_focusable(text, false);
 
         lv_obj_t *name = lv_label_create(text);
         lv_obj_set_width(name, LV_PCT(100));
@@ -604,11 +611,11 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             lv_obj_set_style_border_width(close, 0, 0);
             lv_obj_set_style_shadow_width(close, 0, 0);
             lv_obj_set_style_pad_all(close, 0, 0);
-            lv_obj_remove_flag(close, LV_OBJ_FLAG_SCROLLABLE |
-                               LV_OBJ_FLAG_SCROLL_CHAIN |
-                               LV_OBJ_FLAG_SCROLL_ELASTIC |
-                               LV_OBJ_FLAG_SCROLL_MOMENTUM);
-            lv_obj_remove_flag(close, LV_OBJ_FLAG_PRESS_LOCK);
+            lv_obj_set_scrollable(close, false);
+            lv_obj_set_scroll_chain(close, false);
+            lv_obj_set_scroll_elastic(close, false);
+            lv_obj_set_scroll_momentum(close, false);
+            lv_obj_set_press_lock(close, false);
             lv_obj_add_event_cb(close, _switcher_drag_guard_event,
                                 LV_EVENT_PRESSED, card);
             lv_obj_add_event_cb(close, _switcher_drag_guard_event,
@@ -654,11 +661,11 @@ static void _switcher_rebuild(void)
     {
         if (count == 0U)
         {
-            lv_obj_remove_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.empty_label, false);
         }
         else
         {
-            lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.empty_label, true);
         }
     }
     if (s_switcher.clear_button != NULL)
@@ -666,11 +673,11 @@ static void _switcher_rebuild(void)
         if (count == 0U ||
                 s_switcher.state == APP_MANAGER_TASK_SWITCHER_MANAGING)
         {
-            lv_obj_add_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.clear_button, true);
         }
         else
         {
-            lv_obj_remove_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.clear_button, false);
         }
     }
     for (size_t index = 0U; index < count; index++)
@@ -709,11 +716,11 @@ static void _switcher_clear_clicked(lv_event_t *event)
     lv_obj_clean(s_switcher.content);
     if (s_switcher.empty_label != NULL)
     {
-        lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.empty_label, true);
     }
     if (s_switcher.clear_button != NULL)
     {
-        lv_obj_add_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.clear_button, true);
     }
     _switcher_set_busy(true);
     esp_err_t result = app_manager_navigation_submit_system_op(
@@ -808,15 +815,16 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_set_style_bg_color(s_switcher.root, lv_color_hex(TS_COLOR_BACKGROUND),
                               0);
     lv_obj_set_style_bg_opa(s_switcher.root, LV_OPA_COVER, 0);
-    lv_obj_add_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN |
-                    LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_hidden(s_switcher.root, true);
+    lv_obj_set_ignore_layout(s_switcher.root, true);
+    lv_obj_set_floating(s_switcher.root, true);
     /* Stay CLICKABLE: the full-screen surface must intercept every touch while
      * visible, including header and memory-footer bands, so nothing reaches
      * the covered app. Taps landing on the surface itself dismiss the
      * switcher, matching the empty backdrop behaviour. */
     lv_obj_add_event_cb(s_switcher.root, _switcher_content_event,
                         LV_EVENT_CLICKED, NULL);
-    lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(s_switcher.root, false);
 
     /* Header: title on the left, clear-all on the right. */
     lv_obj_t *header = lv_obj_create(s_switcher.root);
@@ -833,7 +841,8 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(header, TS_SIDE_PAD, 0);
-    lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(header, false);
+    lv_obj_set_clickable(header, false);
 
     lv_obj_t *title = lv_label_create(header);
     lv_obj_set_style_text_color(title, lv_color_hex(TS_COLOR_TEXT), 0);
@@ -887,7 +896,7 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_set_style_pad_row(s_switcher.content, TS_CARD_GAP, 0);
     lv_obj_set_scrollbar_mode(s_switcher.content, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(s_switcher.content, LV_DIR_VER);
-    lv_obj_remove_flag(s_switcher.content, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_set_click_focusable(s_switcher.content, false);
     lv_obj_add_event_cb(s_switcher.content, _switcher_content_event,
                         LV_EVENT_CLICKED, NULL);
 
@@ -904,11 +913,11 @@ esp_err_t app_manager_task_switcher_init(void *display)
         lv_label_set_text(s_switcher.empty_label, "暂无任务");
         /* Child of the root, not the list: lv_obj_clean(content) must never
          * free it. Center it over the list viewport. */
-        lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_IGNORE_LAYOUT |
-                        LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_ignore_layout(s_switcher.empty_label, true);
+        lv_obj_set_floating(s_switcher.empty_label, true);
         lv_obj_align_to(s_switcher.empty_label, s_switcher.content,
                         LV_ALIGN_CENTER, 0, 0);
-        lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_switcher.empty_label, true);
     }
 
     /* Footer: device memory usage (internal RAM and PSRAM). */
@@ -926,7 +935,8 @@ esp_err_t app_manager_task_switcher_init(void *display)
         lv_obj_set_flex_flow(ram, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(ram, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        lv_obj_remove_flag(ram, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_scrollable(ram, false);
+        lv_obj_set_clickable(ram, false);
         _switcher_build_memory_row(ram, "内部内存",
                                    &s_switcher.ram_internal_bar,
                                    &s_switcher.ram_internal_value, NULL);
@@ -986,22 +996,22 @@ esp_err_t app_manager_task_switcher_show(void)
     {
         if (count == 0U)
         {
-            lv_obj_remove_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.empty_label, false);
         }
         else
         {
-            lv_obj_add_flag(s_switcher.empty_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.empty_label, true);
         }
     }
     if (s_switcher.clear_button != NULL)
     {
         if (count == 0U)
         {
-            lv_obj_add_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.clear_button, true);
         }
         else
         {
-            lv_obj_remove_flag(s_switcher.clear_button, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_switcher.clear_button, false);
         }
     }
     for (size_t index = 0U; index < count; index++)
@@ -1014,7 +1024,7 @@ esp_err_t app_manager_task_switcher_show(void)
     _switcher_update_memory();
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
-    lv_obj_remove_flag(s_switcher.root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_switcher.root, false);
     lv_obj_move_to_index(s_switcher.root, -1);
     _switcher_start_fade();
     return ESP_OK;

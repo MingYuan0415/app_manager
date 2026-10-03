@@ -173,11 +173,11 @@ static void _back_gesture_hide_indicator(void)
 {
     if (s_gesture.indicator != NULL)
     {
-        lv_obj_add_flag(s_gesture.indicator, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_gesture.indicator, true);
     }
     if (s_gesture.arrow != NULL)
     {
-        lv_obj_add_flag(s_gesture.arrow, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_gesture.arrow, true);
     }
 }
 
@@ -198,13 +198,13 @@ static void _back_gesture_set_capture(bool enabled)
         }
         if (enabled)
         {
-            lv_obj_add_flag(strips[index], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_remove_flag(strips[index], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_clickable(strips[index], true);
+            lv_obj_set_hidden(strips[index], false);
         }
         else
         {
-            lv_obj_remove_flag(strips[index], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_flag(strips[index], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_clickable(strips[index], false);
+            lv_obj_set_hidden(strips[index], true);
         }
     }
 }
@@ -376,7 +376,7 @@ static void _back_gesture_render(int32_t inward)
                 s_gesture.width - visible_depth;
 
     lv_obj_set_pos(s_gesture.indicator, x, s_gesture.indicator_y);
-    lv_obj_remove_flag(s_gesture.indicator, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_gesture.indicator, false);
 }
 
 static void _back_gesture_update(const lv_point_t *point)
@@ -427,13 +427,13 @@ static void _back_gesture_update(const lv_point_t *point)
         if (inward < s_gesture.trigger_distance - s_gesture.hysteresis)
         {
             s_gesture.phase = APP_MANAGER_GESTURE_TRACKING;
-            lv_obj_add_flag(s_gesture.arrow, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_gesture.arrow, true);
         }
     }
     else if (inward >= s_gesture.trigger_distance)
     {
         s_gesture.phase = APP_MANAGER_GESTURE_ARMED;
-        lv_obj_remove_flag(s_gesture.arrow, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_gesture.arrow, false);
     }
 }
 
@@ -526,7 +526,7 @@ static void _back_gesture_pressed(lv_obj_t *target, lv_indev_t *indev)
                                 APP_MANAGER_GESTURE_INDICATOR_MARGIN);
     s_gesture.direction_locked = false;
     s_gesture.phase = APP_MANAGER_GESTURE_TRACKING;
-    lv_obj_add_flag(s_gesture.arrow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(s_gesture.arrow, true);
     _back_gesture_generate_indicator(s_gesture.side);
     _back_gesture_render(0);
 }
@@ -582,19 +582,20 @@ static lv_obj_t *_back_gesture_create_strip(lv_obj_t *system_layer,
     lv_obj_remove_style_all(strip);
     lv_obj_set_pos(strip, x, 0);
     lv_obj_set_size(strip, s_gesture.edge_width, s_gesture.height);
-    lv_obj_add_flag(strip, LV_OBJ_FLAG_PRESS_LOCK |
-                    LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING |
-                    LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(strip, LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                       LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_SCROLL_ELASTIC |
-                       LV_OBJ_FLAG_SCROLL_MOMENTUM |
-                       LV_OBJ_FLAG_SCROLL_CHAIN |
-                       LV_OBJ_FLAG_SCROLL_WITH_ARROW |
-                       LV_OBJ_FLAG_SNAPPABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE |
-                       LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_press_lock(strip, true);
+    lv_obj_set_ignore_layout(strip, true);
+    lv_obj_set_floating(strip, true);
+    lv_obj_set_hidden(strip, true);
+    lv_obj_set_clickable(strip, false);
+    lv_obj_set_click_focusable(strip, false);
+    lv_obj_set_scrollable(strip, false);
+    lv_obj_set_scroll_elastic(strip, false);
+    lv_obj_set_scroll_momentum(strip, false);
+    lv_obj_set_scroll_chain(strip, false);
+    lv_obj_set_scroll_with_arrow(strip, false);
+    lv_obj_set_snappable(strip, false);
+    lv_obj_set_event_bubble(strip, false);
+    lv_obj_set_gesture_bubble(strip, false);
     if (lv_obj_add_event_cb(strip, _back_gesture_event,
                             LV_EVENT_ALL, NULL) == NULL)
     {
@@ -645,13 +646,14 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
         lv_color_hex(APP_MANAGER_GESTURE_INDICATOR_COLOR), 0);
     lv_obj_set_style_image_opa(s_gesture.indicator,
                                APP_MANAGER_GESTURE_INDICATOR_OPA, 0);
-    lv_obj_add_flag(s_gesture.indicator, LV_OBJ_FLAG_IGNORE_LAYOUT |
-                    LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_gesture.indicator, LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                       LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE |
-                       LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_ignore_layout(s_gesture.indicator, true);
+    lv_obj_set_floating(s_gesture.indicator, true);
+    lv_obj_set_hidden(s_gesture.indicator, true);
+    lv_obj_set_clickable(s_gesture.indicator, false);
+    lv_obj_set_click_focusable(s_gesture.indicator, false);
+    lv_obj_set_scrollable(s_gesture.indicator, false);
+    lv_obj_set_event_bubble(s_gesture.indicator, false);
+    lv_obj_set_gesture_bubble(s_gesture.indicator, false);
     _back_gesture_generate_indicator(APP_MANAGER_GESTURE_SIDE_LEFT);
 
     s_gesture.arrow = lv_label_create(s_gesture.indicator);
@@ -664,13 +666,14 @@ static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
                                 0);
     lv_obj_set_style_text_font(s_gesture.arrow, LV_FONT_DEFAULT, 0);
     lv_label_set_text(s_gesture.arrow, LV_SYMBOL_LEFT);
-    lv_obj_add_flag(s_gesture.arrow, LV_OBJ_FLAG_IGNORE_LAYOUT |
-                    LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_gesture.arrow, LV_OBJ_FLAG_CLICKABLE |
-                       LV_OBJ_FLAG_CLICK_FOCUSABLE |
-                       LV_OBJ_FLAG_SCROLLABLE |
-                       LV_OBJ_FLAG_EVENT_BUBBLE |
-                       LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_ignore_layout(s_gesture.arrow, true);
+    lv_obj_set_floating(s_gesture.arrow, true);
+    lv_obj_set_hidden(s_gesture.arrow, true);
+    lv_obj_set_clickable(s_gesture.arrow, false);
+    lv_obj_set_click_focusable(s_gesture.arrow, false);
+    lv_obj_set_scrollable(s_gesture.arrow, false);
+    lv_obj_set_event_bubble(s_gesture.arrow, false);
+    lv_obj_set_gesture_bubble(s_gesture.arrow, false);
     lv_obj_center(s_gesture.arrow);
     return ESP_OK;
 }
