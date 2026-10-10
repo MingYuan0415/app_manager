@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /** @brief Default font sizes loaded in app_theme_font_id_t order. */
-#define APP_THEME_FONT_SIZES {18, 22, 28, 36, 48, 54}
+#define APP_THEME_FONT_SIZES {22, 18, 28, 36, 48, 54}
 
 /* 字体 ID 枚举（对齐早期 GUI_APP_FONT_*，6 档） */
 /** @brief Font roles loaded by the application theme. */

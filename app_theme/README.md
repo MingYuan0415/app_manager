@@ -10,7 +10,7 @@
 
 - `app_theme_init()` / `app_theme_deinit()`：复位或释放字体表。
 - `app_theme_set_font()` / `app_theme_get_font()`：按 `app_theme_font_id_t` 角色（BODY / SMALL / HEAD / BIGL / HUGE / TITLE）设置或获取已加载字体。
-- `APP_THEME_FONT_SIZES`：默认字号表 `{18, 22, 28, 36, 48, 54}`。
+- `APP_THEME_FONT_SIZES`：默认字号表 `{22, 18, 28, 36, 48, 54}`（BODY 22、SMALL 18）。
 
 `include/app_theme_colors.h`：AMOLED 颜色宏，包括 `APP_THEME_COLOR_VOID`、`PLUME` / `PLUME_HI` / `SUNKEN` / `HAIRLINE`、`INK` / `INK_SOFT` / `ON_ACCENT`，以及强调色 `AZURE` / `AMBER` / `MINT` / `CORAL`。
 
