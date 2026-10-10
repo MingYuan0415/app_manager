@@ -406,6 +406,42 @@ bool app_manager_back_gesture_is_enabled(void);
 Screen resume 使用时返回 `ESP_OK`，否则返回准入或 UI dispatcher 错误。业务页面不得
 直接访问或重排 Sys Layer 捕获对象。
 
+### 7.3 控制中心
+
+控制中心是 app-manager 的系统级界面（`app_manager_control_center.c`），不属于任何
+App 或 Page。它在 LVGL Sys Layer 创建一条全宽顶部捕获带（高度 20 px，水平内缩左右边缘
+返回带宽度，避免与 edge-back 在角部重叠）和一个全屏表面。任意稳定页面从顶部下滑超过
+48 px 即打开；表面打开时捕获带禁用，点击 scrim（卡片外）、edge-back 或普通导航都会
+关闭。
+
+表面内容：时间/日期、亮度滑条（拖动用临时亮度预览，松手持久化）、Wi-Fi 与蓝牙磁贴
+（三态颜色：关闭 `INK_SOFT` / 已开启未连接 `AMBER` / 已连接 `MINT`）、立即熄屏与立即
+待机。表面为懒构建：`app_manager_get_image()` 只在 `app_manager_init()` 到达 READY 后
+可用，因此在首次 `show` 时才创建图标节点。
+
+服务桥：app_manager 不依赖 connectivity/device_link/time，控制中心经注入的
+`app_manager_control_center_ops_t`（`app_manager_config_t` 可选字段）读取与请求；
+`main/app_runtime_control.c` 从 `connectivity_manager`、`device_link_service`、
+`time_service` 适配。可空 ops 会隐藏对应磁贴。ops 的 getter 在 LVGL worker 上运行且
+非阻塞；setter 只入队（Bluetooth 使用 0 等待）。
+
+门禁与所有权套用任务切换器：Screen 稳定、无转场、未 suspend、任务切换器不可见时才允许
+拉取；navigation begin 同步隐藏；screen suspend 取消并隐藏；deinit 释放表面与捕获带。
+
+运行时开关与公共 API：
+
+```c
+esp_err_t app_manager_control_center_show(void);
+esp_err_t app_manager_control_center_hide(void);
+bool      app_manager_control_center_is_visible(void);
+esp_err_t app_manager_control_center_set_enabled(bool enabled);
+bool      app_manager_control_center_is_enabled(void);
+esp_err_t app_manager_pm_request_standby(void);
+```
+
+`app_manager_pm_request_standby()` 复用 suspend 路径，屏幕熄灭后立即进入 standby，不等待
+配置的待机延时；任何用户活动或唤醒都会取消该意图。
+
 ## 8. 统一导航 Gateway
 
 所有导航使用 `app_manager_nav_request_t`：
@@ -772,6 +808,7 @@ STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、ob
 | `app_back_transition` | App 返回默认动画 |
 | `page_forward_transition` | Page 前进默认动画 |
 | `page_back_transition` | Page 返回默认动画 |
+| `control_center_ops` | 可选；控制中心服务桥，NULL 隐藏网络/时间磁贴 |
 
 其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
 `standby_ops`。配置结构由初始化路径读取，硬件操作表会复制到内部 owner。边缘返回不增加
@@ -856,6 +893,10 @@ App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘�
 `x=339` 命中而 `x=338` 不命中，提交边界应覆盖向内位移 `54/55`。同时确认轻微斜滑
 能够锁定水平，明显垂直或向外移动被取消，以及箭头在阈值前隐藏、ARMED 后显示、迟滞
 回撤后再次隐藏。
+
+控制中心的导航系统命令（`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW`）在 app-core
+宿主套件中以 stub 覆盖；Sys Layer 表面与顶部捕获带由跨层套件编译真实模块覆盖，
+`sim.control_center` 提供确定性的打开/关闭与可见性查询。
 
 提交前清单以根仓库 `AGENTS.md` 与 `doc/code-style.md` §8.2 为准，本节不另立门禁。
 C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
