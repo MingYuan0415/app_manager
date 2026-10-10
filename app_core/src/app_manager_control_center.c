@@ -286,8 +286,8 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     lv_obj_set_height(tile, CC_TILE_HEIGHT);
     lv_obj_set_flex_grow(tile, 1);
     lv_obj_set_style_radius(tile, 14, 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_SHEET),
+    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_PLUME_HI),
                               LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(tile, 0, 0);
     lv_obj_set_style_pad_all(tile, 12, 0);
@@ -367,7 +367,7 @@ static void _cc_build(void)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(brightness, 12, 0);
     lv_obj_set_style_pad_all(brightness, 8, 0);
-    lv_obj_set_style_bg_color(brightness, lv_color_hex(APP_THEME_COLOR_PLUME_HI),
+    lv_obj_set_style_bg_color(brightness, lv_color_hex(APP_THEME_COLOR_SHEET),
                               0);
     lv_obj_set_style_bg_opa(brightness, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(brightness, 14, 0);
@@ -448,9 +448,9 @@ static void _cc_build(void)
         lv_obj_set_flex_grow(buttons[i], 1);
         lv_obj_set_style_radius(buttons[i], 14, 0);
         lv_obj_set_style_bg_color(buttons[i],
-                                  lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
+                                  lv_color_hex(APP_THEME_COLOR_SHEET), 0);
         lv_obj_set_style_bg_color(buttons[i],
-                                  lv_color_hex(APP_THEME_COLOR_SHEET),
+                                  lv_color_hex(APP_THEME_COLOR_PLUME_HI),
                                   LV_STATE_PRESSED);
         lv_obj_set_style_shadow_width(buttons[i], 0, 0);
         lv_obj_set_flex_flow(buttons[i], LV_FLEX_FLOW_ROW);
