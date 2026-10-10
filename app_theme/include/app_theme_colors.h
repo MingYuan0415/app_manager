@@ -19,11 +19,9 @@
 #define APP_THEME_COLOR_VOID        0x000000 /**< Screen; pixels off. */
 #define APP_THEME_COLOR_PLUME       0x14191E /**< Card / row tile. */
 #define APP_THEME_COLOR_SHEET       0x171D23 /**< Modal sheet; above PLUME. */
-#define APP_THEME_COLOR_DIVIDER     0x1C2329 /**< Inset list row separator. */
 #define APP_THEME_COLOR_PLUME_HI    0x1E262D /**< Pressed; lightens, never darkens. */
 #define APP_THEME_COLOR_SUNKEN      0x0A0E11 /**< Icon-chip well below PLUME. */
 #define APP_THEME_COLOR_HAIRLINE    0x232C33 /**< 1 px dividers, inert glyph. */
-#define APP_THEME_COLOR_TRACK       0x2A333B /**< Progress track; one step over hairline. */
 
 /* Scrim behind modal surfaces; relies on opacity at the use site. */
 #define APP_THEME_COLOR_SCRIM       0x000000 /**< Dimming layer = VOID with alpha. */
