@@ -294,9 +294,12 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
                               LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(tile, 0, 0);
     lv_obj_set_style_pad_all(tile, 12, 0);
-    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_column(tile, 10, 0);
+    /* Icon on the left, name over state on the right; a stacked column cannot
+     * fit both text lines plus the icon inside CC_TILE_HEIGHT. */
+    lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *icon = _cc_icon(tile, image_id, 26);
@@ -310,7 +313,8 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     if (text != NULL)
     {
         lv_obj_remove_style_all(text);
-        lv_obj_set_width(text, LV_PCT(100));
+        lv_obj_set_width(text, 0);
+        lv_obj_set_flex_grow(text, 1);
         lv_obj_set_height(text, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(text, 1, 0);
