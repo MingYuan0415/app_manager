@@ -41,7 +41,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
-| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：纵向卡片列表、逐卡关闭、全部清除、设备内存概览与生命周期协作 |
+| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：横向卡片轮播、逐卡关闭（按钮或上滑）、全部清除、设备内存概览与生命周期协作 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
@@ -533,16 +533,17 @@ App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App
 PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
 同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）关闭切换器并回
 原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
-当前任务与 `cleanup_pending` 状态），构建纵向可滚动卡片列表：每行全宽 92 px 卡片，
-含 56 px 图标底衬（44 px 图像）、名称、状态行（当前 / 点按切换 / 关闭失败）与右侧
-48 px 独立关闭按钮，不保留屏幕像素缓存；表面底部实时显示内部 RAM 与 PSRAM 的
-used/total 文本与使用条（≥85% 变红）；打开时表面 180 ms 淡入。点击后台任务卡片经
-普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；"关闭"经卡片右侧按钮提交
-`EXIT` 并原地刷新列表。CLICKED 抑制：跟随列表的滚动由 LVGL 原生 scroll 抑制；
-未形成滚动的拖拽（横向划动、列表未溢出时的纵向划动）在位移超过 10 px 时于松手
-吞掉点击，卡片与关闭按钮同样抑制。点击动作在事件时刻捕获 `app_id` 与列表
-generation 再经 `lv_async_call` 执行，同帧内的列表重建不会让延迟动作命中错误
-任务。列表重建（关闭完成、淘汰、清除失败重试、重新打开）回到列表顶部。
+当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 x 276 px 卡片，
+顶部 64 px 图标底衬内嵌 56 px 图像，名称与状态行（当前 / 点按切换 / 关闭失败）在
+图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，不保留屏幕像素缓存；表面底部
+实时显示内部 RAM 与 PSRAM 的 used/total 文本与使用条（≥85% 变红）；打开时表面
+180 ms 淡入。点击后台任务卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏
+切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
+64 px）提交 `EXIT` 并原地刷新列表。CLICKED 抑制：跟随轮播的横向滚动由 LVGL 原生
+scroll 抑制；未形成滚动的拖拽在位移超过 10 px 时于松手吞掉点击，卡片与关闭按钮
+同样抑制。点击动作在事件时刻捕获 `app_id` 与列表 generation 再经 `lv_async_call`
+执行，同帧内的列表重建不会让延迟动作命中错误任务。列表重建（关闭完成、淘汰、
+清除失败重试、重新打开）回到轮播起始位置。
 "全部清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁
 全部非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行
 前同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记
