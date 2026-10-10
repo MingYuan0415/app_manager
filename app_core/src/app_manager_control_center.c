@@ -23,10 +23,11 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Shared glyph semantic IDs; mirrors layers/apps/common/include/app_image_ids.h
- * (App Manager consumes product image IDs numerically, like app icon_id). */
+/* Shared glyph semantic IDs. App Manager consumes the product image IDs
+ * numerically (like app icon_id) because it cannot include the apps headers;
+ * layers/apps/common/include/app_image_ids.h stays the single source of truth,
+ * so keep these values in sync with APP_IMAGE_UI_* there. */
 #define CC_IMAGE_WIFI        0x5788U
-#define CC_IMAGE_WIFI_OFF    0x5789U
 #define CC_IMAGE_BLUETOOTH   0x5787U
 #define CC_IMAGE_BRIGHTNESS  0x578AU
 #define CC_IMAGE_POWER       0x578BU
@@ -69,6 +70,8 @@ typedef struct app_manager_control_center
 } app_manager_control_center_t;
 
 static app_manager_control_center_t s_cc;
+/* Whether set_enabled() ran before init(); keeps a pre-init disable sticky. */
+static bool s_policy_configured;
 
 static void _cc_refresh_band(void);
 static void _cc_refresh_values(void);
@@ -587,15 +590,13 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
         return ESP_ERR_INVALID_STATE;
     }
 
-    const bool ops_set = s_cc.ops.get_wifi != NULL || s_cc.ops.get_clock != NULL ||
-                         s_cc.ops.get_bluetooth != NULL;
+    const bool saved_enabled = s_policy_configured ? s_cc.policy_enabled : true;
     app_manager_control_center_ops_t saved_ops = s_cc.ops;
     memset(&s_cc, 0, sizeof(s_cc));
     s_cc.ops = saved_ops;
-    (void)ops_set;
+    s_cc.policy_enabled = saved_enabled;
     s_cc.display = display;
     s_cc.touch = touch;
-    s_cc.policy_enabled = true;
     s_cc.width = lv_display_get_horizontal_resolution(disp);
     s_cc.height = lv_display_get_vertical_resolution(disp);
     if (s_cc.width <= 0 || s_cc.height <= 0)
@@ -612,6 +613,8 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
     s_cc.root = lv_obj_create(system_layer);
     if (s_cc.root == NULL)
     {
+        lv_obj_delete(s_cc.band);
+        s_cc.band = NULL;
         return ESP_ERR_NO_MEM;
     }
     lv_obj_remove_style_all(s_cc.root);
@@ -654,6 +657,7 @@ esp_err_t app_manager_control_center_deinit(void)
     app_manager_control_center_ops_t ops = s_cc.ops;
     memset(&s_cc, 0, sizeof(s_cc));
     s_cc.ops = ops;
+    s_policy_configured = false;
     return ESP_OK;
 }
 
@@ -728,6 +732,7 @@ void app_manager_control_center_screen_resume(void)
 
 esp_err_t app_manager_control_center_set_enabled(bool enabled)
 {
+    s_policy_configured = true;
     if (!s_cc.initialized)
     {
         s_cc.policy_enabled = enabled;
