@@ -50,6 +50,7 @@ int64_t s_screen_off_us;
 int32_t s_dim_timeout_ms = APP_CONTROL_DEFAULT_DIM_MS;
 int32_t s_off_timeout_ms = APP_CONTROL_DEFAULT_OFF_MS;
 int32_t s_standby_timeout_ms = APP_CONTROL_DEFAULT_STANDBY_MS;
+bool s_standby_now_requested;
 uint8_t s_brightness = UINT8_MAX;
 atomic_int s_lifecycle_state = CONTROL_UNINITIALIZED;
 atomic_uint s_active_accesses;
@@ -256,6 +257,7 @@ static void _control_load_settings(void)
     s_dim_timeout_ms = APP_CONTROL_DEFAULT_DIM_MS;
     s_off_timeout_ms = APP_CONTROL_DEFAULT_OFF_MS;
     s_standby_timeout_ms = APP_CONTROL_DEFAULT_STANDBY_MS;
+    s_standby_now_requested = false;
     s_brightness = UINT8_MAX;
     uint32_t value;
     if (nv_storage_get_u8(NVS_KEY_BRIGHTNESS, &s_brightness) != ESP_OK)

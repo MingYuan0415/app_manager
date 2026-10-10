@@ -149,6 +149,36 @@ esp_err_t app_manager_back_gesture_set_enabled(bool enabled);
  */
 bool app_manager_back_gesture_is_enabled(void);
 
+/**
+ * @brief Open or close the system control-center surface.
+ * @return ESP_OK when the surface reached the intended state, otherwise an
+ *         ESP-IDF error.
+ * @note Call only from the LVGL worker.
+ */
+esp_err_t app_manager_control_center_show(void);
+/**
+ * @brief Hide the system control-center surface.
+ * @return ESP_OK when released or already hidden.
+ * @note Call only from the LVGL worker.
+ */
+esp_err_t app_manager_control_center_hide(void);
+/**
+ * @brief Report whether the control-center surface is visible.
+ * @return true while visible; false before init, after deinit, or when hidden.
+ */
+bool app_manager_control_center_is_visible(void);
+/**
+ * @brief Enable or disable the top pull-down entry to the control center.
+ * @param enabled selects whether a top-edge page pull may open the surface.
+ * @return ESP_OK when applied.
+ */
+esp_err_t app_manager_control_center_set_enabled(bool enabled);
+/**
+ * @brief Report the control-center top pull-down policy.
+ * @return true when enabled; false before init, after deinit, or when disabled.
+ */
+bool app_manager_control_center_is_enabled(void);
+
 /* ── 页面私有内存（handler 内使用） ── */
 
 /**
@@ -257,6 +287,16 @@ esp_err_t app_manager_input_inject(app_manager_key_t key,
  * @return ESP_OK when the control queue accepts it, otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_pm_request_screen_off(void);
+/**
+ * @brief Queue an immediate screen-off followed by standby.
+ *
+ * Reuses the normal suspend path and then enters standby as soon as the panel
+ * is off, without waiting for the configured standby delay. Any user activity
+ * or wake cancels the latched intent.
+ *
+ * @return ESP_OK when the control queue accepts it, otherwise an ESP-IDF error.
+ */
+esp_err_t app_manager_pm_request_standby(void);
 /**
  * @brief Notify application PM of task-context user activity.
  * @return ESP_OK when accepted, otherwise an ESP-IDF error.

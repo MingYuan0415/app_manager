@@ -292,6 +292,12 @@ esp_err_t app_manager_pm_request_screen_off(void)
     return app_manager_screen_suspend();
 }
 
+esp_err_t app_manager_pm_request_standby(void)
+{
+    control_command_t command = {.type = CONTROL_STANDBY_NOW};
+    return app_manager_control_post(command);
+}
+
 app_manager_pm_state_t app_manager_pm_get_state(void)
 {
     if (!app_manager_control_access_begin())

@@ -64,6 +64,7 @@ add_host_test(mailbox test_mailbox)
 add_executable(test_navigation
     test_navigation.c
     task_switcher_stub.c
+    control_center_stub.c
     "${APP_CORE_DIR}/src/app_manager_navigation.c"
 )
 configure_host_test(test_navigation)
@@ -97,6 +98,7 @@ function(add_lifecycle_test name target lifecycle_log)
     add_executable(${target}
         test_lifecycle.c
         task_switcher_stub.c
+        control_center_stub.c
         "${APP_CORE_DIR}/src/app_manager_mailbox.c"
         "${APP_CORE_DIR}/src/app_manager_builtin.c"
         "${APP_CORE_DIR}/src/app_manager_lifecycle.c"
@@ -137,6 +139,7 @@ function(add_adapter_test name target buffer_height diagnostics os_none)
     add_executable(${target}
         test_adapter.c
         task_switcher_stub.c
+        control_center_stub.c
         "${APP_CORE_DIR}/src/app_manager_lvgl_adapter.c"
     )
     if(NOT diagnostics)

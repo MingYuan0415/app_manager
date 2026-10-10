@@ -66,6 +66,7 @@ typedef enum
     APP_MANAGER_NAV_SYSTEM_NONE = 0, /**< Empty system slot. */
     APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW, /**< Open or close the task switcher. */
     APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_CLEAR_ALL, /**< Clear all tasks to Home. */
+    APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW, /**< Open or close the control center. */
     APP_MANAGER_NAV_SYSTEM_END, /**< Internal range sentinel. */
 } app_manager_nav_system_op_t;
 

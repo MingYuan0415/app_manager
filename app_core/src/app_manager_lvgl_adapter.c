@@ -4,6 +4,7 @@
 
 #include "app_manager.h"
 #include "app_manager_back_gesture.h"
+#include "app_manager_control_center.h"
 #include "app_manager_builtin.h"
 #include "app_manager_config.h"
 #include "app_manager_control.h"
@@ -72,6 +73,7 @@ static bool s_lifecycle_ready;
 static bool s_navigation_ready;
 static bool s_gesture_ready;
 static bool s_switcher_ready;
+static bool s_control_center_ready;
 static bool s_control_ready;
 static bool s_active_config_valid;
 static app_manager_config_t s_active_config;
@@ -191,6 +193,7 @@ static esp_err_t _app_adapter_enable_touch_on_ui(void *arg)
         return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_resume();
+    app_manager_control_center_screen_resume();
     lv_indev_reset(s_touch, NULL);
     (void)esp_lv_adapter_touch_notify_interrupt(s_touch);
     lv_indev_enable(s_touch, true);
@@ -206,6 +209,7 @@ static esp_err_t _app_adapter_disable_touch_on_ui(void *arg)
         return ESP_ERR_INVALID_STATE;
     }
     app_manager_back_gesture_screen_suspend();
+    app_manager_control_center_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
     LOG_D("touch input disabled");
@@ -221,6 +225,7 @@ static esp_err_t _app_adapter_pause_lifecycle_on_ui(void *arg)
     }
     app_manager_back_gesture_screen_suspend();
     app_manager_task_switcher_screen_suspend();
+    app_manager_control_center_screen_suspend();
     lv_indev_enable(s_touch, false);
     lv_indev_reset(s_touch, NULL);
     return app_manager_lifecycle_screen_pause();
@@ -329,6 +334,7 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
         return _app_adapter_enable_touch_on_ui(NULL);
     }
     app_manager_back_gesture_screen_suspend();
+    app_manager_control_center_screen_suspend();
     lv_indev_reset(s_touch, NULL);
     lv_indev_enable(s_touch, false);
     return ESP_OK;
@@ -690,11 +696,27 @@ static esp_err_t _app_adapter_switcher_init_on_ui(void *arg)
     return app_manager_task_switcher_init(s_display);
 }
 
+static esp_err_t _app_adapter_control_center_init_on_ui(void *arg)
+{
+    const app_manager_config_t *config = arg;
+    app_manager_control_center_set_ops(&config->control_center_ops);
+    return app_manager_control_center_init(s_display, s_touch);
+}
+
 static esp_err_t _app_adapter_runtime_deinit_on_ui(void *arg)
 {
     (void)arg;
     esp_err_t result = ESP_OK;
 
+    if (s_control_center_ready)
+    {
+        result = app_manager_control_center_deinit();
+        if (result != ESP_OK)
+        {
+            return result;
+        }
+        s_control_center_ready = false;
+    }
     if (s_switcher_ready)
     {
         result = app_manager_task_switcher_deinit();
@@ -1084,6 +1106,16 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->standby_ops.cancel_standby &&
            config->standby_ops.is_standby_allowed ==
            active->standby_ops.is_standby_allowed &&
+           config->control_center_ops.get_wifi ==
+           active->control_center_ops.get_wifi &&
+           config->control_center_ops.set_wifi ==
+           active->control_center_ops.set_wifi &&
+           config->control_center_ops.get_bluetooth ==
+           active->control_center_ops.get_bluetooth &&
+           config->control_center_ops.set_bluetooth ==
+           active->control_center_ops.set_bluetooth &&
+           config->control_center_ops.get_clock ==
+           active->control_center_ops.get_clock &&
            config->max_resident_apps == active->max_resident_apps &&
            config->resident_policy == active->resident_policy &&
            _app_adapter_transition_equal(&config->app_forward_transition,
@@ -1108,6 +1140,7 @@ static void _app_adapter_reset_runtime(void)
     s_navigation_ready = false;
     s_gesture_ready = false;
     s_switcher_ready = false;
+    s_control_center_ready = false;
     s_control_ready = false;
     s_active_config_valid = false;
     s_active_config = (app_manager_config_t)
@@ -1349,6 +1382,13 @@ static esp_err_t _app_adapter_start_services(
         return result;
     }
     s_gesture_ready = true;
+    result = app_manager_ui_call(_app_adapter_control_center_init_on_ui,
+                                 (void *)config, UINT32_MAX);
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+    s_control_center_ready = true;
     s_control_ready = true;
     result = app_manager_control_init(config);
     if (result != ESP_OK)

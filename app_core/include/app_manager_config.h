@@ -38,6 +38,7 @@ typedef struct app_manager_config
     app_manager_screen_ctrl_ops_t screen_ops; /**< Required; called only by app-control. */
     app_manager_input_ops_t       input_ops;  /**< Required typed input bridge. */
     app_manager_standby_ops_t     standby_ops; /**< Required non-blocking system-PM bridge. */
+    app_manager_control_center_ops_t control_center_ops; /**< Optional; NULL hides tiles. */
     size_t                    max_resident_apps; /**< 0 selects the physical maximum. */
     app_manager_resident_policy_t resident_policy; /**< Full-capacity behavior. */
     app_manager_transition_t  app_forward_transition; /**< Zero selects FADE, 220 ms. */

@@ -14,6 +14,7 @@
 
 #include "app_manager.h"
 #include "app_manager_back_gesture.h"
+#include "app_manager_control_center.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_lifecycle_internal.h"
 #include "app_manager_mailbox.h"
@@ -270,6 +271,7 @@ static void _navigation_complete(esp_err_t result, void *context)
     if (navigation_started)
     {
         app_manager_back_gesture_navigation_settled();
+        app_manager_control_center_screen_resume();
     }
 
     if (!synchronous && completion != NULL)
@@ -345,6 +347,7 @@ static void _navigation_execute(void *context)
             app_manager_lifecycle_screen_access_end();
         }
         app_manager_back_gesture_navigation_settled();
+        app_manager_control_center_screen_resume();
         return;
     }
 
@@ -362,8 +365,15 @@ static void _navigation_execute(void *context)
         _navigation_execute_clear_all(command);
         return;
     }
+    if (command->system_op == APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW)
+    {
+        system_result = app_manager_control_center_show();
+        _navigation_complete(system_result, command);
+        return;
+    }
     if (!command->keep_switcher_alive)
     {
+        app_manager_control_center_navigation_begin();
         app_manager_task_switcher_navigation_begin();
     }
 

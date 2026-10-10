@@ -360,6 +360,36 @@ typedef struct app_manager_standby_ops
     bool (*is_standby_allowed)(void);
 } app_manager_standby_ops_t;
 
+/* ── Control-center ops（由 main 从 connectivity/device_link/time 适配注入） ── */
+
+/** @brief Effective state of one control-center radio tile. */
+typedef enum
+{
+    APP_MANAGER_RADIO_OFF = 0, /**< Disabled. */
+    APP_MANAGER_RADIO_ON_IDLE, /**< Enabled but not connected. */
+    APP_MANAGER_RADIO_CONNECTED, /**< Enabled and connected. */
+} app_manager_radio_state_t;
+
+/**
+ * @brief Non-blocking bridge used by the system control-center surface.
+ *
+ * All getters run on the LVGL worker and must be cheap and thread-safe; all
+ * setters are non-blocking requests. A NULL function hides its tile.
+ */
+typedef struct app_manager_control_center_ops
+{
+    /** Read the Wi-Fi policy state and optional SSID. */
+    esp_err_t (*get_wifi)(app_manager_radio_state_t *state, const char **ssid);
+    /** Request untiled Wi-Fi online (true) or offline (false). */
+    esp_err_t (*set_wifi)(bool enabled);
+    /** Read the Bluetooth policy state. */
+    esp_err_t (*get_bluetooth)(app_manager_radio_state_t *state);
+    /** Request Bluetooth enable (true) or disable (false). */
+    esp_err_t (*set_bluetooth)(bool enabled);
+    /** Return borrowed "HH:MM" and date strings, or an error when unset. */
+    esp_err_t (*get_clock)(const char **time_text, const char **date_text);
+} app_manager_control_center_ops_t;
+
 /* ── UI dispatcher 函数指针类型（mailbox 满时返回 ESP_ERR_NO_MEM） ── */
 
 /**

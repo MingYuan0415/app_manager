@@ -156,6 +156,10 @@ static esp_err_t _control_execute(const control_command_t *command)
                      NVS_KEY_STANDBY_TIMEOUT, command->data.timeout_ms,
                      &s_standby_timeout_ms);
         break;
+    case CONTROL_STANDBY_NOW:
+        s_standby_now_requested = true;
+        result = _control_execute_suspend();
+        break;
     case CONTROL_STOP:
         _control_discard_shutdown_pending();
         result = app_manager_control_prepare_shutdown();
@@ -388,8 +392,9 @@ static void _control_poll_pm(void)
         {
             return;
         }
-        if (s_standby_timeout_ms >= 0 &&
-                (now - s_screen_off_us) / 1000 >= s_standby_timeout_ms &&
+        if ((s_standby_now_requested || s_standby_timeout_ms >= 0) &&
+                (s_standby_now_requested ||
+                 (now - s_screen_off_us) / 1000 >= s_standby_timeout_ms) &&
                 s_standby_ops.request_standby != NULL)
         {
             if (s_standby_ops.is_standby_allowed != NULL &&
@@ -402,6 +407,10 @@ static void _control_poll_pm(void)
             {
                 app_manager_control_standby_generation_abort();
                 app_manager_control_state_set(APP_MANAGER_PM_SCREEN_OFF);
+            }
+            else
+            {
+                s_standby_now_requested = false;
             }
         }
         return;

@@ -84,6 +84,7 @@ typedef enum
     CONTROL_SET_BRIGHTNESS_TEMP,   /**< Apply temporary brightness. */
     CONTROL_SET_OFF_TIMEOUT,       /**< Persist inactivity timeout. */
     CONTROL_SET_STANDBY_TIMEOUT,   /**< Persist standby delay. */
+    CONTROL_STANDBY_NOW,           /**< Screen off then enter standby at once. */
     CONTROL_STOP,                  /**< Stop the worker after restoration. */
 } control_command_type_t;
 
@@ -132,6 +133,8 @@ extern int64_t s_screen_off_us;
 extern int32_t s_dim_timeout_ms;
 extern int32_t s_off_timeout_ms;
 extern int32_t s_standby_timeout_ms;
+/** Latched request to enter standby as soon as the screen is off. */
+extern bool s_standby_now_requested;
 extern uint8_t s_brightness;
 extern atomic_int s_lifecycle_state;
 extern atomic_uint s_active_accesses;

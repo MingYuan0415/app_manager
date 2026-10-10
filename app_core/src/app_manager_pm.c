@@ -507,6 +507,7 @@ esp_err_t app_manager_control_restore_active(void)
 
 esp_err_t app_manager_control_handle_activity(void)
 {
+    s_standby_now_requested = false;
     s_last_activity_us = esp_timer_get_time();
     return s_state == APP_MANAGER_PM_ACTIVE &&
            !s_screen_ops.is_suspended() &&
