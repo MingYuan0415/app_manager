@@ -936,6 +936,8 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_set_style_shadow_width(s_switcher.clear_button, 0, 0);
     lv_obj_add_event_cb(s_switcher.clear_button, _switcher_clear_clicked,
                         LV_EVENT_CLICKED, NULL);
+    /* Click-only: a press that slides off must not clear every task. */
+    lv_obj_set_press_lock(s_switcher.clear_button, false);
     lv_obj_t *clear_text = lv_label_create(s_switcher.clear_button);
     if (clear_text != NULL)
     {

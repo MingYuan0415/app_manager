@@ -76,7 +76,8 @@ static bool s_policy_configured;
 static void _cc_refresh_band(void);
 static void _cc_refresh_values(void);
 
-static lv_obj_t *_cc_icon(lv_obj_t *parent, uint32_t image_id, int32_t size)
+static lv_obj_t *_cc_icon(lv_obj_t *parent, uint32_t image_id, int32_t size,
+                          const char *fallback)
 {
     const lv_image_dsc_t *dsc = NULL;
     if (app_manager_get_image(image_id, &dsc) == ESP_OK && dsc != NULL)
@@ -93,6 +94,8 @@ static lv_obj_t *_cc_icon(lv_obj_t *parent, uint32_t image_id, int32_t size)
     if (symbol != NULL)
     {
         lv_obj_set_style_text_font(symbol, LV_FONT_DEFAULT, 0);
+        lv_label_set_text(symbol,
+                          fallback != NULL ? fallback : LV_SYMBOL_IMAGE);
     }
     return symbol;
 }
@@ -278,7 +281,7 @@ static void _cc_poll_cb(lv_timer_t *timer)
 static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
                           lv_obj_t **icon_out, lv_obj_t **label_out,
                           uint32_t image_id, lv_event_cb_t callback,
-                          const char *title)
+                          const char *title, const char *icon_fallback)
 {
     lv_obj_t *tile = lv_button_create(parent);
     if (tile == NULL)
@@ -301,8 +304,10 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, NULL);
+    /* Click-only: a press that slides off the tile must not fire. */
+    lv_obj_set_press_lock(tile, false);
 
-    lv_obj_t *icon = _cc_icon(tile, image_id, 26);
+    lv_obj_t *icon = _cc_icon(tile, image_id, 26, icon_fallback);
     if (icon != NULL)
     {
         _cc_icon_color(icon, APP_THEME_COLOR_INK_SOFT);
@@ -319,11 +324,15 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
         lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(text, 1, 0);
         lv_obj_t *name = lv_label_create(text);
+        lv_obj_set_width(name, LV_PCT(100));
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(name, lv_color_hex(APP_THEME_COLOR_INK), 0);
         lv_obj_set_style_text_font(name,
                                    app_manager_get_font(APP_THEME_FONT_BODY), 0);
         lv_label_set_text(name, title);
         lv_obj_t *state = lv_label_create(text);
+        lv_obj_set_width(state, LV_PCT(100));
+        lv_label_set_long_mode(state, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(state,
                                     lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
         lv_obj_set_style_text_font(state,
@@ -379,7 +388,8 @@ static void _cc_build(void)
     lv_obj_set_style_bg_opa(brightness, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(brightness, 14, 0);
     lv_obj_set_scrollable(brightness, false);
-    lv_obj_t *bright_icon = _cc_icon(brightness, CC_IMAGE_BRIGHTNESS, 24);
+    lv_obj_t *bright_icon = _cc_icon(brightness, CC_IMAGE_BRIGHTNESS, 24,
+                                     LV_SYMBOL_IMAGE);
     if (bright_icon != NULL)
     {
         _cc_icon_color(bright_icon, APP_THEME_COLOR_AMBER);
@@ -419,13 +429,13 @@ static void _cc_build(void)
     {
         (void)_cc_tile(tiles, &s_cc.wifi_button, &s_cc.wifi_icon,
                        &s_cc.wifi_label, CC_IMAGE_WIFI, _cc_wifi_event,
-                       "Wi-Fi");
+                       "Wi-Fi", LV_SYMBOL_WIFI);
     }
     if (has_bt)
     {
         (void)_cc_tile(tiles, &s_cc.bt_button, &s_cc.bt_icon,
                        &s_cc.bt_label, CC_IMAGE_BLUETOOTH, _cc_bt_event,
-                       "蓝牙");
+                       "蓝牙", LV_SYMBOL_BLUETOOTH);
     }
 
     /* Power actions. */
@@ -444,6 +454,7 @@ static void _cc_build(void)
     lv_obj_t *buttons[2] = { off, standby };
     const uint32_t ids[2] = { CC_IMAGE_POWER, CC_IMAGE_STANDBY };
     const char *titles[2] = { "熄屏", "待机" };
+    const char *icon_fallbacks[2] = { LV_SYMBOL_POWER, LV_SYMBOL_PAUSE };
     lv_event_cb_t cbs[2] = { _cc_screen_off_event, _cc_standby_event };
     for (size_t i = 0; i < 2U; i++)
     {
@@ -465,7 +476,9 @@ static void _cc_build(void)
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(buttons[i], 8, 0);
         lv_obj_add_event_cb(buttons[i], cbs[i], LV_EVENT_CLICKED, NULL);
-        lv_obj_t *icon = _cc_icon(buttons[i], ids[i], 22);
+        /* Click-only: a press that slides off must not trigger the action. */
+        lv_obj_set_press_lock(buttons[i], false);
+        lv_obj_t *icon = _cc_icon(buttons[i], ids[i], 22, icon_fallbacks[i]);
         if (icon != NULL)
         {
             _cc_icon_color(icon, APP_THEME_COLOR_INK);
