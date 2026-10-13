@@ -429,7 +429,7 @@ static lv_obj_t *_switcher_make_passive_row(lv_obj_t *parent)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_set_style_pad_column(row, 12, 0);
     lv_obj_set_scrollable(row, false);
     lv_obj_set_clickable(row, false);
     lv_obj_set_click_focusable(row, false);
@@ -444,11 +444,13 @@ static void _switcher_build_memory_row(lv_obj_t *parent, const char *title,
     lv_obj_t *row = _switcher_make_passive_row(parent);
 
     lv_obj_t *name = lv_label_create(row);
-    lv_obj_set_width(name, 76);
+    /* Fixed columns keep the two bars aligned; the widths fit the longest
+     * names/values at the SMALL role, so neither label wraps. */
+    lv_obj_set_width(name, 84);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(name, lv_color_hex(TS_COLOR_MUTED), 0);
-    lv_obj_set_style_text_font(name, app_manager_get_font(APP_THEME_FONT_BODY),
-                               0);
+    lv_obj_set_style_text_font(name,
+                               app_manager_get_font(APP_THEME_FONT_SMALL), 0);
     lv_label_set_text(name, title);
 
     lv_obj_t *bar = lv_bar_create(row);
@@ -468,12 +470,12 @@ static void _switcher_build_memory_row(lv_obj_t *parent, const char *title,
     lv_obj_set_clickable(bar, false);
 
     lv_obj_t *value = lv_label_create(row);
-    lv_obj_set_width(value, 108);
+    lv_obj_set_width(value, 116);
     lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(value, lv_color_hex(TS_COLOR_TEXT), 0);
     lv_obj_set_style_text_font(value,
-                               app_manager_get_font(APP_THEME_FONT_BODY), 0);
+                               app_manager_get_font(APP_THEME_FONT_SMALL), 0);
     lv_label_set_text(value, "--");
 
     if (bar_out != NULL)
