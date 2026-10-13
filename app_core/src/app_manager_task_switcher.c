@@ -529,7 +529,12 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
     lv_obj_set_flex_align(button, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollable(button, false);
-    lv_obj_set_scroll_chain(button, false);
+    /* Keep horizontal chain ON: the pressed card must hand a horizontal swipe
+     * up to the list scroller. Disabling both axes here broke swiping the
+     * list, because LVGL's scroll search stops at the first non-scrollable
+     * object that refuses to chain. Only the vertical axis is blocked so a
+     * vertical swipe stays a card dismiss. */
+    lv_obj_set_scroll_chain_ver(button, false);
     lv_obj_set_scroll_elastic(button, false);
     lv_obj_set_scroll_momentum(button, false);
     /* Click-only: releasing off the card after a drag that did not scroll must
@@ -570,7 +575,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             lv_obj_set_clickable(icon, false);
             lv_obj_set_click_focusable(icon, false);
             lv_obj_set_gesture_bubble(icon, false);
-            lv_obj_set_scroll_chain(icon, false);
+            lv_obj_set_scroll_chain_ver(icon, false);
             lv_obj_set_scroll_elastic(icon, false);
             lv_obj_set_scroll_momentum(icon, false);
             const lv_image_dsc_t *icon_image = NULL;
@@ -588,7 +593,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                     lv_obj_set_clickable(image, false);
                     lv_obj_set_click_focusable(image, false);
                     lv_obj_set_gesture_bubble(image, false);
-                    lv_obj_set_scroll_chain(image, false);
+                    lv_obj_set_scroll_chain_ver(image, false);
                     lv_obj_set_scroll_elastic(image, false);
                     lv_obj_set_scroll_momentum(image, false);
                 }
@@ -633,7 +638,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
                 lv_obj_set_style_shadow_width(close, 0, 0);
                 lv_obj_set_style_pad_all(close, 0, 0);
                 lv_obj_set_scrollable(close, false);
-                lv_obj_set_scroll_chain(close, false);
+                lv_obj_set_scroll_chain_ver(close, false);
                 lv_obj_set_scroll_elastic(close, false);
                 lv_obj_set_scroll_momentum(close, false);
                 lv_obj_set_press_lock(close, false);
