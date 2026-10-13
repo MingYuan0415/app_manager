@@ -1,5 +1,4 @@
 #define DBG_TAG "app_control"
-#define DBG_LVL DBG_INFO
 #ifdef HOST_TEST
     #include "host_control_port.h"
 #endif

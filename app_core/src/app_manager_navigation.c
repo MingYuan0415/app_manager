@@ -1,5 +1,4 @@
 #define DBG_TAG "app_navigation"
-#define DBG_LVL DBG_INFO
 
 #ifndef HOST_TEST
     #include "mt_log.h"
