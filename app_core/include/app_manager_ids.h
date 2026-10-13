@@ -24,6 +24,8 @@
 #define APP_MANAGER_ID_RECORDER "recorder"
 /** @brief Stable identifier of the level application. */
 #define APP_MANAGER_ID_LEVEL    "level"
+/** @brief Stable identifier of the calendar application. */
+#define APP_MANAGER_ID_CALENDAR "calendar"
 /** @brief Stable identifier of the hidden diagnostics application. */
 #define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
 
