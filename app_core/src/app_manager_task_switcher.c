@@ -33,7 +33,6 @@
 #define TS_HEADER_HEIGHT  52
 #define TS_RAM_HEIGHT     92
 #define TS_CARD_WIDTH     240
-#define TS_CARD_HEIGHT    276
 #define TS_CARD_GAP       12
 #define TS_SIDE_PAD       16
 #define TS_ICON_SIZE      56
@@ -505,7 +504,10 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         return;
     }
     card->root = button;
-    lv_obj_set_size(button, TS_CARD_WIDTH, TS_CARD_HEIGHT);
+    /* Content-sized card: an icon row plus a name/status block, with no
+     * blank centre band. The list centres the shorter cards vertically. */
+    lv_obj_set_width(button, TS_CARD_WIDTH);
+    lv_obj_set_height(button, LV_SIZE_CONTENT);
     lv_obj_set_style_radius(button, 16, 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE_HI),
@@ -526,7 +528,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         lv_obj_set_style_border_width(button, 0, 0);
     }
     lv_obj_set_flex_flow(button, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_SPACE_BETWEEN,
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollable(button, false);
     /* Keep horizontal chain ON: the pressed card must hand a horizontal swipe
