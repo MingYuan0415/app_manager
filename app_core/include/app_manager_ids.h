@@ -26,6 +26,8 @@
 #define APP_MANAGER_ID_LEVEL    "level"
 /** @brief Stable identifier of the calendar application. */
 #define APP_MANAGER_ID_CALENDAR "calendar"
+/** @brief Stable identifier of the calculator application. */
+#define APP_MANAGER_ID_CALCULATOR "calculator"
 /** @brief Stable identifier of the hidden diagnostics application. */
 #define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
 
