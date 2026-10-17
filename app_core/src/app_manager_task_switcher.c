@@ -17,6 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The DMA/internal reserve pool is carved out of the general internal heap and
+ * re-registered, so heap_caps_get_total_size() counts it twice. Report the
+ * physical internal heap instead of the inflated denominator. */
+
 /* Single source of raw colours: app_theme (app_core REQUIRES app_theme, so
  * the shell shares the exact tokens every application page renders with). */
 #define TS_COLOR_BACKGROUND     APP_THEME_COLOR_VOID
@@ -388,8 +392,13 @@ static void _switcher_set_memory_row(lv_obj_t *bar, lv_obj_t *value,
 
 static void _switcher_update_memory(void)
 {
-    const size_t internal_total = heap_caps_get_total_size(
-                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t reported_internal_total = heap_caps_get_total_size(
+            MALLOC_CAP_INTERNAL |
+            MALLOC_CAP_8BIT);
+    const size_t reserve = (size_t)CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL;
+    const size_t internal_total = reported_internal_total > reserve ?
+                                  reported_internal_total - reserve :
+                                  reported_internal_total;
     const size_t internal_free = heap_caps_get_free_size(
                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const size_t psram_total = heap_caps_get_total_size(
