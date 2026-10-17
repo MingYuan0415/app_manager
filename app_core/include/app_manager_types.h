@@ -386,6 +386,9 @@ typedef struct app_manager_control_center_ops
     esp_err_t (*get_bluetooth)(app_manager_radio_state_t *state);
     /** Request Bluetooth enable (true) or disable (false). */
     esp_err_t (*set_bluetooth)(bool enabled);
+    /** Report whether the Bluetooth policy is converging; the tile is
+     *  disabled and ignores clicks while true. May be NULL. */
+    bool (*get_bluetooth_transitioning)(void);
     /** Return borrowed "HH:MM" and date strings, or an error when unset. */
     esp_err_t (*get_clock)(const char **time_text, const char **date_text);
 } app_manager_control_center_ops_t;

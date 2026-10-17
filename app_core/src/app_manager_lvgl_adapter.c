@@ -1113,6 +1113,8 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->control_center_ops.get_bluetooth &&
            config->control_center_ops.set_bluetooth ==
            active->control_center_ops.set_bluetooth &&
+           config->control_center_ops.get_bluetooth_transitioning ==
+           active->control_center_ops.get_bluetooth_transitioning &&
            config->control_center_ops.get_clock ==
            active->control_center_ops.get_clock &&
            config->max_resident_apps == active->max_resident_apps &&

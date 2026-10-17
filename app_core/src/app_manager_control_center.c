@@ -213,6 +213,11 @@ static void _cc_bt_event(lv_event_t *event)
     {
         return;
     }
+    if (s_cc.ops.get_bluetooth_transitioning != NULL &&
+            s_cc.ops.get_bluetooth_transitioning())
+    {
+        return;
+    }
     app_manager_radio_state_t state = APP_MANAGER_RADIO_OFF;
     if (s_cc.ops.get_bluetooth(&state) != ESP_OK)
     {
@@ -255,15 +260,31 @@ static void _cc_refresh_values(void)
 
     if (s_cc.bt_button != NULL)
     {
-        app_manager_radio_state_t state = APP_MANAGER_RADIO_OFF;
-        if (s_cc.ops.get_bluetooth != NULL &&
-                s_cc.ops.get_bluetooth(&state) == ESP_OK)
+        const bool transitioning =
+            s_cc.ops.get_bluetooth_transitioning != NULL &&
+            s_cc.ops.get_bluetooth_transitioning();
+
+        if (transitioning)
         {
-            _cc_icon_color(s_cc.bt_icon, _cc_radio_color(state));
-            lv_label_set_text(s_cc.bt_label,
-                              state == APP_MANAGER_RADIO_OFF ? "已关闭" :
-                              state == APP_MANAGER_RADIO_CONNECTED ? "已连接" :
-                              "已开启");
+            lv_obj_add_state(s_cc.bt_button, LV_STATE_DISABLED);
+            _cc_icon_color(s_cc.bt_icon,
+                           _cc_radio_color(APP_MANAGER_RADIO_ON_IDLE));
+            lv_label_set_text(s_cc.bt_label, "切换中");
+        }
+        else
+        {
+            app_manager_radio_state_t state = APP_MANAGER_RADIO_OFF;
+
+            lv_obj_remove_state(s_cc.bt_button, LV_STATE_DISABLED);
+            if (s_cc.ops.get_bluetooth != NULL &&
+                    s_cc.ops.get_bluetooth(&state) == ESP_OK)
+            {
+                _cc_icon_color(s_cc.bt_icon, _cc_radio_color(state));
+                lv_label_set_text(s_cc.bt_label,
+                                  state == APP_MANAGER_RADIO_OFF ? "已关闭" :
+                                  state == APP_MANAGER_RADIO_CONNECTED ?
+                                  "已连接" : "已开启");
+            }
         }
     }
 }
