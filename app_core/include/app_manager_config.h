@@ -28,8 +28,8 @@ typedef struct app_manager_image_resource_config
 typedef struct app_manager_config
 {
     const bsp_display_port_t *disp_port;      /**< panel / panel_io / touch / width / height */
-    const uint16_t           *font_sizes;     /**< 字号表，例 {18,22,28,36,48,54} */
-    size_t                    font_count;     /**< 字号表长度，例 6 */
+    const uint16_t           *font_sizes;     /**< 字号表，例 {24,20,30,36,56,64,96} */
+    size_t                    font_count;     /**< 字号表长度，例 7 */
     char                      res_fs_letter;  /**< 资源分区盘符，例 'F' */
     uint16_t                  resource_file_count; /**< Generated mmap file count. */
     uint16_t                  resource_checksum; /**< Generated mmap checksum. */

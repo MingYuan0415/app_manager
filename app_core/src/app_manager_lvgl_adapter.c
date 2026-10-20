@@ -168,6 +168,7 @@ static const app_theme_font_id_t s_font_ids[] =
     APP_THEME_FONT_BIGL,
     APP_THEME_FONT_HUGE,
     APP_THEME_FONT_TITLE,
+    APP_THEME_FONT_DISPLAY,
 };
 static esp_lv_adapter_ft_font_handle_t s_font_handles[
     sizeof(s_font_ids) / sizeof(s_font_ids[0])];

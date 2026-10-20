@@ -13,19 +13,19 @@ extern "C" {
 #endif
 
 /** @brief Default font sizes loaded in app_theme_font_id_t order. */
-#define APP_THEME_FONT_SIZES {22, 18, 28, 36, 48, 54}
+#define APP_THEME_FONT_SIZES {24, 20, 30, 36, 56, 64, 96}
 
-/* 字体 ID 枚举（对齐早期 GUI_APP_FONT_*，6 档） */
-/** @brief Font roles loaded by the application theme. */
+/** @brief Font roles loaded by the application theme (7 档). */
 typedef enum
 {
-    APP_THEME_FONT_BODY   = 0,
-    APP_THEME_FONT_SMALL  = 1,
-    APP_THEME_FONT_HEAD   = 2,
-    APP_THEME_FONT_BIGL   = 3,
-    APP_THEME_FONT_HUGE   = 4,
-    APP_THEME_FONT_TITLE  = 5,
-    APP_THEME_FONT_MAX    = 6,
+    APP_THEME_FONT_BODY    = 0, /**< 24: row titles, buttons, body copy. */
+    APP_THEME_FONT_SMALL   = 1, /**< 20: captions, summaries, units. */
+    APP_THEME_FONT_HEAD    = 2, /**< 30: card values, sheet titles. */
+    APP_THEME_FONT_BIGL    = 3, /**< 36: page titles, passkeys. */
+    APP_THEME_FONT_HUGE    = 4, /**< 56: hero numerics (results, timers). */
+    APP_THEME_FONT_TITLE   = 5, /**< 64: weather temperature, ring clocks. */
+    APP_THEME_FONT_DISPLAY = 6, /**< 96: home clock and stopwatch digits. */
+    APP_THEME_FONT_MAX     = 7,
 } app_theme_font_id_t;
 
 /**

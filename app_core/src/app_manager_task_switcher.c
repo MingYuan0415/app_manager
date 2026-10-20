@@ -30,7 +30,8 @@
 #define TS_COLOR_MUTED          APP_THEME_COLOR_INK_SOFT
 #define TS_COLOR_RAIN           APP_THEME_COLOR_AZURE
 #define TS_COLOR_WARNING        APP_THEME_COLOR_CORAL
-#define TS_COLOR_ICON_BG        APP_THEME_COLOR_SUNKEN
+#define TS_COLOR_ICON_BG        APP_THEME_COLOR_PLUME_HI
+#define TS_COLOR_TRACK          APP_THEME_COLOR_TRACK
 #define TS_COLOR_ICON_FALLBACK  APP_THEME_COLOR_HAIRLINE
 
 #define TS_HEADER_HEIGHT  52
@@ -464,11 +465,12 @@ static void _switcher_build_memory_row(lv_obj_t *parent, const char *title,
     lv_obj_t *bar = lv_bar_create(row);
     lv_obj_set_width(bar, 0);
     lv_obj_set_flex_grow(bar, 1);
-    lv_obj_set_height(bar, 6);
+    lv_obj_set_height(bar, 8);
     lv_bar_set_range(bar, 0, 100);
     lv_bar_set_value(bar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_radius(bar, 3, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(TS_COLOR_SURFACE_HI),
+    lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(TS_COLOR_TRACK),
                               LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar, lv_color_hex(TS_COLOR_RAIN),
                               LV_PART_INDICATOR);
@@ -518,15 +520,15 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
      * blank centre band. The list centres the shorter cards vertically. */
     lv_obj_set_width(button, TS_CARD_WIDTH);
     lv_obj_set_height(button, LV_SIZE_CONTENT);
-    lv_obj_set_style_radius(button, 16, 0);
+    lv_obj_set_style_radius(button, 28, 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(TS_COLOR_SURFACE_HI),
                               LV_STATE_PRESSED);
     lv_obj_set_style_transform_width(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_transform_height(button, 0, LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_set_style_pad_all(button, 16, 0);
-    lv_obj_set_style_pad_row(button, 12, 0);
+    lv_obj_set_style_pad_all(button, 20, 0);
+    lv_obj_set_style_pad_row(button, 14, 0);
     if (card->current)
     {
         lv_obj_set_style_border_width(button, 2, 0);
@@ -579,7 +581,7 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
         if (icon != NULL)
         {
             lv_obj_set_size(icon, TS_ICON_CHIP, TS_ICON_CHIP);
-            lv_obj_set_style_radius(icon, 14, 0);
+            lv_obj_set_style_radius(icon, LV_RADIUS_CIRCLE, 0);
             lv_obj_set_style_bg_color(icon, lv_color_hex(TS_COLOR_ICON_BG), 0);
             lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(icon, 0, 0);
@@ -642,9 +644,11 @@ static void _switcher_add_card(const app_manager_recent_task_t *task)
             if (close != NULL)
             {
                 lv_obj_set_size(close, TS_CLOSE_SIZE, TS_CLOSE_SIZE);
-                lv_obj_set_style_radius(close, 10, 0);
-                lv_obj_set_style_bg_opa(close, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_bg_color(close, lv_color_hex(TS_COLOR_BACKGROUND),
+                lv_obj_set_style_radius(close, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(close, lv_color_hex(TS_COLOR_SURFACE_HI),
+                                          0);
+                lv_obj_set_style_bg_opa(close, LV_OPA_COVER, 0);
+                lv_obj_set_style_bg_color(close, lv_color_hex(TS_COLOR_TRACK),
                                           LV_STATE_PRESSED);
                 lv_obj_set_style_border_width(close, 0, 0);
                 lv_obj_set_style_shadow_width(close, 0, 0);
@@ -934,13 +938,14 @@ esp_err_t app_manager_task_switcher_init(void *display)
         memset(&s_switcher, 0, sizeof(s_switcher));
         return ESP_ERR_NO_MEM;
     }
-    lv_obj_set_size(s_switcher.clear_button, 72, 44);
-    lv_obj_set_style_radius(s_switcher.clear_button, 8, 0);
+    lv_obj_set_size(s_switcher.clear_button, 80, 44);
+    lv_obj_set_style_radius(s_switcher.clear_button, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_switcher.clear_button,
-                              lv_color_hex(TS_COLOR_SURFACE), 0);
+                              lv_color_hex(TS_COLOR_SURFACE_HI), 0);
     lv_obj_set_style_bg_color(s_switcher.clear_button,
-                              lv_color_hex(TS_COLOR_SURFACE_HI),
+                              lv_color_hex(TS_COLOR_TRACK),
                               LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(s_switcher.clear_button, 0, 0);
     lv_obj_set_style_shadow_width(s_switcher.clear_button, 0, 0);
     lv_obj_add_event_cb(s_switcher.clear_button, _switcher_clear_clicked,
                         LV_EVENT_CLICKED, NULL);
@@ -1003,13 +1008,14 @@ esp_err_t app_manager_task_switcher_init(void *display)
     lv_obj_t *ram = lv_obj_create(s_switcher.root);
     if (ram != NULL)
     {
-        lv_obj_set_size(ram, width, TS_RAM_HEIGHT);
-        lv_obj_align(ram, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_set_size(ram, width - 2 * TS_SIDE_PAD, TS_RAM_HEIGHT - 12);
+        lv_obj_align(ram, LV_ALIGN_BOTTOM_LEFT, TS_SIDE_PAD, -12);
         lv_obj_set_style_bg_color(ram, lv_color_hex(TS_COLOR_SURFACE), 0);
         lv_obj_set_style_bg_opa(ram, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(ram, 0, 0);
-        lv_obj_set_style_radius(ram, 0, 0);
-        lv_obj_set_style_pad_all(ram, 14, 0);
+        lv_obj_set_style_radius(ram, 20, 0);
+        lv_obj_set_style_pad_hor(ram, 16, 0);
+        lv_obj_set_style_pad_ver(ram, 10, 0);
         lv_obj_set_style_pad_row(ram, 10, 0);
         lv_obj_set_flex_flow(ram, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(ram, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,

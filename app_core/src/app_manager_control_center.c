@@ -35,11 +35,12 @@
 #define CC_BAND_HEIGHT       20
 #define CC_BAND_EDGE_PX      30
 #define CC_BAND_TRIGGER_PX   48
-#define CC_CARD_MARGIN       12
-#define CC_CARD_HEIGHT       292
-#define CC_TILE_HEIGHT       76
+#define CC_CARD_MARGIN       8
+#define CC_CARD_HEIGHT       312
+#define CC_TILE_HEIGHT       80
+#define CC_WELL_SIZE         40
 #define CC_POLL_MS           1000U
-#define CC_SCRIM_OPA         200
+#define CC_SCRIM_OPA         225
 
 typedef struct app_manager_control_center
 {
@@ -121,6 +122,23 @@ static uint32_t _cc_radio_color(app_manager_radio_state_t state)
     case APP_MANAGER_RADIO_OFF:
     default:
         return APP_THEME_COLOR_INK_SOFT;
+    }
+}
+
+/* Radio tiles repeat their state in the glyph and its circular well tint, so
+ * the state line is never the only cue. */
+static void _cc_radio_paint(lv_obj_t *icon, app_manager_radio_state_t state)
+{
+    _cc_icon_color(icon, _cc_radio_color(state));
+    lv_obj_t *well = icon != NULL ? lv_obj_get_parent(icon) : NULL;
+    if (well != NULL)
+    {
+        lv_obj_set_style_bg_color(well, lv_color_hex(
+                                      state == APP_MANAGER_RADIO_CONNECTED ?
+                                      APP_THEME_COLOR_MINT_TINT :
+                                      state == APP_MANAGER_RADIO_ON_IDLE ?
+                                      APP_THEME_COLOR_AMBER_TINT :
+                                      APP_THEME_COLOR_TRACK), 0);
     }
 }
 
@@ -247,9 +265,8 @@ static void _cc_refresh_values(void)
         const char *ssid = NULL;
         const bool available = s_cc.ops.get_wifi != NULL &&
                                s_cc.ops.get_wifi(&state, &ssid) == ESP_OK;
-        const uint32_t color = _cc_radio_color(available ? state :
-                                               APP_MANAGER_RADIO_OFF);
-        _cc_icon_color(s_cc.wifi_icon, color);
+        _cc_radio_paint(s_cc.wifi_icon, available ? state :
+                        APP_MANAGER_RADIO_OFF);
         lv_label_set_text(s_cc.wifi_label,
                           !available ? "未连接" :
                           state == APP_MANAGER_RADIO_CONNECTED ?
@@ -267,8 +284,7 @@ static void _cc_refresh_values(void)
         if (transitioning)
         {
             lv_obj_add_state(s_cc.bt_button, LV_STATE_DISABLED);
-            _cc_icon_color(s_cc.bt_icon,
-                           _cc_radio_color(APP_MANAGER_RADIO_ON_IDLE));
+            _cc_radio_paint(s_cc.bt_icon, APP_MANAGER_RADIO_ON_IDLE);
             lv_label_set_text(s_cc.bt_label, "切换中");
         }
         else
@@ -279,7 +295,7 @@ static void _cc_refresh_values(void)
             if (s_cc.ops.get_bluetooth != NULL &&
                     s_cc.ops.get_bluetooth(&state) == ESP_OK)
             {
-                _cc_icon_color(s_cc.bt_icon, _cc_radio_color(state));
+                _cc_radio_paint(s_cc.bt_icon, state);
                 lv_label_set_text(s_cc.bt_label,
                                   state == APP_MANAGER_RADIO_OFF ? "已关闭" :
                                   state == APP_MANAGER_RADIO_CONNECTED ?
@@ -311,10 +327,15 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     *tile_out = tile;
     lv_obj_set_height(tile, CC_TILE_HEIGHT);
     lv_obj_set_flex_grow(tile, 1);
-    lv_obj_set_style_radius(tile, 14, 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_PLUME_HI),
+    lv_obj_set_style_radius(tile, 20, 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_TRACK),
                               LV_STATE_PRESSED);
+    /* A transitioning radio stays legible: disabled keeps the normal fill. */
+    lv_obj_set_style_bg_color(tile, lv_color_hex(APP_THEME_COLOR_PLUME_HI),
+                              LV_STATE_DISABLED);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_STATE_DISABLED);
+    lv_obj_set_style_border_width(tile, 0, 0);
     lv_obj_set_style_shadow_width(tile, 0, 0);
     lv_obj_set_style_pad_all(tile, 12, 0);
     lv_obj_set_style_pad_column(tile, 10, 0);
@@ -327,10 +348,18 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     /* Click-only: a press that slides off the tile must not fire. */
     lv_obj_set_press_lock(tile, false);
 
-    lv_obj_t *icon = _cc_icon(tile, image_id, 26, icon_fallback);
+    lv_obj_t *well = lv_obj_create(tile);
+    lv_obj_remove_style_all(well);
+    lv_obj_set_size(well, CC_WELL_SIZE, CC_WELL_SIZE);
+    lv_obj_set_style_radius(well, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(well, lv_color_hex(APP_THEME_COLOR_TRACK), 0);
+    lv_obj_set_clickable(well, false);
+    lv_obj_t *icon = _cc_icon(well, image_id, 28, icon_fallback);
     if (icon != NULL)
     {
-        _cc_icon_color(icon, APP_THEME_COLOR_INK_SOFT);
+        lv_obj_center(icon);
+        _cc_radio_paint(icon, APP_MANAGER_RADIO_OFF);
     }
     *icon_out = icon;
 
@@ -370,11 +399,11 @@ static void _cc_build(void)
 
     lv_obj_t *panel = lv_obj_create(s_cc.root);
     lv_obj_remove_style_all(panel);
-    lv_obj_set_pos(panel, CC_CARD_MARGIN, 0);
+    lv_obj_set_pos(panel, CC_CARD_MARGIN, CC_CARD_MARGIN);
     lv_obj_set_size(panel, panel_w, CC_CARD_HEIGHT);
-    lv_obj_set_style_bg_color(panel, lv_color_hex(APP_THEME_COLOR_PLUME), 0);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(panel, 24, 0);
+    lv_obj_set_style_radius(panel, 28, 0);
     lv_obj_set_scrollable(panel, false);
 
     s_cc.clock_label = lv_label_create(panel);
@@ -382,7 +411,7 @@ static void _cc_build(void)
                                 lv_color_hex(APP_THEME_COLOR_INK), 0);
     lv_obj_set_style_text_font(s_cc.clock_label,
                                app_manager_get_font(APP_THEME_FONT_BIGL), 0);
-    lv_obj_align(s_cc.clock_label, LV_ALIGN_TOP_LEFT, 16, 12);
+    lv_obj_align(s_cc.clock_label, LV_ALIGN_TOP_LEFT, 20, 14);
     lv_label_set_text(s_cc.clock_label, "--:--");
 
     s_cc.date_label = lv_label_create(panel);
@@ -390,23 +419,23 @@ static void _cc_build(void)
                                 lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
     lv_obj_set_style_text_font(s_cc.date_label,
                                app_manager_get_font(APP_THEME_FONT_SMALL), 0);
-    lv_obj_align(s_cc.date_label, LV_ALIGN_TOP_RIGHT, -16, 22);
+    lv_obj_align(s_cc.date_label, LV_ALIGN_TOP_RIGHT, -20, 26);
     lv_label_set_text(s_cc.date_label, "时间未同步");
 
     /* Brightness row. */
     lv_obj_t *brightness = lv_obj_create(panel);
     lv_obj_remove_style_all(brightness);
-    lv_obj_set_size(brightness, inner_w, 56);
-    lv_obj_align(brightness, LV_ALIGN_TOP_LEFT, 12, 62);
+    lv_obj_set_size(brightness, inner_w, 60);
+    lv_obj_align(brightness, LV_ALIGN_TOP_LEFT, 12, 70);
     lv_obj_set_flex_flow(brightness, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(brightness, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(brightness, 12, 0);
-    lv_obj_set_style_pad_all(brightness, 8, 0);
-    lv_obj_set_style_bg_color(brightness, lv_color_hex(APP_THEME_COLOR_SHEET),
-                              0);
+    lv_obj_set_style_pad_hor(brightness, 16, 0);
+    lv_obj_set_style_bg_color(brightness,
+                              lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
     lv_obj_set_style_bg_opa(brightness, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(brightness, 14, 0);
+    lv_obj_set_style_radius(brightness, 30, 0);
     lv_obj_set_scrollable(brightness, false);
     lv_obj_t *bright_icon = _cc_icon(brightness, CC_IMAGE_BRIGHTNESS, 24,
                                      LV_SYMBOL_IMAGE);
@@ -418,14 +447,21 @@ static void _cc_build(void)
     if (s_cc.brightness_slider != NULL)
     {
         lv_obj_set_flex_grow(s_cc.brightness_slider, 1);
-        lv_obj_set_height(s_cc.brightness_slider, 12);
+        lv_obj_set_height(s_cc.brightness_slider, 20);
         lv_slider_set_range(s_cc.brightness_slider, 16, 255);
         lv_slider_set_value(s_cc.brightness_slider, 128, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(s_cc.brightness_slider,
+                                  lv_color_hex(APP_THEME_COLOR_TRACK),
+                                  LV_PART_MAIN);
         lv_obj_set_style_bg_color(s_cc.brightness_slider,
                                   lv_color_hex(APP_THEME_COLOR_AZURE),
                                   LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(s_cc.brightness_slider,
                                   lv_color_hex(APP_THEME_COLOR_INK), LV_PART_KNOB);
+        lv_obj_set_style_pad_all(s_cc.brightness_slider, 2, LV_PART_KNOB);
+        lv_obj_set_style_shadow_width(s_cc.brightness_slider, 0,
+                                      LV_PART_KNOB);
+        lv_obj_set_ext_click_area(s_cc.brightness_slider, 16);
         lv_obj_add_event_cb(s_cc.brightness_slider, _cc_brightness_event,
                             LV_EVENT_VALUE_CHANGED, NULL);
         lv_obj_add_event_cb(s_cc.brightness_slider, _cc_brightness_event,
@@ -436,7 +472,7 @@ static void _cc_build(void)
     lv_obj_t *tiles = lv_obj_create(panel);
     lv_obj_remove_style_all(tiles);
     lv_obj_set_size(tiles, inner_w, CC_TILE_HEIGHT);
-    lv_obj_align(tiles, LV_ALIGN_TOP_LEFT, 12, 128);
+    lv_obj_align(tiles, LV_ALIGN_TOP_LEFT, 12, 142);
     lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -462,7 +498,7 @@ static void _cc_build(void)
     lv_obj_t *actions = lv_obj_create(panel);
     lv_obj_remove_style_all(actions);
     lv_obj_set_size(actions, inner_w, 56);
-    lv_obj_align(actions, LV_ALIGN_TOP_LEFT, 12, 216);
+    lv_obj_align(actions, LV_ALIGN_TOP_LEFT, 12, 234);
     lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -484,12 +520,13 @@ static void _cc_build(void)
         }
         lv_obj_set_height(buttons[i], 56);
         lv_obj_set_flex_grow(buttons[i], 1);
-        lv_obj_set_style_radius(buttons[i], 14, 0);
+        lv_obj_set_style_radius(buttons[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(buttons[i],
-                                  lv_color_hex(APP_THEME_COLOR_SHEET), 0);
+                                  lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
         lv_obj_set_style_bg_color(buttons[i],
-                                  lv_color_hex(APP_THEME_COLOR_PLUME_HI),
+                                  lv_color_hex(APP_THEME_COLOR_TRACK),
                                   LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(buttons[i], 0, 0);
         lv_obj_set_style_shadow_width(buttons[i], 0, 0);
         lv_obj_set_flex_flow(buttons[i], LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(buttons[i], LV_FLEX_ALIGN_CENTER,

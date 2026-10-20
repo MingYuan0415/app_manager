@@ -45,7 +45,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
-| `app_theme/` | 六档语义字体角色 |
+| `app_theme/` | 七档语义字体角色与 AMOLED 颜色常量 |
 
 主要依赖关系如下：
 
@@ -84,7 +84,7 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
 `app_manager_image_resource_config_t` 将产品语义 ID 映射
 到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
-复制该 ID，任务切换器以 56 px 图标底衬内嵌 44 px 图像显示，资源缺失或 ID 为零时
+复制该 ID，任务切换器以 64 px 圆形图标底衬内嵌 56 px 图像显示，资源缺失或 ID 为零时
 回退 LVGL symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
 BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
 始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
@@ -112,8 +112,8 @@ context 访问同一 Page state。页面成功释放后不得继续保存该指�
 - `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
 
 `APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
-双击 HOME 打开系统任务切换器；单击 HOME 按当前活跃 App 路由：活跃为 Home 时回到
-HOME 根页，否则进入应用目录（见第 10.1 节）。需要释放
+双击 HOME 打开系统任务切换器；单击 HOME 按当前活跃 App 路由：活跃为 Home 时进入
+应用目录，否则回到 HOME 根页（见第 10.1 节）。需要释放
 其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
 ## 4. 静态 Registry 与 App-owned Routes
@@ -415,8 +415,8 @@ App 或 Page。它在 LVGL Sys Layer 创建一条全宽顶部捕获带（高度 
 关闭。
 
 表面内容：时间/日期、亮度滑条（拖动用临时亮度预览，松手持久化）、Wi-Fi 与蓝牙磁贴
-（三态颜色：关闭 `INK_SOFT` / 已开启未连接 `AMBER` / 已连接 `MINT`）、立即熄屏与立即
-待机。表面为懒构建：`app_manager_get_image()` 只在 `app_manager_init()` 到达 READY 后
+（圆形图标底与图标同取三态颜色，关闭 `INK_SOFT` / 已开启未连接 `AMBER` / 已连接
+`MINT`，底色使用对应 tint）、立即熄屏与立即待机。表面为懒构建：`app_manager_get_image()` 只在 `app_manager_init()` 到达 READY 后
 可用，因此在首次 `show` 时才创建图标节点。
 
 服务桥：app_manager 不依赖 connectivity/device_link/time，控制中心经注入的
@@ -557,7 +557,7 @@ typed ops 的 `pause` 和 `stop` 直接返回 `esp_err_t`；未提供的回调�
 
 HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第二次点击提交
 `APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时按当前活跃 App 快照解析单击动作：活跃为
-Home 时提交 `OPEN_PAGE(home, root)`，否则提交 `RUN` 进入应用目录，快照不可用时
+Home 时提交 `RUN` 进入应用目录，否则提交 `OPEN_PAGE(home, root)`，快照不可用时
 不动作。两种动作都经统一 navigation gateway 异步提交，且只有
 worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被取消的先行命令。
 切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
@@ -569,11 +569,11 @@ App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App
 PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
 同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）关闭切换器并回
 原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
-当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 x 276 px 卡片，
-顶部 64 px 图标底衬内嵌 56 px 图像，名称与状态行（当前 / 点按切换 / 关闭失败）在
-图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，不保留屏幕像素缓存；表面底部
-实时显示内部 RAM 与 PSRAM 的 used/total 文本与使用条（≥85% 变红）；打开时表面
-180 ms 淡入。点击后台任务卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏
+当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 px 宽、
+约 187 px 高的内容自适应卡片，顶部 64 px 圆形图标底衬内嵌 56 px 图像，名称与状态行
+（当前 / 点按切换 / 关闭失败）在图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，
+不保留屏幕像素缓存；表面底部实时显示内部 RAM 与 PSRAM 的 used/total 文本与使用条
+（≥85% 变红）；打开时表面 180 ms 淡入。点击后台任务卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏
 切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
 64 px）提交 `EXIT` 并原地刷新列表。CLICKED 抑制：跟随轮播的横向滚动由 LVGL 原生
 scroll 抑制；未形成滚动的拖拽在位移超过 10 px 时于松手吞掉点击，卡片与关闭按钮
