@@ -416,10 +416,18 @@ App 或 Page。它在 LVGL Sys Layer 创建一条全宽顶部捕获带（高度 
 任意稳定页面从顶部下滑超过 48 px 即打开；表面打开时捕获带禁用，点击 scrim（卡片外）、
 edge-back 或普通导航都会关闭。
 
+过渡：打开时卡片从屏幕上方滑入到最终位置、scrim 同步由全透明淡到 `CC_SCRIM_OPA`；点击
+scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入时长一致），由同一条进度动画
+同时驱动卡片位移与遮罩不透明度，因此不会脱节。退场一开始表面即视为不可见
+（`is_visible()` 返回 false、捕获带保持禁用），动画结束后才隐藏对象并恢复捕获带，避免退回
+途中被再次拉起。熄屏、待机、navigation begin、策略禁用、`hide()` 与 deinit 走瞬时隐藏并
+取消进行中的动画，不阻塞转场。过渡期间磁贴、亮度滑条与熄屏/待机按钮不接受输入。
+
 表面内容：时间/日期、亮度滑条（拖动用临时亮度预览，松手持久化）、Wi-Fi 与蓝牙磁贴
 （圆形图标底与图标同取三态颜色，关闭 `INK_SOFT` / 已开启未连接 `AMBER` / 已连接
 `MINT`，底色使用对应 tint）、立即熄屏与立即待机。表面为懒构建：`app_manager_get_image()` 只在 `app_manager_init()` 到达 READY 后
-可用，因此在首次 `show` 时才创建图标节点。
+可用，因此在首次 `show` 时才创建图标节点；首次打开要构建对象并解码图标，入场动画可能晚
+启动一两帧，后续打开没有这份开销。
 
 服务桥：app_manager 不依赖 connectivity/device_link/time，控制中心经注入的
 `app_manager_control_center_ops_t`（`app_manager_config_t` 可选字段）读取与请求；
@@ -428,7 +436,8 @@ edge-back 或普通导航都会关闭。
 非阻塞；setter 只入队（Bluetooth 使用 0 等待）。
 
 门禁与所有权套用任务切换器：Screen 稳定、无转场、未 suspend、任务切换器不可见时才允许
-拉取；navigation begin 同步隐藏；screen suspend 取消并隐藏；deinit 释放表面与捕获带。
+拉取；navigation begin 同步隐藏（取消过渡）；screen suspend 取消动画并隐藏；deinit 先取消
+动画再释放表面与捕获带。
 
 运行时开关与公共 API：
 

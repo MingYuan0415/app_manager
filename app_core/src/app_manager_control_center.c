@@ -47,10 +47,26 @@
 #define CC_POLL_MS           1000U
 #define CC_SCRIM_OPA         225
 
+/* The surface transition follows the pull direction: the card slides down from
+ * above while the scrim fades in. Duration matches the task switcher so the two
+ * overlays feel alike. */
+#define CC_ANIM_MS           180
+#define CC_ANIM_PROGRESS_MAX 100
+
+/* Where the surface sits in its transition. Input is accepted only while
+ * settled, and HIDDEN is the only state that arms the pull band. */
+typedef enum
+{
+    CC_STATE_HIDDEN = 0,
+    CC_STATE_ENTERING,
+    CC_STATE_VISIBLE,
+    CC_STATE_LEAVING
+} cc_state_t;
+
 typedef struct app_manager_control_center
 {
     bool initialized;
-    bool visible;
+    cc_state_t state;
     bool built;
     bool policy_enabled;
     int32_t width;
@@ -62,6 +78,7 @@ typedef struct app_manager_control_center
     app_manager_control_center_ops_t ops;
     lv_obj_t *band;
     lv_obj_t *root;
+    lv_obj_t *panel;
     lv_obj_t *clock_label;
     lv_obj_t *date_label;
     lv_obj_t *brightness_slider;
@@ -80,6 +97,14 @@ static bool s_policy_configured;
 
 static void _cc_refresh_band(void);
 static void _cc_refresh_values(void);
+
+/* Public visibility: the surface counts as visible while it slides in and while
+ * it is settled. A leaving surface reads as hidden so callers and the pull band
+ * see the close before the slide-out finishes. */
+static bool _cc_surface_visible(void)
+{
+    return s_cc.state == CC_STATE_ENTERING || s_cc.state == CC_STATE_VISIBLE;
+}
 
 static lv_obj_t *_cc_icon(lv_obj_t *parent, uint32_t image_id, int32_t size,
                           const char *fallback)
@@ -147,30 +172,150 @@ static void _cc_radio_paint(lv_obj_t *icon, app_manager_radio_state_t state)
     }
 }
 
-static void _cc_close(void)
+static int32_t _cc_panel_offscreen_y(void)
 {
+    return -(CC_CARD_HEIGHT + CC_CARD_MARGIN);
+}
+
+/* One progress value drives both halves of the transition: the card travels
+ * between the off-screen start and its resting margin while the scrim crosses
+ * the same 0..100 range, so the two never drift apart. */
+static void _cc_anim_apply(int32_t progress)
+{
+    if (progress < 0)
+    {
+        progress = 0;
+    }
+    else if (progress > CC_ANIM_PROGRESS_MAX)
+    {
+        progress = CC_ANIM_PROGRESS_MAX;
+    }
+    if (s_cc.panel != NULL)
+    {
+        const int32_t hidden_y = _cc_panel_offscreen_y();
+        lv_obj_set_y(s_cc.panel,
+                     hidden_y + (CC_CARD_MARGIN - hidden_y) * progress /
+                     CC_ANIM_PROGRESS_MAX);
+    }
+    if (s_cc.root != NULL)
+    {
+        lv_obj_set_style_bg_opa(s_cc.root,
+                                (lv_opa_t)(CC_SCRIM_OPA * progress /
+                                           CC_ANIM_PROGRESS_MAX), 0);
+    }
+}
+
+static void _cc_anim_exec(void *variable, int32_t value)
+{
+    (void)variable;
+    _cc_anim_apply(value);
+}
+
+static void _cc_anim_stop(void)
+{
+    if (s_cc.root != NULL)
+    {
+        lv_anim_delete(s_cc.root, NULL);
+    }
+}
+
+static void _cc_anim_start(int32_t from, int32_t to,
+                           lv_anim_path_cb_t path,
+                           lv_anim_completed_cb_t completed)
+{
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, s_cc.root);
+    lv_anim_set_exec_cb(&animation, _cc_anim_exec);
+    lv_anim_set_values(&animation, from, to);
+    lv_anim_set_duration(&animation, CC_ANIM_MS);
+    lv_anim_set_path_cb(&animation, path);
+    lv_anim_set_early_apply(&animation, true);
+    if (completed != NULL)
+    {
+        lv_anim_set_completed_cb(&animation, completed);
+    }
+    (void)lv_anim_start(&animation);
+}
+
+/* Park a hidden surface at its resting geometry. The next open resets progress
+ * to zero, so this only keeps the object state coherent for teardown and for
+ * tests that inspect the tree while the surface is closed. */
+static void _cc_anim_park(void)
+{
+    _cc_anim_stop();
+    _cc_anim_apply(CC_ANIM_PROGRESS_MAX);
+}
+
+/* Non-gesture teardown: display sleep, standby, navigation, policy disable and
+ * deinit must not spend 180 ms on screen. */
+static void _cc_close_now(void)
+{
+    _cc_anim_park();
     if (s_cc.root != NULL)
     {
         lv_obj_set_hidden(s_cc.root, true);
     }
-    s_cc.visible = false;
+    s_cc.state = CC_STATE_HIDDEN;
     _cc_refresh_band();
+}
+
+static void _cc_close_completed(lv_anim_t *animation)
+{
+    (void)animation;
+    if (s_cc.state != CC_STATE_LEAVING)
+    {
+        return;
+    }
+    if (s_cc.root != NULL)
+    {
+        lv_obj_set_hidden(s_cc.root, true);
+    }
+    _cc_anim_apply(CC_ANIM_PROGRESS_MAX);
+    s_cc.state = CC_STATE_HIDDEN;
+    _cc_refresh_band();
+}
+
+/* User-gesture close. The surface stops reading as visible before the first
+ * frame so the pull band and is_visible() see the close immediately, then the
+ * card slides back out. */
+static void _cc_close_animated(void)
+{
+    if (s_cc.state != CC_STATE_VISIBLE || s_cc.root == NULL)
+    {
+        return;
+    }
+    if (s_cc.panel == NULL)
+    {
+        _cc_close_now();
+        return;
+    }
+    _cc_anim_stop();
+    s_cc.state = CC_STATE_LEAVING;
+    _cc_refresh_band();
+    _cc_anim_start(CC_ANIM_PROGRESS_MAX, 0, lv_anim_path_ease_in,
+                   _cc_close_completed);
 }
 
 static void _cc_root_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
-            lv_event_get_target(event) != lv_event_get_current_target(event))
+            lv_event_get_target(event) != lv_event_get_current_target(event) ||
+            s_cc.state != CC_STATE_VISIBLE)
     {
         return;
     }
-    _cc_close();
+    _cc_close_animated();
 }
 
 static void _cc_screen_off_event(lv_event_t *event)
 {
     (void)event;
-    _cc_close();
+    if (s_cc.state != CC_STATE_VISIBLE)
+    {
+        return;
+    }
+    _cc_close_now();
     if (app_manager_pm_request_screen_off() != ESP_OK)
     {
         LOG_W("screen-off request rejected");
@@ -180,7 +325,11 @@ static void _cc_screen_off_event(lv_event_t *event)
 static void _cc_standby_event(lv_event_t *event)
 {
     (void)event;
-    _cc_close();
+    if (s_cc.state != CC_STATE_VISIBLE)
+    {
+        return;
+    }
+    _cc_close_now();
     if (app_manager_pm_request_standby() != ESP_OK)
     {
         LOG_W("standby request rejected");
@@ -189,7 +338,7 @@ static void _cc_standby_event(lv_event_t *event)
 
 static void _cc_brightness_event(lv_event_t *event)
 {
-    if (s_cc.brightness_slider == NULL)
+    if (s_cc.brightness_slider == NULL || s_cc.state != CC_STATE_VISIBLE)
     {
         return;
     }
@@ -208,7 +357,8 @@ static void _cc_brightness_event(lv_event_t *event)
 
 static void _cc_wifi_event(lv_event_t *event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
+            s_cc.state != CC_STATE_VISIBLE)
     {
         return;
     }
@@ -228,7 +378,8 @@ static void _cc_wifi_event(lv_event_t *event)
 
 static void _cc_bt_event(lv_event_t *event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
+            s_cc.state != CC_STATE_VISIBLE)
     {
         return;
     }
@@ -313,7 +464,7 @@ static void _cc_refresh_values(void)
 static void _cc_poll_cb(lv_timer_t *timer)
 {
     (void)timer;
-    if (s_cc.visible)
+    if (_cc_surface_visible())
     {
         _cc_refresh_values();
     }
@@ -408,6 +559,7 @@ static void _cc_build(void)
     const int32_t inner_w = panel_w - 24;
 
     lv_obj_t *panel = lv_obj_create(s_cc.root);
+    s_cc.panel = panel;
     lv_obj_remove_style_all(panel);
     lv_obj_set_pos(panel, CC_CARD_MARGIN, CC_CARD_MARGIN);
     lv_obj_set_size(panel, panel_w, CC_CARD_HEIGHT);
@@ -558,9 +710,46 @@ static void _cc_build(void)
     }
 }
 
+static void _cc_open_completed(lv_anim_t *animation)
+{
+    (void)animation;
+    if (s_cc.state == CC_STATE_ENTERING)
+    {
+        s_cc.state = CC_STATE_VISIBLE;
+    }
+}
+
+/* Pull-down entry: the surface is on screen and interactive only after the
+ * slide-in settles, which keeps a stray tap from hitting a radio tile while the
+ * card is still moving. */
+static void _cc_open(void)
+{
+    if (!s_cc.built)
+    {
+        _cc_build();
+        s_cc.built = true;
+    }
+    const uint8_t brightness = app_manager_screen_get_brightness();
+    if (s_cc.brightness_slider != NULL && brightness != UINT8_MAX)
+    {
+        lv_slider_set_value(s_cc.brightness_slider,
+                            brightness < 16 ? 16 : (int32_t)brightness,
+                            LV_ANIM_OFF);
+    }
+    _cc_refresh_values();
+    _cc_anim_stop();
+    _cc_anim_apply(0);
+    lv_obj_set_hidden(s_cc.root, false);
+    s_cc.state = CC_STATE_ENTERING;
+    _cc_refresh_band();
+    _cc_anim_start(0, CC_ANIM_PROGRESS_MAX, lv_anim_path_ease_out,
+                   _cc_open_completed);
+}
+
 static bool _cc_band_ready(void)
 {
-    return s_cc.initialized && s_cc.policy_enabled && !s_cc.visible &&
+    return s_cc.initialized && s_cc.policy_enabled &&
+           s_cc.state == CC_STATE_HIDDEN &&
            !app_manager_is_transitioning() &&
            app_manager_lifecycle_screen_mutation_allowed() &&
            !app_manager_task_switcher_is_visible();
@@ -730,6 +919,7 @@ esp_err_t app_manager_control_center_deinit(void)
         lv_timer_delete(s_cc.poll_timer);
         s_cc.poll_timer = NULL;
     }
+    _cc_anim_stop();
     if (s_cc.root != NULL && lv_obj_is_valid(s_cc.root))
     {
         lv_obj_delete(s_cc.root);
@@ -751,27 +941,14 @@ esp_err_t app_manager_control_center_show(void)
     {
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_cc.visible)
+    if (_cc_surface_visible())
     {
-        _cc_close();
+        _cc_close_animated();
         return ESP_OK;
     }
-    if (!s_cc.built)
-    {
-        _cc_build();
-        s_cc.built = true;
-    }
-    const uint8_t brightness = app_manager_screen_get_brightness();
-    if (s_cc.brightness_slider != NULL && brightness != UINT8_MAX)
-    {
-        lv_slider_set_value(s_cc.brightness_slider,
-                            brightness < 16 ? 16 : (int32_t)brightness,
-                            LV_ANIM_OFF);
-    }
-    _cc_refresh_values();
-    lv_obj_set_hidden(s_cc.root, false);
-    s_cc.visible = true;
-    _cc_refresh_band();
+    /* Also covers a re-open while the slide-out is still running: the entry
+     * resets progress from the top and cancels the pending close. */
+    _cc_open();
     return ESP_OK;
 }
 
@@ -781,7 +958,7 @@ esp_err_t app_manager_control_center_hide(void)
     {
         return ESP_OK;
     }
-    _cc_close();
+    _cc_close_now();
     return ESP_OK;
 }
 
@@ -792,12 +969,12 @@ void app_manager_control_center_navigation_begin(void)
         return;
     }
     s_cc.band_armed = false;
-    _cc_close();
+    _cc_close_now();
 }
 
 bool app_manager_control_center_is_visible(void)
 {
-    return s_cc.initialized && s_cc.visible;
+    return s_cc.initialized && _cc_surface_visible();
 }
 
 void app_manager_control_center_screen_suspend(void)
@@ -806,7 +983,7 @@ void app_manager_control_center_screen_suspend(void)
     {
         return;
     }
-    _cc_close();
+    _cc_close_now();
 }
 
 void app_manager_control_center_screen_resume(void)
@@ -825,7 +1002,7 @@ esp_err_t app_manager_control_center_set_enabled(bool enabled)
     s_cc.policy_enabled = enabled;
     if (!enabled)
     {
-        _cc_close();
+        _cc_close_now();
     }
     _cc_refresh_band();
     return ESP_OK;

@@ -38,22 +38,35 @@ esp_err_t app_manager_control_center_deinit(void);
  * @brief Open the control center, or close it when already visible.
  * @return ESP_OK when the surface reached the intended state.
  * @note Call only from the LVGL worker through a navigation system command.
+ * @note The surface slides in over 180 ms; a visible surface closes with the
+ *       reverse transition, and a surface still sliding out re-opens instead.
  */
 esp_err_t app_manager_control_center_show(void);
 
 /**
- * @brief Hide the control center synchronously before a navigation executes.
+ * @brief Hide the control center immediately, without the slide-out.
  * @note Call only from the LVGL worker.
+ */
+esp_err_t app_manager_control_center_hide(void);
+
+/**
+ * @brief Hide the control center synchronously before a navigation executes.
+ * @note Call only from the LVGL worker. The hide is immediate: a running
+ *        slide-out is cancelled so the next page never sees the surface.
  */
 void app_manager_control_center_navigation_begin(void);
 
 /**
  * @brief Report whether the control-center surface is currently visible.
- * @return true while visible; false otherwise.
+ * @return true while the surface slides in or rests on screen; false while it
+ *         slides out, before init, and after deinit.
  */
 bool app_manager_control_center_is_visible(void);
 
-/** @brief Stop the pull band and hide the surface for display sleep. */
+/**
+ * @brief Stop the pull band and hide the surface for display sleep.
+ * @note The hide is immediate and cancels any running transition.
+ */
 void app_manager_control_center_screen_suspend(void);
 
 /** @brief Recompute the pull band after display resume. */

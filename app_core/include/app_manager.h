@@ -154,17 +154,20 @@ bool app_manager_back_gesture_is_enabled(void);
  * @return ESP_OK when the surface reached the intended state, otherwise an
  *         ESP-IDF error.
  * @note Call only from the LVGL worker.
+ * @note The surface slides in over 180 ms; closing an open surface plays the
+ *       reverse transition.
  */
 esp_err_t app_manager_control_center_show(void);
 /**
- * @brief Hide the system control-center surface.
+ * @brief Hide the system control-center surface without the slide-out.
  * @return ESP_OK when released or already hidden.
  * @note Call only from the LVGL worker.
  */
 esp_err_t app_manager_control_center_hide(void);
 /**
  * @brief Report whether the control-center surface is visible.
- * @return true while visible; false before init, after deinit, or when hidden.
+ * @return true while the surface slides in or rests on screen; false while it
+ *         slides out, before init, after deinit, or when hidden.
  */
 bool app_manager_control_center_is_visible(void);
 /**
