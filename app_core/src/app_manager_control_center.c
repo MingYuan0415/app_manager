@@ -32,7 +32,12 @@
 #define CC_IMAGE_POWER       0x578BU
 #define CC_IMAGE_STANDBY     0x578CU
 
-#define CC_BAND_HEIGHT       20
+/* The band is invisible: its height *is* the grab affordance, and a press must
+ * start inside it. 20 px was about half a fingertip, so pulls beginning on the
+ * bezel missed the band and scrolled the page instead. Keep it under the header
+ * action glyph (app_ui_page_set_action() sits low in the page header) so the
+ * band never covers a page's own top-right control. */
+#define CC_BAND_HEIGHT       40
 #define CC_BAND_EDGE_PX      30
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
