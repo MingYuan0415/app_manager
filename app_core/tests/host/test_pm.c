@@ -35,6 +35,7 @@ static atomic_bool s_standby_allowed;
 static atomic_int s_ui_post_count;
 static atomic_int s_run_home_count;
 static atomic_int s_home_nav_recents_count;
+static atomic_int s_control_center_nav_count;
 static atomic_bool s_fail_ui_post;
 static atomic_bool s_defer_home_completion;
 static atomic_int s_deferred_home_count;
@@ -362,8 +363,15 @@ esp_err_t app_manager_navigation_submit_system_op(
         }
         return ESP_ERR_NO_MEM;
     }
-    assert(op == APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW);
-    atomic_fetch_add(&s_home_nav_recents_count, 1);
+    if (op == APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW)
+    {
+        atomic_fetch_add(&s_control_center_nav_count, 1);
+    }
+    else
+    {
+        assert(op == APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW);
+        atomic_fetch_add(&s_home_nav_recents_count, 1);
+    }
     if (atomic_load(&s_defer_home_completion))
     {
         s_deferred_home_completion = completion;
@@ -704,6 +712,8 @@ static void _assert_resume_transition_order(void)
 static void _reset_mocks(void)
 {
     atomic_store(&g_host_time_us, 0);
+    atomic_store(&g_host_task_switcher_visible, false);
+    atomic_store(&g_host_control_center_visible, false);
     atomic_store(&s_adapter_pause_count, 0);
     atomic_store(&s_adapter_resume_count, 0);
     atomic_store(&s_display_refresh_count, 0);
@@ -718,6 +728,7 @@ static void _reset_mocks(void)
     atomic_store(&s_ui_post_count, 0);
     atomic_store(&s_run_home_count, 0);
     atomic_store(&s_home_nav_recents_count, 0);
+    atomic_store(&s_control_center_nav_count, 0);
     atomic_store(&s_defer_home_completion, false);
     atomic_store(&s_deferred_home_count, 0);
     s_deferred_home_completion = NULL;
@@ -1004,6 +1015,38 @@ int main(void)
     usleep(250000);
     assert(atomic_load(&s_run_home_count) == home_navs_after_boundary + 2);
 
+    /* An open system surface consumes a single HOME click as a close
+     * request instead of navigating the app underneath. The task switcher
+     * sits above the control center, so it takes precedence. */
+    atomic_store(&g_host_control_center_visible, true);
+    const int home_before_cc = atomic_load(&s_run_home_count);
+    const int cc_before = atomic_load(&s_control_center_nav_count);
+    const int recents_before_cc = atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(73400);
+    _wait_for_count(&s_control_center_nav_count, cc_before + 1);
+    assert(atomic_load(&s_run_home_count) == home_before_cc);
+    assert(atomic_load(&s_home_nav_recents_count) == recents_before_cc);
+
+    atomic_store(&g_host_task_switcher_visible, true);
+    const int home_before_switcher = atomic_load(&s_run_home_count);
+    const int cc_before_switcher = atomic_load(&s_control_center_nav_count);
+    const int recents_before_switcher = atomic_load(&s_home_nav_recents_count);
+    _home_click_active();
+    usleep(20000);
+    _set_time_ms(73800);
+    _wait_for_count(&s_home_nav_recents_count, recents_before_switcher + 1);
+    assert(atomic_load(&s_run_home_count) == home_before_switcher);
+    assert(atomic_load(&s_control_center_nav_count) == cc_before_switcher);
+    atomic_store(&g_host_control_center_visible, false);
+    atomic_store(&g_host_task_switcher_visible, false);
+    usleep(250000);
+    assert(atomic_load(&s_run_home_count) == home_before_switcher);
+    assert(atomic_load(&s_control_center_nav_count) == cc_before_switcher);
+    assert(atomic_load(&s_home_nav_recents_count) ==
+           recents_before_switcher + 1);
+
     /* An active HOME click submitted while the control queue is saturated is
      * preserved by the producer fallback and navigates exactly once after the
      * worker drains it. The worker is deterministically blocked in a failed
@@ -1014,7 +1057,7 @@ int main(void)
     const int home_before_saturated_click = atomic_load(&s_run_home_count);
     _home_click_active();
     usleep(20000);
-    _set_time_ms(74000);
+    _set_time_ms(74500);
     for (int i = 0; i < CONTROL_TEST_WAIT_MS &&
             !atomic_load(&s_failed_ui_post_entered); i++)
     {

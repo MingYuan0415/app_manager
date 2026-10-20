@@ -9,11 +9,13 @@
 #endif
 
 #include "app_manager_control.h"
+#include "app_manager_control_center.h"
 #include "app_manager_display.h"
 #include "app_manager_navigation.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_pm_internal.h"
 #include "app_manager_pm_transition.h"
+#include "app_manager_task_switcher.h"
 #ifndef HOST_TEST
     #include "esp_timer.h"
     #include "nv_storage.h"
@@ -26,6 +28,16 @@ static void _control_home_click_on_active(uint32_t generation,
 
 static app_manager_home_action_t _control_home_single_action(void)
 {
+    /* An open system surface consumes HOME as a close request. The task
+     * switcher sits above the control center, so it is dismissed first. */
+    if (app_manager_task_switcher_is_visible())
+    {
+        return APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
+    }
+    if (app_manager_control_center_is_visible())
+    {
+        return APP_MANAGER_HOME_ACTION_CONTROL_CENTER;
+    }
     bool valid = false;
     const bool is_home = app_manager_lifecycle_active_is_home_snapshot(&valid);
     if (!valid)
@@ -760,6 +772,8 @@ void app_manager_control_process_pending_home(void)
         s_home_action_fifo[s_home_action_head % APP_MANAGER_HOME_ACTION_FIFO_DEPTH];
     const bool task_switcher =
         action == APP_MANAGER_HOME_ACTION_TASK_SWITCHER;
+    const bool control_center =
+        action == APP_MANAGER_HOME_ACTION_CONTROL_CENTER;
     const bool menu = action == APP_MANAGER_HOME_ACTION_MENU;
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s_home_inflight, &expected, true))
@@ -772,6 +786,12 @@ void app_manager_control_process_pending_home(void)
     {
         result = app_manager_navigation_submit_system_op(
                      APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW,
+                     _control_run_home_complete, NULL);
+    }
+    else if (control_center)
+    {
+        result = app_manager_navigation_submit_system_op(
+                     APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW,
                      _control_run_home_complete, NULL);
     }
     else if (menu)

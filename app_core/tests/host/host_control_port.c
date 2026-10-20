@@ -94,6 +94,19 @@ int64_t esp_timer_get_time(void)
     return atomic_load(&g_host_time_us);
 }
 
+atomic_bool g_host_task_switcher_visible;
+atomic_bool g_host_control_center_visible;
+
+bool app_manager_task_switcher_is_visible(void)
+{
+    return atomic_load(&g_host_task_switcher_visible);
+}
+
+bool app_manager_control_center_is_visible(void)
+{
+    return atomic_load(&g_host_control_center_visible);
+}
+
 bool app_manager_lifecycle_active_is_home_snapshot(bool *valid)
 {
     if (valid != NULL)

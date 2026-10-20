@@ -44,6 +44,18 @@ void vTaskDelete(TaskHandle_t task);
 /** @brief Host monotonic time controlled by the PM test. */
 extern atomic_llong g_host_time_us;
 
+/** @brief Host-controlled task-switcher visibility for HOME routing. */
+extern atomic_bool g_host_task_switcher_visible;
+
+/** @brief Host-controlled control-center visibility for HOME routing. */
+extern atomic_bool g_host_control_center_visible;
+
+/** @brief Report the host-controlled task-switcher visibility. */
+bool app_manager_task_switcher_is_visible(void);
+
+/** @brief Report the host-controlled control-center visibility. */
+bool app_manager_control_center_is_visible(void);
+
 /** @brief Return the PM test's controlled microsecond clock. */
 int64_t esp_timer_get_time(void);
 

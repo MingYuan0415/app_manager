@@ -112,8 +112,9 @@ context 访问同一 Page state。页面成功释放后不得继续保存该指�
 - `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
 
 `APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
-双击 HOME 打开系统任务切换器；单击 HOME 按当前活跃 App 路由：活跃为 Home 时进入
-应用目录，否则回到 HOME 根页（见第 10.1 节）。需要释放
+双击 HOME 打开系统任务切换器；单击 HOME 在任务切换器或控制中心可见时先关闭该
+表面，否则按当前活跃 App 路由：活跃为 Home 时进入应用目录，否则回到 HOME 根页
+（见第 10.1 节）。需要释放
 其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
 ## 4. 静态 Registry 与 App-owned Routes
@@ -414,7 +415,7 @@ App 或 Page。它在 LVGL Sys Layer 创建一条全宽顶部捕获带（高度 
 抓取区域——按压必须落在带内才会接管手势，因此取 40 px 覆盖落在屏幕边框上的手指，同时
 低于页头右侧动作图标（`app_ui_page_set_action()` 贴底对齐），避免抢占页面自身控件。
 任意稳定页面从顶部下滑超过 48 px 即打开；表面打开时捕获带禁用，点击 scrim（卡片外）、
-edge-back 或普通导航都会关闭。
+edge-back、普通导航或单击 HOME 都会关闭。
 
 过渡：打开时卡片从屏幕上方滑入到最终位置、scrim 同步由全透明淡到 `CC_SCRIM_OPA`；点击
 scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入时长一致），由同一条进度动画
@@ -567,10 +568,14 @@ typed ops 的 `pause` 和 `stop` 直接返回 `esp_err_t`；未提供的回调�
 ### 10.1 双击 HOME 与系统任务切换器
 
 HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第二次点击提交
-`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时按当前活跃 App 快照解析单击动作：活跃为
-Home 时提交 `RUN` 进入应用目录，否则提交 `OPEN_PAGE(home, root)`，快照不可用时
-不动作。两种动作都经统一 navigation gateway 异步提交，且只有
-worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被取消的先行命令。
+`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时
+解析单击动作：任务切换器可见时提交 `APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW`
+切换关闭（与被覆盖的控制中心同时可见时关闭位于上层的切换器），控制中心可见时提交
+`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW` 切换关闭并播放退场动画，两者均不可见时按当前
+活跃 App 快照路由：活跃为 Home 时提交 `RUN` 进入应用目录，否则提交
+`OPEN_PAGE(home, root)`，快照不可用时不动作。这些动作都经统一 navigation gateway
+异步提交，且只有 worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被
+取消的先行命令。
 切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
 HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby 准备和 deinit 都取消
 待定窗口。worker 按窗口剩余时间缩短轮询等待，单击延迟不超过 350 ms 加一个轮询周期。
@@ -578,8 +583,8 @@ HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby �
 最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
 App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App 保持运行且不收到
 PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
-同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）关闭切换器并回
-原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
+同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）或单击 HOME
+关闭切换器并回原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
 当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 px 宽、
 约 187 px 高的内容自适应卡片，顶部 64 px 圆形图标底衬内嵌 56 px 图像，名称与状态行
 （当前 / 点按切换 / 关闭失败）在图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，

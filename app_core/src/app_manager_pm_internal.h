@@ -50,6 +50,7 @@ typedef enum
     APP_MANAGER_HOME_ACTION_ROOT,         /**< OPEN_PAGE home/root. */
     APP_MANAGER_HOME_ACTION_MENU,         /**< OPEN_APP applications menu. */
     APP_MANAGER_HOME_ACTION_TASK_SWITCHER, /**< SHOW system task switcher. */
+    APP_MANAGER_HOME_ACTION_CONTROL_CENTER, /**< SHOW control center. */
 } app_manager_home_action_t;
 
 /** @brief Capacity of the resolved HOME action FIFO. */
