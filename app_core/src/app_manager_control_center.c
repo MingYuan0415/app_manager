@@ -367,6 +367,11 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     if (text != NULL)
     {
         lv_obj_remove_style_all(text);
+        /* Labels are input-transparent but a plain lv_obj is clickable by
+         * default: without this the text column becomes the press target and
+         * the tile's CLICKED callback never runs when the name/state is
+         * tapped. */
+        lv_obj_set_clickable(text, false);
         lv_obj_set_width(text, 0);
         lv_obj_set_flex_grow(text, 1);
         lv_obj_set_height(text, LV_SIZE_CONTENT);
