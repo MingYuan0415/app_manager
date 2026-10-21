@@ -1162,6 +1162,83 @@ static void _test_back_app_abort_drops_stopped_children(void)
     _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_APP, "a");
 }
 
+static void _test_back_app_finalize_stop_failure_drops_stopped_children(void)
+{
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_page_present("a", "root"));
+    const unsigned root_starts = s_a_root.messages[APP_MANAGER_MSG_ONSTART];
+
+    /* The child page is stopped before the transition starts. Failing the
+     * source page's final ONSTOP rolls back to the same source page; the
+     * stopped child must not be re-STARTed on its released arena slot. */
+    s_a_one.stop_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
+    _trace_reset();
+    assert(_navigate(&call) == ESP_FAIL);
+    assert(app_manager_is_actived("a"));
+    assert(app_page_is_actived("a", "one"));
+
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "root");
+    _trace_reset();
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_page_present("a", "root"));
+    assert(s_a_root.messages[APP_MANAGER_MSG_ONSTART] == root_starts + 1U);
+    assert(app_page_is_actived("a", "root"));
+
+    /* The forward open keeps the old source page as a background page. Drop
+     * it so the following tests start from the same single-page state. */
+    call = _request(APP_MANAGER_NAV_OP_REMOVE_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_actived("a"));
+    assert(app_page_is_actived("a", "root"));
+    assert(!app_manager_is_page_present("a", "one"));
+}
+
+static void _test_back_app_cleanup_failure_keeps_recent_task(void)
+{
+    app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
+    size_t count = 0U;
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_RUN, "c", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_is_actived("c"));
+
+    /* "a" is pinned in this fixture, so use the non-pinned "c" as the failed
+     * source: its final ONSTOP fails and the target "b" cannot be paused. */
+    s_c_root.stop_failures = 1U;
+    s_b_root.pause_failures = 1U;
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "c", NULL);
+    _trace_reset();
+    assert(_navigate(&call) == ESP_FAIL);
+    assert(app_manager_is_actived("b"));
+    assert(app_page_is_actived("b", "root"));
+
+    /* The failed source is still a real background task and must stay in
+     * the recent-task list so the user can see and clean it up. */
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 2U);
+    assert(strcmp(tasks[0].app_id, "b") == 0);
+    assert(tasks[0].active);
+    assert(strcmp(tasks[1].app_id, "c") == 0);
+    assert(tasks[1].cleanup_pending);
+
+    /* The next navigation retries the pending cleanup before running. */
+    call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 1U);
+    assert(strcmp(tasks[0].app_id, "b") == 0);
+    assert(!app_manager_is_page_present("c", "root"));
+}
+
 static void _test_shared_definition_and_target_pause_rollback(void)
 {
     nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "b", NULL);
@@ -1707,6 +1784,17 @@ static void _test_recent_tasks_snapshot(void)
     assert(_navigate(&call) == ESP_OK);
     call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
     assert(_navigate(&call) == ESP_OK);
+
+    /* While the display is paused there is no valid topology snapshot; the
+     * public query reports an empty list rather than a state error. */
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    count = 123U;
+    assert(app_manager_get_recent_tasks(tasks, APP_MANAGER_MAX_RECENT_TASKS,
+                                        &count) == ESP_OK);
+    assert(count == 0U);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
 }
 
 static void _test_product_eviction_recents(void)
@@ -1879,6 +1967,8 @@ int main(void)
     _test_forward_unmount_and_target_pause_failure();
     _test_pause_and_stop_rollback();
     _test_back_app_abort_drops_stopped_children();
+    _test_back_app_finalize_stop_failure_drops_stopped_children();
+    _test_back_app_cleanup_failure_keeps_recent_task();
     _test_shared_definition_and_target_pause_rollback();
     _test_uncommitted_cleanup_ownership();
     _test_async_transition_queries();

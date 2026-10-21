@@ -959,7 +959,9 @@ static bool _app_manager_display_diagnostics_benchmark_snapshot(
 static void _app_manager_display_diagnostics_read_render_task(
     app_manager_display_benchmark_report_t *report)
 {
-#if CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT == 1
+#if (defined(CONFIG_LV_OS_NONE) && CONFIG_LV_OS_NONE) || \
+    (defined(CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT) && \
+     CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT == 1)
 #if defined(CONFIG_LV_OS_NONE) && CONFIG_LV_OS_NONE
     const char *task_name = "lvgl";
 #else
@@ -1609,7 +1611,7 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
 {
     if (report == NULL)
     {
-        return ESP_ERR_INVALID_STATE;
+        return ESP_ERR_INVALID_ARG;
     }
     if (!_app_manager_display_diagnostics_api_enter())
     {

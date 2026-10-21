@@ -1,5 +1,8 @@
 /**
  * @brief Development-only display performance diagnostics.
+ *
+ * When CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS is disabled, every API returns
+ * ESP_ERR_NOT_SUPPORTED.
  */
 
 #ifndef __APP_MANAGER_DISPLAY_DIAGNOSTICS_H__
@@ -132,7 +135,8 @@ typedef struct app_manager_display_benchmark_report
  *
  * @param minimum_fps is the minimum acceptable one-second FPS sample.
  * @param minimum_dma_largest is the minimum acceptable active DMA block.
- * @return ESP_OK when tracking starts, or an adapter state error.
+ * @return ESP_OK when tracking starts; ESP_ERR_INVALID_ARG for zero arguments;
+ *         otherwise an adapter state error.
  */
 esp_err_t app_manager_display_diagnostics_begin_benchmark(
     uint32_t minimum_fps, size_t minimum_dma_largest);
@@ -141,8 +145,9 @@ esp_err_t app_manager_display_diagnostics_begin_benchmark(
  * @brief Wait until the current transition reaches a successful final submit.
  *
  * @param timeout_ms is the bounded wait in milliseconds.
- * @return ESP_OK when no transition remains pending; ESP_ERR_TIMEOUT when the
- *         final submit does not arrive; otherwise a diagnostics state error.
+ * @return ESP_OK when no transition remains pending; ESP_ERR_INVALID_ARG when
+ *         timeout_ms is zero; ESP_ERR_TIMEOUT when the final submit does not
+ *         arrive; otherwise a diagnostics state error.
  */
 esp_err_t app_manager_display_diagnostics_wait_for_presentation(
     uint32_t timeout_ms);
@@ -151,7 +156,9 @@ esp_err_t app_manager_display_diagnostics_wait_for_presentation(
  * @brief Stop benchmark tracking and return its aggregated results.
  *
  * @param report receives the completed benchmark result.
- * @return ESP_OK when tracking stops, or an adapter state error.
+ * @return ESP_OK when tracking stops; ESP_ERR_INVALID_ARG when report is NULL;
+ *         ESP_ERR_INVALID_STATE when no benchmark is active; otherwise an
+ *         adapter state error.
  */
 esp_err_t app_manager_display_diagnostics_end_benchmark(
     app_manager_display_benchmark_report_t *report);

@@ -13,6 +13,7 @@
 
 #include "esp_heap_caps.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,7 +33,7 @@
 #define TS_COLOR_WARNING        APP_THEME_COLOR_CORAL
 #define TS_COLOR_ICON_BG        APP_THEME_COLOR_PLUME_HI
 #define TS_COLOR_TRACK          APP_THEME_COLOR_TRACK
-#define TS_COLOR_ICON_FALLBACK  APP_THEME_COLOR_HAIRLINE
+#define TS_COLOR_ICON_FALLBACK  APP_THEME_COLOR_INK_FAINT
 
 #define TS_HEADER_HEIGHT  52
 #define TS_RAM_HEIGHT     92
@@ -81,11 +82,13 @@ typedef struct app_manager_task_switcher_state_data
     app_manager_task_switcher_card_t cards[APP_MANAGER_MAX_RECENT_TASKS];
     size_t card_count;
     app_manager_task_switcher_state_t state;
+    lv_timer_t *memory_timer;
     app_manager_recent_task_t tasks[APP_MANAGER_MAX_RECENT_TASKS];
 } app_manager_task_switcher_state_data_t;
 
 static app_manager_task_switcher_state_data_t s_switcher;
 static uint32_t s_switcher_generation;
+static atomic_bool s_visible_published;
 
 static void _switcher_rebuild(void);
 static void _switcher_exit_complete(esp_err_t result, void *context);
@@ -138,6 +141,11 @@ static void _switcher_hide(void)
         return;
     }
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_HIDDEN;
+    atomic_store_explicit(&s_visible_published, false, memory_order_release);
+    if (s_switcher.memory_timer != NULL)
+    {
+        lv_timer_pause(s_switcher.memory_timer);
+    }
     if (s_switcher.root != NULL)
     {
         lv_anim_delete(s_switcher.root, NULL);
@@ -206,6 +214,30 @@ static void _switcher_close_task(const char *app_id)
     }
 }
 
+static void _switcher_activate_complete(esp_err_t result, void *context)
+{
+    if (result == ESP_OK)
+    {
+        return;
+    }
+    const char *app_id = (const char *)context;
+    LOG_W("task switch failed: %s", esp_err_to_name(result));
+    if (app_manager_task_switcher_show() != ESP_OK)
+    {
+        return;
+    }
+    for (size_t index = 0U; index < s_switcher.card_count; ++index)
+    {
+        app_manager_task_switcher_card_t *card = &s_switcher.cards[index];
+        if (card->status != NULL && card->app_id == app_id)
+        {
+            lv_label_set_text(card->status, "切换失败");
+            lv_obj_set_style_text_color(card->status,
+                                        lv_color_hex(TS_COLOR_WARNING), 0);
+        }
+    }
+}
+
 static void _switcher_activate_task(const char *app_id, bool current)
 {
     if (s_switcher.state != APP_MANAGER_TASK_SWITCHER_VISIBLE)
@@ -226,7 +258,12 @@ static void _switcher_activate_task(const char *app_id, bool current)
             .effect = APP_MANAGER_TRANSITION_DEFAULT,
         },
     };
-    (void)app_manager_navigate_async(&request, NULL, NULL);
+    esp_err_t admitted = app_manager_navigate_async(&request,
+                         _switcher_activate_complete, (void *)app_id);
+    if (admitted != ESP_OK)
+    {
+        LOG_W("task switch admission failed: %s", esp_err_to_name(admitted));
+    }
 }
 
 /* Both actions delete the card tree (hide/close), so they must not run inside
@@ -234,11 +271,18 @@ static void _switcher_activate_task(const char *app_id, bool current)
  * (app_id points at stable descriptor storage) plus the list generation at
  * event time and defer via lv_async_call: an exit/clear completion can rebuild
  * the list within the same frame, which would rebind a captured slot. */
+typedef enum switcher_click_action
+{
+    SWITCHER_CLICK_ACTIVATE = 0,
+    SWITCHER_CLICK_CLOSE,
+} switcher_click_action_t;
+
 typedef struct
 {
     const char *app_id;
     bool current;
     uint32_t generation;
+    switcher_click_action_t action;
 } switcher_click_capture_t;
 
 #define TS_CLICK_CAPTURE_SLOTS 4
@@ -246,19 +290,34 @@ typedef struct
 static switcher_click_capture_t s_click_captures[TS_CLICK_CAPTURE_SLOTS];
 static size_t s_click_capture_next;
 
-static void _switcher_card_activate_async(void *user_data)
+static void _switcher_click_async(void *user_data)
 {
     const switcher_click_capture_t *capture = user_data;
     if (capture->generation != s_switcher_generation)
     {
         return; /* List rebuilt since the click. */
     }
+    if (capture->action == SWITCHER_CLICK_CLOSE)
+    {
+        _switcher_close_task(capture->app_id);
+        return;
+    }
     _switcher_activate_task(capture->app_id, capture->current);
 }
 
-static void _switcher_close_task_async(void *user_data)
+static void _switcher_capture_click(
+    const app_manager_task_switcher_card_t *card,
+    switcher_click_action_t action)
 {
-    _switcher_close_task((const char *)user_data);
+    switcher_click_capture_t *capture =
+        &s_click_captures[s_click_capture_next];
+    s_click_capture_next =
+        (s_click_capture_next + 1U) % TS_CLICK_CAPTURE_SLOTS;
+    capture->app_id = card->app_id;
+    capture->current = card->current;
+    capture->generation = s_switcher_generation;
+    capture->action = action;
+    (void)lv_async_call(_switcher_click_async, capture);
 }
 
 /* LVGL withholds CLICKED only when a drag turns into a scroll, so a
@@ -296,14 +355,7 @@ static void _switcher_card_event(lv_event_t *event)
     {
         return;
     }
-    switcher_click_capture_t *capture =
-        &s_click_captures[s_click_capture_next];
-    s_click_capture_next =
-        (s_click_capture_next + 1U) % TS_CLICK_CAPTURE_SLOTS;
-    capture->app_id = card->app_id;
-    capture->current = card->current;
-    capture->generation = s_switcher_generation;
-    (void)lv_async_call(_switcher_card_activate_async, capture);
+    _switcher_capture_click(card, SWITCHER_CLICK_ACTIVATE);
 }
 
 static void _switcher_card_close_event(lv_event_t *event)
@@ -318,7 +370,7 @@ static void _switcher_card_close_event(lv_event_t *event)
     {
         return;
     }
-    (void)lv_async_call(_switcher_close_task_async, (void *)card->app_id);
+    _switcher_capture_click(card, SWITCHER_CLICK_CLOSE);
 }
 
 /* Phone-style dismiss: a vertical upward drag on a background card closes it.
@@ -342,7 +394,7 @@ static void _switcher_card_release_event(lv_event_t *event)
     const int32_t dy = point.y - card->press_y;
     if (dy <= -TS_SWIPE_CLOSE && dx * dx <= TS_SWIPE_CLOSE * TS_SWIPE_CLOSE)
     {
-        (void)lv_async_call(_switcher_close_task_async, (void *)card->app_id);
+        _switcher_capture_click(card, SWITCHER_CLICK_CLOSE);
     }
 }
 
@@ -396,14 +448,21 @@ static void _switcher_update_memory(void)
     const size_t reported_internal_total = heap_caps_get_total_size(
             MALLOC_CAP_INTERNAL |
             MALLOC_CAP_8BIT);
-    const size_t reserve = (size_t)CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL;
-    const size_t internal_total = reported_internal_total > reserve ?
-                                  reported_internal_total - reserve :
-                                  reported_internal_total;
-    const size_t internal_free = heap_caps_get_free_size(
-                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const size_t psram_total = heap_caps_get_total_size(
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t internal_total = reported_internal_total;
+#if CONFIG_SPIRAM
+    if (psram_total != 0U)
+    {
+        const size_t reserve =
+            (size_t)CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL;
+        internal_total = reported_internal_total > reserve ?
+                         reported_internal_total - reserve :
+                         reported_internal_total;
+    }
+#endif
+    const size_t internal_free = heap_caps_get_free_size(
+                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const size_t psram_free = heap_caps_get_free_size(
                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
@@ -426,6 +485,15 @@ static void _switcher_update_memory(void)
                                      s_switcher.ram_psram_value,
                                      psram_free, psram_total, true);
         }
+    }
+}
+
+static void _switcher_memory_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_switcher.state != APP_MANAGER_TASK_SWITCHER_HIDDEN)
+    {
+        _switcher_update_memory();
     }
 }
 
@@ -1032,7 +1100,14 @@ esp_err_t app_manager_task_switcher_init(void *display)
     }
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_HIDDEN;
+    s_switcher.memory_timer = lv_timer_create(_switcher_memory_tick, 1000U,
+                              NULL);
+    if (s_switcher.memory_timer != NULL)
+    {
+        lv_timer_pause(s_switcher.memory_timer);
+    }
     s_switcher.initialized = true;
+    atomic_store_explicit(&s_visible_published, false, memory_order_release);
     return ESP_OK;
 }
 
@@ -1042,11 +1117,17 @@ esp_err_t app_manager_task_switcher_deinit(void)
     {
         return ESP_OK;
     }
+    if (s_switcher.memory_timer != NULL)
+    {
+        lv_timer_delete(s_switcher.memory_timer);
+        s_switcher.memory_timer = NULL;
+    }
     if (s_switcher.root != NULL)
     {
         lv_anim_delete(s_switcher.root, NULL);
         lv_obj_delete(s_switcher.root);
     }
+    atomic_store_explicit(&s_visible_published, false, memory_order_release);
     memset(&s_switcher, 0, sizeof(s_switcher));
     return ESP_OK;
 }
@@ -1109,6 +1190,11 @@ esp_err_t app_manager_task_switcher_show(void)
     _switcher_update_memory();
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_VISIBLE;
+    atomic_store_explicit(&s_visible_published, true, memory_order_release);
+    if (s_switcher.memory_timer != NULL)
+    {
+        lv_timer_resume(s_switcher.memory_timer);
+    }
     lv_obj_set_hidden(s_switcher.root, false);
     lv_obj_move_to_index(s_switcher.root, -1);
     _switcher_start_fade();
@@ -1126,7 +1212,7 @@ void app_manager_task_switcher_navigation_begin(void)
 
 bool app_manager_task_switcher_is_visible(void)
 {
-    return s_switcher.state != APP_MANAGER_TASK_SWITCHER_HIDDEN;
+    return atomic_load_explicit(&s_visible_published, memory_order_acquire);
 }
 
 void app_manager_task_switcher_screen_suspend(void)

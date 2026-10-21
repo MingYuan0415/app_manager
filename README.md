@@ -159,9 +159,10 @@ descriptor 可达，不存在独立 Page 链接段。宿主测试没有 ESP-IDF 
 
 同一 Page ID 可存在于不同 App；同一 definition 也可由多个 App route 引用。每个 route
 拥有独立的 `page_id` 和稳定、非托管 `user_data`，每次页面实例仍获得独立私有内存和
-导航栈。公共页面必须由目标 App 显式 opt-in；未绑定 route 时 `(app_id, page_id)` 查询
-返回 `ESP_ERR_NOT_FOUND`。所有 descriptor、route 和 definition 生命周期覆盖整个固件
-运行期，不提供动态 App、provider、lease、运行时裸 handler 创建或自由挂载接口。
+导航栈。公共页面必须由目标 App 显式 opt-in；未绑定 route 时导航返回
+`ESP_ERR_NOT_FOUND`；公共 `app_manager_is_page_present()` 等布尔查询返回 `false`。
+所有 descriptor、route 和 definition 生命周期覆盖整个固件运行期，不提供动态 App、
+provider、lease、运行时裸 handler 创建或自由挂载接口。
 
 ## 5. Typed Blob 与 New Intent
 
@@ -307,9 +308,9 @@ target `ONRESUME` 先于 presentation start，因此它的 timer、订阅、输�
 查询判断导航已经提交。
 
 presentation 无法启动时，若能立即加载 target，则降级为 `NONE` 并继续执行动画后的清理
-和提交；否则框架先向 target 发送补偿性 `ONPAUSE`，再 UNMOUNT target，随后加载并
-RESUME source。动画结束后的 source `STOP` 失败也使用相同补偿顺序，最终以原错误完成
-命令。target 补偿 PAUSE 失败时不得 UNMOUNT target 或 RESUME source；框架保留 target
+和提交；否则框架先向 target 发送补偿性 `ONPAUSE`，再恢复 source（START/MOUNT/立即加载/
+RESUME），最后 UNMOUNT target 并回滚其创建状态。动画结束后的 source `STOP` 失败也使用
+相同补偿顺序，最终以原错误完成命令。target 补偿 PAUSE 失败时不得 UNMOUNT target 或 RESUME source；框架保留 target
 的 Screen 和活动资源并提交为前台，以原始错误完成命令。source 根据转换类型保留为
 `UNMOUNT_ONLY`、`DESTROY_PAGE` 或 `DESTROY_APP` cleanup owner；后续导航先重试该动作，
 避免两个页面同时持有前台会话。`UNMOUNT_ONLY` 不会 STOP 后台驻留 Page；
@@ -354,9 +355,11 @@ alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本
 | armed 回退滞回 | 提交距离的 1/5，限制为 10..18 px |
 | Canvas 尺寸 | 固定 64x144 px，手势期间不缩放、不变形 |
 | indicator Y 锚点 | 按下时以触点居中并限制 8 px 垂直边距，本次手势内保持固定 |
-| indicator 样式 | 固定 `#202124`、不透明度 220；仅轮廓边缘使用 1 px alpha 抗锯齿 |
+| indicator 样式 | 固定 `APP_THEME_COLOR_PLUME_HI`（`#222A31`）、不透明度 220；仅轮廓边缘使用 1 px alpha 抗锯齿 |
 
-Canvas 使用一块 9,220 bytes（约 9.0 KiB）的固定内部 BSS A8 draw buffer，不在手势期间分配内存。
+Canvas 使用一块 9,220 bytes（64x144 A8 + 4 B 对齐余量）的固定外部 RAM BSS draw buffer
+（`APP_MANAGER_EXT_BSS` -> `.ext_ram.bss`；产品启用
+`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`），不在手势期间分配内存。
 弧形按行计算：先按 `u = abs(2*y-(H-1))/(H-1)` 将行坐标归一化到 Q15，再计算
 `smooth = u * u * (3 - 2 * u)` 和 `depth = 62 - (62 - 28) * smooth`，把有效深度
 从中部 62 px 平滑收窄到上下端 28 px。
@@ -410,10 +413,11 @@ Screen resume 使用时返回 `ESP_OK`，否则返回准入或 UI dispatcher 错
 ### 7.3 控制中心
 
 控制中心是 app-manager 的系统级界面（`app_manager_control_center.c`），不属于任何
-App 或 Page。它在 LVGL Sys Layer 创建一条全宽顶部捕获带（高度 40 px，水平内缩左右边缘
-返回带宽度，避免与 edge-back 在角部重叠）和一个全屏表面。捕获带不可见，其高度即唯一的
-抓取区域——按压必须落在带内才会接管手势，因此取 40 px 覆盖落在屏幕边框上的手指，同时
-低于页头右侧动作图标（`app_ui_page_set_action()` 贴底对齐），避免抢占页面自身控件。
+App 或 Page。它在 LVGL Sys Layer 创建一条顶部捕获带（高度 40 px，水平方向左侧内缩
+边缘返回带宽度，368 px 屏宽下为 29 px；右侧为页头动作按钮保留 58 px，即 42 px 按钮 +
+16 px 页边距）。捕获带不可见，其高度即唯一的抓取区域——按压必须落在带内才会接管手势，
+因此取 40 px 覆盖落在屏幕边框上的手指；带子右端停在 `app_ui_page_set_action()` 的按钮
+左侧，不会抢占页面自身控件。
 任意稳定页面从顶部下滑超过 48 px 即打开；表面打开时捕获带禁用，点击 scrim（卡片外）、
 edge-back、普通导航或单击 HOME 都会关闭。
 
@@ -588,13 +592,14 @@ PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE
 当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 px 宽、
 约 187 px 高的内容自适应卡片，顶部 64 px 圆形图标底衬内嵌 56 px 图像，名称与状态行
 （当前 / 点按切换 / 关闭失败）在图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，
-不保留屏幕像素缓存；表面底部实时显示内部 RAM 与 PSRAM 的 used/total 文本与使用条
-（≥85% 变红）；打开时表面 180 ms 淡入。点击后台任务卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏
-切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
+不保留屏幕像素缓存；表面底部显示内部 RAM 与 PSRAM 的 used/total 文本与使用条
+（≥85% 变红），打开/重建时刷新并每 1 s 刷新一次；打开时表面 180 ms 淡入。点击后台任务
+卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
 64 px）提交 `EXIT` 并原地刷新列表。CLICKED 抑制：跟随轮播的横向滚动由 LVGL 原生
 scroll 抑制；未形成滚动的拖拽在位移超过 10 px 时于松手吞掉点击，卡片与关闭按钮
 同样抑制。点击动作在事件时刻捕获 `app_id` 与列表 generation 再经 `lv_async_call`
-执行，同帧内的列表重建不会让延迟动作命中错误任务。列表重建（关闭完成、淘汰、
+执行，覆盖激活、关闭按钮和上滑关闭，同帧内的列表重建不会让延迟动作命中错误任务。
+切换失败时切换器重新打开并在对应卡片显示“切换失败”。列表重建（关闭完成、淘汰、
 清除失败重试、重新打开）回到轮播起始位置。
 "全部清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁
 全部非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行
@@ -644,13 +649,16 @@ running-count 快照；其余 active/present 查询返回 `false` 或 `NULL`。
 
 `app_manager_deinit()` 不能从 UI worker 调用。正常顺序为：
 
-1. app-control 停止生产者，注销输入并取消 standby；
-2. navigation 停止准入，排空命令并快进最后动画；
+1. app-control 停止生产者、注销输入并取消 standby（`app_manager_control_deinit`）；
+2. 边缘返回停止准入；navigation 停止准入、排空命令并快进最后动画；
 3. lifecycle 置 CLOSED，等待已准入访问退出；
-4. UI worker 执行 PAUSE/UNMOUNT/STOP、删除 Screen 并释放运行节点；
-5. presentation 删除 neutral Screen、屏障和 completion timer；
-6. 关闭 mailbox，pause/fence/deinit LVGL adapter；
-7. 释放字体、主题和资源映射。
+4. UI worker 依次 deinit 控制中心、任务切换器、lifecycle（PAUSE/UNMOUNT/STOP、
+   删除 Screen、释放运行节点）、边缘返回对象和 presentation（neutral Screen、屏障、
+   completion timer）；
+5. 重置 registry，关闭 mailbox 并释放命令池；
+6. 暂停并 fence LVGL adapter，释放主题与字体（adapter VFS 仍挂载）；
+7. deinit LVGL adapter；
+8. 释放资源映射（mmap assets）。
 
 任一步清理失败都保留对应 ready/ownership 状态；再次调用 `app_manager_deinit()` 继续
 重试。冷启动、Screen resume 和 deinit 不播放页面动画。
@@ -676,7 +684,8 @@ POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。st
 都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动
 的 input/PM admission 在 `app_manager_init()` 后仍保持关闭；`app_manager_startup_commit()`
 注册物理输入并从首屏真正可操作的时刻重置 inactivity epoch。
-正常亮度、DIM、熄屏和待机延迟由 App Manager 自身持久化；
+正常亮度、熄屏和待机延迟由 App Manager 自身持久化。DIM 延迟为只读值，
+来自 NVS 键 `pm_dim_to`，缺省为 15 s；当前没有公开的 DIM 设置 API。
 同步 PM setter 只接受非 UI worker 调用（UI worker 上返回
 `ESP_ERR_INVALID_STATE`），设置页通过 `*_async` post 提交并经 getter 观察持久化
 结果；恢复出厂在初始化前调用
@@ -818,17 +827,21 @@ STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、ob
 
 | 字段 | 含义 |
 | --- | --- |
-| `max_resident_apps` | 驻留上限；0 使用物理上限 8 |
 | `resident_policy` | 满容量拒绝或淘汰最旧后台 App |
 | `app_forward_transition` | App 前进默认动画 |
 | `app_back_transition` | App 返回默认动画 |
 | `page_forward_transition` | Page 前进默认动画 |
 | `page_back_transition` | Page 返回默认动画 |
 | `control_center_ops` | 可选；控制中心服务桥，NULL 隐藏网络/时间磁贴 |
+| `font_sizes` / `font_count` | 非 NULL 时必须为 `APP_THEME_FONT_MAX`（7）项，按角色顺序；`font_count` 同理 |
+| `max_resident_apps` | 驻留上限；0 使用物理上限 8，大于 8 的值被拒绝 |
+| `control_task_priority` | app-control worker 优先级，必须在 `[1, configMAX_PRIORITIES)` |
 
 其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
-`standby_ops`。配置结构由初始化路径读取，硬件操作表会复制到内部 owner。边缘返回不增加
-配置字段；初始化后默认启用，需要运行时关闭时调用公共开关 API。
+`standby_ops`。`screen_ops` 的 suspend/resume_prepare 在 app-control 上执行，
+set_brightness/set_brightness_temp/resume_commit 分发到 UI worker。配置结构由初始化
+路径读取，硬件操作表会复制到内部 owner。边缘返回不增加配置字段；初始化后默认启用，
+需要运行时关闭时调用公共开关 API。
 
 推荐启动顺序：
 
@@ -837,15 +850,15 @@ BSP / system PM ready
 app_manager_init（input/PM admission closed）
 register UI dispatcher with event bus
 start power service
-navigate RUN HOME
-app_manager_display_commit_initial（show panel, keep indev closed）
 start connectivity services
+navigate RUN SETUP（首次启动）或 HOME
+app_manager_display_commit_initial（show panel, keep indev closed）
 app_manager_startup_commit（open touch, key, and PM admission）
 ```
 
-`main/app_runtime.c` 先显示 Home，再初始化连接服务，因此 Wi-Fi/BLE 启动耗时不会延长
-黑屏；但物理 HOME/POWER 在连接层完成前仍不会进入导航或 PM 状态机。任何 Page 的
-`ONRESUME` 都发生在 UI dispatcher 和 power service 安装之后。
+`main/app_runtime.c` 在首帧提交前初始化连接服务；面板在 display_commit_initial
+之前保持关闭，因此连接服务初始化会计入首帧前的隐藏时间。首次启动进入 SETUP，
+后续启动进入 HOME。
 
 ## 14. 测试与验证
 
@@ -924,7 +937,8 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 - 动画平均帧率不低于 25 FPS；
 - Screen、LVGL object、timer、订阅和活动会话无增长；
 - 无 panel IO、DMA 或 fence 错误；
-- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量，新增内部 BSS 不超过 10 KiB。
+- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量，新增内部 BSS 不超过 10 KiB；
+  手势 A8 buffer 位于 PSRAM，不计入该预算。
 
 ## 15. 明确边界
 

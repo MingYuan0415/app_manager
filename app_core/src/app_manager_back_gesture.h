@@ -55,6 +55,13 @@ void app_manager_back_gesture_screen_suspend(void);
  */
 void app_manager_back_gesture_screen_resume(void);
 
+/**
+ * @brief Return the computed horizontal edge capture width.
+ * @return Edge width in pixels, or 0 before gesture initialization.
+ * @note Call only from the UI worker.
+ */
+int32_t app_manager_back_gesture_edge_width(void);
+
 #ifdef __cplusplus
 }
 #endif

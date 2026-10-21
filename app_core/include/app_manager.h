@@ -168,17 +168,21 @@ esp_err_t app_manager_control_center_hide(void);
  * @brief Report whether the control-center surface is visible.
  * @return true while the surface slides in or rests on screen; false while it
  *         slides out, before init, after deinit, or when hidden.
+ * @note Safe from any task.
  */
 bool app_manager_control_center_is_visible(void);
 /**
  * @brief Enable or disable the top pull-down entry to the control center.
  * @param enabled selects whether a top-edge page pull may open the surface.
  * @return ESP_OK when applied.
+ * @note Safe from any task; the change is marshalled to the LVGL worker, or
+ *       retained for the next init when the worker is unavailable.
  */
 esp_err_t app_manager_control_center_set_enabled(bool enabled);
 /**
  * @brief Report the control-center top pull-down policy.
  * @return true when enabled; false before init, after deinit, or when disabled.
+ * @note Safe from any task.
  */
 bool app_manager_control_center_is_enabled(void);
 

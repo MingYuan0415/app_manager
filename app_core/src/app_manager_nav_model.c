@@ -1,5 +1,7 @@
 #ifndef HOST_TEST
+    #define DBG_TAG "app_nav_model"
     #include "esp_heap_caps.h"
+    #include "mt_log.h"
 #else
     #include <stdlib.h>
 #endif
@@ -29,6 +31,7 @@ esp_err_t app_manager_nav_model_init(app_manager_nav_model_t *model)
                             MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
     if (model->page_arena == NULL)
     {
+        LOG_W("PSRAM page arena unavailable; using internal RAM");
         model->page_arena = heap_caps_aligned_calloc(
                                 8, 1,
                                 model->page_stride * APP_MANAGER_MAX_PAGE_INSTANCES,

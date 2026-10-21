@@ -186,7 +186,6 @@ function(add_display_diagnostics_test name target draw_units os_none
     target_compile_definitions(${target} PRIVATE
         CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS=1
         CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS=1
-        CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=${draw_units}
         CONFIG_LV_OS_NONE=${os_none}
         TEST_RENDER_TASK_EXPECTED=${render_task_expected}
         TEST_RENDER_TASK_PSRAM=${render_task_psram}
@@ -196,6 +195,10 @@ function(add_display_diagnostics_test name target draw_units os_none
         APP_MANAGER_DISPLAY_DIAGNOSTICS_INTERVAL_MS=50
         APP_MANAGER_DISPLAY_BENCHMARK_INTERVAL_MS=5
     )
+    if(NOT draw_units STREQUAL "undefined")
+        target_compile_definitions(${target} PRIVATE
+            CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=${draw_units})
+    endif()
     add_host_test(${name} ${target})
 endfunction()
 
@@ -205,3 +208,5 @@ add_display_diagnostics_test(display_diagnostics_freertos_single
     test_display_diagnostics_freertos_single 1 0 1 0 swdraw -1)
 add_display_diagnostics_test(display_diagnostics_os_none
     test_display_diagnostics_os_none 1 1 1 1 lvgl 1)
+add_display_diagnostics_test(display_diagnostics_os_none_undefined_draw_units
+    test_display_diagnostics_os_none_undefined_draw_units undefined 1 1 1 lvgl 1)

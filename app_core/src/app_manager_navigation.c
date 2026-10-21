@@ -746,10 +746,13 @@ esp_err_t app_manager_navigation_submit_system_op(
     bool screen_access_owned = false;
 
     if (op <= APP_MANAGER_NAV_SYSTEM_NONE ||
-            op >= APP_MANAGER_NAV_SYSTEM_END ||
-            !_navigation_access_begin())
+            op >= APP_MANAGER_NAV_SYSTEM_END)
     {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!_navigation_access_begin())
+    {
+        return ESP_ERR_INVALID_STATE;
     }
     if (!app_manager_lifecycle_screen_access_begin())
     {

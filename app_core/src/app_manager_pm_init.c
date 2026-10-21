@@ -206,7 +206,7 @@ static void _control_wait_for_accesses(void)
 #ifdef HOST_TEST
         usleep(1000);
 #else
-        taskYIELD();
+        vTaskDelay(1);
 #endif
     }
 }
@@ -228,7 +228,6 @@ static bool _control_config_valid(const app_manager_config_t *config)
            config->screen_ops.is_suspend_committed != NULL &&
            config->screen_ops.set_brightness != NULL &&
            config->screen_ops.set_brightness_temp != NULL &&
-           config->screen_ops.get_brightness != NULL &&
            config->input_ops.register_handler != NULL &&
            config->input_ops.unregister_handler != NULL &&
            config->standby_ops.request_standby != NULL &&

@@ -177,6 +177,13 @@ static void _presentation_snapshot_init_buffers(void)
         return;
     }
     data_size = stride * s_presentation.snapshot_height;
+    if (data_size > UINT32_MAX - (LV_DRAW_BUF_ALIGN - 1U))
+    {
+        _presentation_snapshot_disable("invalid draw buffer size");
+        return;
+    }
+    data_size = ((data_size + LV_DRAW_BUF_ALIGN - 1U) /
+                 LV_DRAW_BUF_ALIGN) * LV_DRAW_BUF_ALIGN;
 
     for (size_t index = 0U;
             index < sizeof(s_presentation.snapshot_data) /

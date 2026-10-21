@@ -1,6 +1,6 @@
 /**
  * @brief  应用管理器邮箱调度器 — 内部头
- * @note   固定 24 槽命令结构体池 + FreeRTOS 队列 + LVGL timer 定期排空。
+ * @note   固定 CONFIG_APP_MANAGER_MAILBOX_CAPACITY 槽命令结构体池 + FreeRTOS 队列 + LVGL timer 定期排空。
  *         异步/同步双路径 + 重入检测。
  *         仅 app_core 内部使用，不对外暴露。
  */

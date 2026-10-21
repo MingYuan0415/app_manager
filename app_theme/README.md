@@ -16,7 +16,7 @@
 
 ## 配置与依赖
 
-- `idf_component.yml`：`idf: ">=5.0"`、`espressif/esp_lvgl_adapter: "0.7.2"`。
+- `idf_component.yml`：`idf: ">=5.0"`、`espressif/esp_lvgl_adapter: "0.7.3"`。
 - CMake：`REQUIRES lvgl__lvgl`。
 - `resource_manifest.cmake` 将 `assets/font.ttf` 注册为构建资源记录，由装配层加载并绑定到字体角色。
 

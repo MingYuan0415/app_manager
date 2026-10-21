@@ -60,7 +60,7 @@ static mailbox_command_t s_commands[APP_MANAGER_MAILBOX_SLOTS];
 static QueueHandle_t s_queue;
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_ready;
-static TaskHandle_t s_worker_task;
+static _Atomic(TaskHandle_t) s_worker_task;
 static atomic_bool s_initialized;
 static atomic_bool s_accepting;
 static atomic_uint s_api_users;
@@ -183,9 +183,10 @@ static void _mailbox_execute(mailbox_command_t *command)
 
 static void _mailbox_drain(void)
 {
-    if (s_worker_task == NULL)
+    if (atomic_load_explicit(&s_worker_task, memory_order_acquire) == NULL)
     {
-        s_worker_task = xTaskGetCurrentTaskHandle();
+        atomic_store_explicit(&s_worker_task, xTaskGetCurrentTaskHandle(),
+                              memory_order_release);
         xSemaphoreGive(s_ready);
     }
 
@@ -237,7 +238,7 @@ static void _mailbox_reset_runtime(void)
     s_queue = NULL;
     s_lock = NULL;
     s_ready = NULL;
-    s_worker_task = NULL;
+    atomic_store_explicit(&s_worker_task, NULL, memory_order_release);
     s_timer_created = false;
     atomic_store(&s_api_users, 0U);
     atomic_store(&s_accepting, false);
@@ -362,7 +363,9 @@ static esp_err_t _mailbox_stop_admission(void)
         atomic_store(&s_accepting, false);
     }
 
-    if (s_worker_task != NULL && s_queue != NULL && s_ready != NULL)
+    const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
+                                memory_order_acquire);
+    if (worker != NULL && s_queue != NULL && s_ready != NULL)
     {
         (void)xSemaphoreTake(s_ready, 0);
         mailbox_command_t barrier =
@@ -448,7 +451,7 @@ static void _mailbox_clear_runtime(void)
 {
     atomic_store(&s_initialized, false);
     s_timer_created = false;
-    s_worker_task = NULL;
+    atomic_store_explicit(&s_worker_task, NULL, memory_order_release);
     s_queue = NULL;
     s_ready = NULL;
     s_lock = NULL;
@@ -467,8 +470,9 @@ esp_err_t app_manager_mailbox_deinit(void)
         result = ESP_OK;
         goto exit;
     }
-    if (s_worker_task != NULL &&
-            xTaskGetCurrentTaskHandle() == s_worker_task)
+    const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
+                                memory_order_acquire);
+    if (worker != NULL && xTaskGetCurrentTaskHandle() == worker)
     {
         goto exit;
     }
@@ -549,8 +553,9 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn cb, void *arg
         result = ESP_ERR_INVALID_STATE;
         goto exit;
     }
-    if (s_worker_task != NULL &&
-            xTaskGetCurrentTaskHandle() == s_worker_task)
+    const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
+                                memory_order_acquire);
+    if (worker != NULL && xTaskGetCurrentTaskHandle() == worker)
     {
         result = ESP_ERR_INVALID_STATE;
         goto exit;
@@ -674,7 +679,9 @@ esp_err_t app_manager_mailbox_call(app_manager_ui_call_fn cb, void *arg,
         result = ESP_ERR_INVALID_ARG;
         goto exit;
     }
-    if (xTaskGetCurrentTaskHandle() == s_worker_task)
+    const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
+                                memory_order_acquire);
+    if (xTaskGetCurrentTaskHandle() == worker)
     {
         result = cb(arg);
         goto exit;
@@ -748,6 +755,8 @@ esp_err_t app_manager_get_ui_dispatch_fn(app_manager_ui_dispatch_fn *out_fn)
 
 bool app_manager_mailbox_is_worker(void)
 {
-    return atomic_load(&s_initialized) && s_worker_task != NULL &&
-           xTaskGetCurrentTaskHandle() == s_worker_task;
+    const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
+                                memory_order_acquire);
+    return atomic_load(&s_initialized) && worker != NULL &&
+           xTaskGetCurrentTaskHandle() == worker;
 }

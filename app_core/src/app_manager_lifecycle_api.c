@@ -180,6 +180,12 @@ esp_err_t app_manager_get_recent_tasks(app_manager_recent_task_t *tasks,
     *count = 0U;
     if (!_app_manager_lifecycle_access_begin())
     {
+        uint32_t running = 0U;
+        if (app_manager_lifecycle_screen_running_snapshot(&running))
+        {
+            *count = 0U;
+            return ESP_OK;
+        }
         return ESP_ERR_INVALID_STATE;
     }
     app_manager_lifecycle_request_t request =

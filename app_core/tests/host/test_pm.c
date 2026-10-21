@@ -463,11 +463,6 @@ static esp_err_t _screen_set_brightness_temp(uint8_t brightness)
     return atomic_load(&s_fail_brightness_restore) ? ESP_FAIL : ESP_OK;
 }
 
-static uint8_t _screen_get_brightness(void)
-{
-    return (uint8_t)atomic_load(&s_hardware_brightness);
-}
-
 static esp_err_t _input_register(app_manager_input_cb_t callback, void *user_data)
 {
     assert(s_startup_touch_enabled);
@@ -786,7 +781,6 @@ int main(void)
             .is_suspend_committed = _screen_is_suspend_committed,
             .set_brightness = _screen_set_brightness,
             .set_brightness_temp = _screen_set_brightness_temp,
-            .get_brightness = _screen_get_brightness,
         },
         .input_ops = {
             .register_handler = _input_register,

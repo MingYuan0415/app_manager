@@ -1131,7 +1131,8 @@ static void _lifecycle_defer_source_cleanup(void)
         if (source_app != NULL && source_app->in_use)
         {
             source_app->active = false;
-            if (_lifecycle_app_is_linked(source_app))
+            if (s_transition.target_app == NULL &&
+                    _lifecycle_app_is_linked(source_app))
             {
                 app_manager_nav_model_remove_app(&s_model, source_app);
             }
@@ -1773,6 +1774,10 @@ static esp_err_t _lifecycle_back_app(
         {
             break;
         }
+        /* The instance is dead for this exit. Mark it so a finalize rollback
+         * cannot re-START it on the same arena slot; the next navigation's
+         * pending-cleanup pass unlinks and frees it. */
+        page->cleanup_pending = true;
         stopped[stopped_count++] = page;
     }
     if (result == ESP_OK && target_page != NULL)

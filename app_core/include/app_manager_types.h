@@ -315,8 +315,6 @@ typedef struct app_manager_screen_ctrl_ops
     esp_err_t (*set_brightness)(uint8_t brightness);
     /** Set temporary display brightness without persistence. */
     esp_err_t (*set_brightness_temp)(uint8_t brightness);
-    /** Return the current normal display brightness. */
-    uint8_t (*get_brightness)(void);
 } app_manager_screen_ctrl_ops_t;
 
 /* ── Input ops（由 main 从 bsp_input_ops_t 适配注入） ── */

@@ -387,11 +387,6 @@ static esp_err_t _screen_set_brightness(uint8_t brightness)
     return ESP_OK;
 }
 
-static uint8_t _screen_get_brightness(void)
-{
-    return UINT8_MAX;
-}
-
 static esp_err_t _input_register(app_manager_input_cb_t callback, void *user_data)
 {
     (void)callback;
@@ -451,7 +446,6 @@ static app_manager_config_t _make_config(void)
             .is_suspend_committed = _screen_is_suspend_committed,
             .set_brightness = _screen_set_brightness,
             .set_brightness_temp = _screen_set_brightness,
-            .get_brightness = _screen_get_brightness,
         },
         .input_ops = {
             .register_handler = _input_register,

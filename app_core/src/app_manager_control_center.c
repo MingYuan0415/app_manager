@@ -11,6 +11,7 @@
 #endif
 
 #include "app_manager.h"
+#include "app_manager_back_gesture.h"
 #include "app_manager_control_center.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
@@ -18,6 +19,7 @@
 #include "app_manager_task_switcher.h"
 #include "app_theme_colors.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -34,11 +36,14 @@
 
 /* The band is invisible: its height *is* the grab affordance, and a press must
  * start inside it. 20 px was about half a fingertip, so pulls beginning on the
- * bezel missed the band and scrolled the page instead. Keep it under the header
- * action glyph (app_ui_page_set_action() sits low in the page header) so the
- * band never covers a page's own top-right control. */
-#define CC_BAND_HEIGHT       40
-#define CC_BAND_EDGE_PX      30
+ * bezel missed the band and scrolled the page instead. The right end stops at
+ * the page action-button reserve so the band never covers a page's own
+ * top-right control. */
+#define CC_BAND_HEIGHT            40
+#define CC_BAND_EDGE_FALLBACK_PX  30
+/* Reserved for app_ui_page_set_action(): a 42 px button plus the 16 px page
+ * margin. Keep in sync with layers/apps/common/src/app_ui.c. */
+#define CC_BAND_ACTION_RESERVE_PX 58
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
 #define CC_CARD_HEIGHT       312
@@ -92,11 +97,25 @@ typedef struct app_manager_control_center
 } app_manager_control_center_t;
 
 static app_manager_control_center_t s_cc;
-/* Whether set_enabled() ran before init(); keeps a pre-init disable sticky. */
-static bool s_policy_configured;
+/* Cross-task snapshots. s_cc itself is UI-worker-only; these mirror the
+ * fields that public getters read from arbitrary tasks. */
+static atomic_bool s_policy_published;
+static atomic_bool s_visible_published;
+static atomic_bool s_cc_published;
+static atomic_bool s_preinit_policy_configured;
+static atomic_bool s_preinit_policy_enabled;
 
 static void _cc_refresh_band(void);
 static void _cc_refresh_values(void);
+
+static void _cc_set_state(cc_state_t state)
+{
+    s_cc.state = state;
+    atomic_store_explicit(&s_visible_published,
+                          state == CC_STATE_ENTERING ||
+                          state == CC_STATE_VISIBLE,
+                          memory_order_release);
+}
 
 /* Public visibility: the surface counts as visible while it slides in and while
  * it is settled. A leaving surface reads as hidden so callers and the pull band
@@ -256,7 +275,11 @@ static void _cc_close_now(void)
     {
         lv_obj_set_hidden(s_cc.root, true);
     }
-    s_cc.state = CC_STATE_HIDDEN;
+    _cc_set_state(CC_STATE_HIDDEN);
+    if (s_cc.poll_timer != NULL)
+    {
+        lv_timer_pause(s_cc.poll_timer);
+    }
     _cc_refresh_band();
 }
 
@@ -272,7 +295,11 @@ static void _cc_close_completed(lv_anim_t *animation)
         lv_obj_set_hidden(s_cc.root, true);
     }
     _cc_anim_apply(CC_ANIM_PROGRESS_MAX);
-    s_cc.state = CC_STATE_HIDDEN;
+    _cc_set_state(CC_STATE_HIDDEN);
+    if (s_cc.poll_timer != NULL)
+    {
+        lv_timer_pause(s_cc.poll_timer);
+    }
     _cc_refresh_band();
 }
 
@@ -281,7 +308,16 @@ static void _cc_close_completed(lv_anim_t *animation)
  * card slides back out. */
 static void _cc_close_animated(void)
 {
-    if (s_cc.state != CC_STATE_VISIBLE || s_cc.root == NULL)
+    if (s_cc.root == NULL)
+    {
+        return;
+    }
+    if (s_cc.state == CC_STATE_ENTERING)
+    {
+        _cc_close_now();
+        return;
+    }
+    if (s_cc.state != CC_STATE_VISIBLE)
     {
         return;
     }
@@ -291,7 +327,7 @@ static void _cc_close_animated(void)
         return;
     }
     _cc_anim_stop();
-    s_cc.state = CC_STATE_LEAVING;
+    _cc_set_state(CC_STATE_LEAVING);
     _cc_refresh_band();
     _cc_anim_start(CC_ANIM_PROGRESS_MAX, 0, lv_anim_path_ease_in,
                    _cc_close_completed);
@@ -715,7 +751,7 @@ static void _cc_open_completed(lv_anim_t *animation)
     (void)animation;
     if (s_cc.state == CC_STATE_ENTERING)
     {
-        s_cc.state = CC_STATE_VISIBLE;
+        _cc_set_state(CC_STATE_VISIBLE);
     }
 }
 
@@ -736,11 +772,15 @@ static void _cc_open(void)
                             brightness < 16 ? 16 : (int32_t)brightness,
                             LV_ANIM_OFF);
     }
+    if (s_cc.poll_timer != NULL)
+    {
+        lv_timer_resume(s_cc.poll_timer);
+    }
     _cc_refresh_values();
     _cc_anim_stop();
     _cc_anim_apply(0);
     lv_obj_set_hidden(s_cc.root, false);
-    s_cc.state = CC_STATE_ENTERING;
+    _cc_set_state(CC_STATE_ENTERING);
     _cc_refresh_band();
     _cc_anim_start(0, CC_ANIM_PROGRESS_MAX, lv_anim_path_ease_out,
                    _cc_open_completed);
@@ -819,8 +859,18 @@ static lv_obj_t *_cc_create_band(lv_obj_t *system_layer)
         return NULL;
     }
     lv_obj_remove_style_all(band);
-    lv_obj_set_pos(band, CC_BAND_EDGE_PX, 0);
-    lv_obj_set_size(band, s_cc.width - 2 * CC_BAND_EDGE_PX, CC_BAND_HEIGHT);
+    const int32_t edge_width = app_manager_back_gesture_edge_width();
+    const int32_t left_inset = edge_width > 0 ?
+                               edge_width : CC_BAND_EDGE_FALLBACK_PX;
+    const int32_t band_width = s_cc.width - left_inset -
+                               CC_BAND_ACTION_RESERVE_PX;
+    if (band_width <= 0)
+    {
+        lv_obj_delete(band);
+        return NULL;
+    }
+    lv_obj_set_pos(band, left_inset, 0);
+    lv_obj_set_size(band, band_width, CC_BAND_HEIGHT);
     lv_obj_set_press_lock(band, true);
     lv_obj_set_ignore_layout(band, true);
     lv_obj_set_floating(band, true);
@@ -863,11 +913,17 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
         return ESP_ERR_INVALID_STATE;
     }
 
-    const bool saved_enabled = s_policy_configured ? s_cc.policy_enabled : true;
+    const bool saved_enabled =
+        atomic_load_explicit(&s_preinit_policy_configured,
+                             memory_order_acquire) ?
+        atomic_load_explicit(&s_preinit_policy_enabled,
+                             memory_order_acquire) : true;
     app_manager_control_center_ops_t saved_ops = s_cc.ops;
     memset(&s_cc, 0, sizeof(s_cc));
     s_cc.ops = saved_ops;
     s_cc.policy_enabled = saved_enabled;
+    atomic_store_explicit(&s_policy_published, saved_enabled,
+                          memory_order_release);
     s_cc.display = display;
     s_cc.touch = touch;
     s_cc.width = lv_display_get_horizontal_resolution(disp);
@@ -904,6 +960,11 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
      * resolves after app_manager_init() reaches APP_ADAPTER_READY. */
     s_cc.poll_timer = lv_timer_create(_cc_poll_cb, CC_POLL_MS, NULL);
     s_cc.initialized = true;
+    if (s_cc.poll_timer != NULL)
+    {
+        lv_timer_pause(s_cc.poll_timer);
+    }
+    atomic_store_explicit(&s_cc_published, true, memory_order_release);
     _cc_refresh_band();
     return ESP_OK;
 }
@@ -929,9 +990,13 @@ esp_err_t app_manager_control_center_deinit(void)
         lv_obj_delete(s_cc.band);
     }
     app_manager_control_center_ops_t ops = s_cc.ops;
+    atomic_store_explicit(&s_cc_published, false, memory_order_release);
+    atomic_store_explicit(&s_policy_published, false, memory_order_release);
+    atomic_store_explicit(&s_visible_published, false, memory_order_release);
     memset(&s_cc, 0, sizeof(s_cc));
     s_cc.ops = ops;
-    s_policy_configured = false;
+    atomic_store_explicit(&s_preinit_policy_configured, false,
+                          memory_order_release);
     return ESP_OK;
 }
 
@@ -974,7 +1039,8 @@ void app_manager_control_center_navigation_begin(void)
 
 bool app_manager_control_center_is_visible(void)
 {
-    return s_cc.initialized && _cc_surface_visible();
+    return atomic_load_explicit(&s_cc_published, memory_order_acquire) &&
+           atomic_load_explicit(&s_visible_published, memory_order_acquire);
 }
 
 void app_manager_control_center_screen_suspend(void)
@@ -991,15 +1057,15 @@ void app_manager_control_center_screen_resume(void)
     _cc_refresh_band();
 }
 
-esp_err_t app_manager_control_center_set_enabled(bool enabled)
+static esp_err_t _cc_set_enabled_on_ui(void *context)
 {
-    s_policy_configured = true;
-    if (!s_cc.initialized)
+    if (!s_cc.initialized || context == NULL)
     {
-        s_cc.policy_enabled = enabled;
-        return ESP_OK;
+        return ESP_ERR_INVALID_STATE;
     }
+    const bool enabled = *(const bool *)context;
     s_cc.policy_enabled = enabled;
+    atomic_store_explicit(&s_policy_published, enabled, memory_order_release);
     if (!enabled)
     {
         _cc_close_now();
@@ -1008,7 +1074,32 @@ esp_err_t app_manager_control_center_set_enabled(bool enabled)
     return ESP_OK;
 }
 
+esp_err_t app_manager_control_center_set_enabled(bool enabled)
+{
+    if (app_manager_mailbox_is_worker())
+    {
+        if (!s_cc.initialized)
+        {
+            atomic_store(&s_preinit_policy_enabled, enabled);
+            atomic_store(&s_preinit_policy_configured, true);
+            return ESP_OK;
+        }
+        return _cc_set_enabled_on_ui(&enabled);
+    }
+    const esp_err_t result = app_manager_ui_call(_cc_set_enabled_on_ui,
+                             &enabled, UINT32_MAX);
+    if (result == ESP_ERR_INVALID_STATE)
+    {
+        /* Before init or during teardown: retain for the next init. */
+        atomic_store(&s_preinit_policy_enabled, enabled);
+        atomic_store(&s_preinit_policy_configured, true);
+        return ESP_OK;
+    }
+    return result;
+}
+
 bool app_manager_control_center_is_enabled(void)
 {
-    return s_cc.initialized && s_cc.policy_enabled;
+    return atomic_load_explicit(&s_cc_published, memory_order_acquire) &&
+           atomic_load_explicit(&s_policy_published, memory_order_acquire);
 }

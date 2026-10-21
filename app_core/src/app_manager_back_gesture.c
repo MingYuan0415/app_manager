@@ -903,3 +903,9 @@ bool app_manager_back_gesture_is_enabled(void)
     return atomic_load_explicit(&s_initialized, memory_order_acquire) &&
            atomic_load_explicit(&s_policy_enabled, memory_order_acquire);
 }
+
+int32_t app_manager_back_gesture_edge_width(void)
+{
+    return atomic_load_explicit(&s_initialized, memory_order_acquire) ?
+           s_gesture.edge_width : 0;
+}

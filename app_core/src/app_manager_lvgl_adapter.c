@@ -1094,8 +1094,6 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->screen_ops.set_brightness &&
            config->screen_ops.set_brightness_temp ==
            active->screen_ops.set_brightness_temp &&
-           config->screen_ops.get_brightness ==
-           active->screen_ops.get_brightness &&
            config->input_ops.register_handler ==
            active->input_ops.register_handler &&
            config->input_ops.unregister_handler ==

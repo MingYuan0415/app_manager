@@ -624,6 +624,8 @@ static void _test_passing_benchmark(void)
            ESP_OK);
     assert(app_manager_display_diagnostics_begin_benchmark(30U, 14720U) ==
            ESP_ERR_INVALID_STATE);
+    assert(app_manager_display_diagnostics_end_benchmark(NULL) ==
+           ESP_ERR_INVALID_ARG);
     _wait_for_samples(1U);
     const uint32_t intervals_us[] =
     {

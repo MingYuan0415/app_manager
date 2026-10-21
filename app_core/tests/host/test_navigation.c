@@ -885,6 +885,9 @@ static void _test_screen_pause_drains_admitted_navigation(void)
     assert(s_deferred_completion != NULL);
 
     atomic_store(&s_screen_accepting, false);
+    assert(app_manager_navigation_submit_system_op(
+               APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW, NULL, NULL) ==
+           ESP_ERR_INVALID_STATE);
     assert(app_manager_navigate_async(&request, _completion,
                                       &s_completion_count) ==
            ESP_ERR_INVALID_STATE);

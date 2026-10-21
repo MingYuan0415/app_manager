@@ -28,24 +28,24 @@ typedef struct app_manager_image_resource_config
 typedef struct app_manager_config
 {
     const bsp_display_port_t *disp_port;      /**< panel / panel_io / touch / width / height */
-    const uint16_t           *font_sizes;     /**< 字号表，例 {24,20,30,36,56,64,96} */
-    size_t                    font_count;     /**< 字号表长度，例 7 */
+    const uint16_t           *font_sizes;     /**< Exactly APP_THEME_FONT_MAX entries in role order when non-NULL; NULL selects APP_THEME_FONT_SIZES. */
+    size_t                    font_count;     /**< Must equal APP_THEME_FONT_MAX (7) when font_sizes is non-NULL. */
     char                      res_fs_letter;  /**< 资源分区盘符，例 'F' */
     uint16_t                  resource_file_count; /**< Generated mmap file count. */
     uint16_t                  resource_checksum; /**< Generated mmap checksum. */
     const app_manager_image_resource_config_t *image_resources; /**< Semantic image map. */
     size_t                    image_resource_count; /**< Semantic image map length. */
-    app_manager_screen_ctrl_ops_t screen_ops; /**< Required; called only by app-control. */
+    app_manager_screen_ctrl_ops_t screen_ops; /**< Required; suspend/resume run on app-control, brightness and resume_commit on the UI worker. */
     app_manager_input_ops_t       input_ops;  /**< Required typed input bridge. */
     app_manager_standby_ops_t     standby_ops; /**< Required non-blocking system-PM bridge. */
     app_manager_control_center_ops_t control_center_ops; /**< Optional; NULL hides tiles. */
-    size_t                    max_resident_apps; /**< 0 selects the physical maximum. */
+    size_t                    max_resident_apps; /**< 0 selects APP_MANAGER_MAX_RESIDENT_APPS; larger values are rejected. */
     app_manager_resident_policy_t resident_policy; /**< Full-capacity behavior. */
     app_manager_transition_t  app_forward_transition; /**< Zero selects FADE, 220 ms. */
     app_manager_transition_t  app_back_transition; /**< Zero selects FADE, 220 ms. */
     app_manager_transition_t  page_forward_transition; /**< Zero selects PUSH_LEFT, 220 ms. */
     app_manager_transition_t  page_back_transition; /**< Zero selects PUSH_RIGHT, 220 ms. */
-    uint32_t                  control_task_priority; /**< App-control worker priority. */
+    uint32_t                  control_task_priority; /**< App-control worker priority; must be in [1, configMAX_PRIORITIES). */
 } app_manager_config_t;
 
 #ifdef __cplusplus
