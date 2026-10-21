@@ -26,7 +26,7 @@ function(configure_host_test target)
     )
     target_compile_options(${target} PRIVATE
         -include "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.h"
-        -Wall -Wextra -Werror -Wpedantic -Wno-variadic-macros
+        -Wall -Wextra -Werror -Wpedantic -Wno-variadic-macros -UNDEBUG
     )
     target_link_libraries(${target} PRIVATE Threads::Threads)
 
