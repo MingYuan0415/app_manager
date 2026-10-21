@@ -296,15 +296,23 @@ static void _record_snapshot_prepare(app_manager_transition_effect_t effect,
     app_manager_display_diagnostics_snapshot_prepare_finished(fallback);
 }
 
+/* The FPS stub bumps s_fps_sample_calls before _app_manager_display_diagnostics
+ * _sample() has read the heap, so the counter alone does not mean a sample is
+ * complete. A completed sample reads the internal free and largest pairs after
+ * releasing the FPS lock, so wait for those side effects too. */
 static void _wait_for_samples(uint32_t minimum_count)
 {
     for (unsigned index = 0U;
             index < 500U &&
-            atomic_load(&s_fps_sample_calls) < minimum_count; ++index)
+            (atomic_load(&s_fps_sample_calls) < minimum_count ||
+             atomic_load(&s_heap_free_calls) < minimum_count * 2U ||
+             atomic_load(&s_heap_largest_calls) < minimum_count * 2U); ++index)
     {
         (void)usleep(1000U);
     }
     assert(atomic_load(&s_fps_sample_calls) >= minimum_count);
+    assert(atomic_load(&s_heap_free_calls) >= minimum_count * 2U);
+    assert(atomic_load(&s_heap_largest_calls) >= minimum_count * 2U);
 }
 
 static void _wait_for_bounded_locks(uint32_t minimum_count)
