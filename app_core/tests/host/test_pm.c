@@ -1544,7 +1544,10 @@ int main(void)
     int failed_active_rollback = atomic_load(&s_screen_resume_count) + 1;
     assert(app_manager_pm_request_screen_off() == ESP_OK);
     _wait_for_count(&s_screen_resume_count, failed_active_rollback);
-    assert(app_manager_pm_get_state() == APP_MANAGER_PM_SCREEN_OFF);
+    /* The resume counter moves when the failed rollback starts; PM publishes
+     * SCREEN_OFF only after the rollback suspend completes, so wait for the
+     * state rather than racing the worker. */
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
     assert(atomic_load(&s_screen_suspended));
     atomic_store(&s_partial_fail_screen_suspend, false);
     atomic_store(&s_fail_screen_resume, false);
