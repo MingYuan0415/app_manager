@@ -117,7 +117,7 @@ static esp_err_t _app_adapter_submit_bitmap(lv_display_t *display,
     (void)display;
 #endif
     esp_err_t result = esp_lcd_panel_draw_bitmap(panel, x_start, y_start,
-                       x_end, y_end, color_map);
+        x_end, y_end, color_map);
 #if CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS
     if (display != NULL)
     {
@@ -319,7 +319,7 @@ static esp_err_t _app_adapter_refresh_on_ui(void *arg)
      * transaction drains the queue and propagates any fence API failure. */
     result = esp_lcd_panel_io_tx_param(s_display_port->panel_io, -1, NULL, 0);
     const int captured = atomic_load_explicit(&s_refresh_capture_error,
-                         memory_order_acquire);
+        memory_order_acquire);
     if (captured != ESP_OK)
     {
         result = (esp_err_t)captured;

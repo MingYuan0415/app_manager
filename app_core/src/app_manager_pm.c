@@ -196,9 +196,9 @@ bool app_manager_control_standby_commit_ready(uint32_t generation)
     }
 
     const uint32_t epoch = atomic_load_explicit(&s_standby_generation,
-                           memory_order_acquire);
+        memory_order_acquire);
     uint32_t bound_epoch = atomic_load_explicit(&s_standby_bound_epoch,
-                           memory_order_acquire);
+        memory_order_acquire);
     if (epoch == 0U)
     {
         return false;
@@ -566,7 +566,7 @@ static void _control_home_click_drain_fallback(void)
     records[APP_MANAGER_HOME_CLICK_FALLBACK_DEPTH];
     uint32_t count = 0U;
     const uint32_t epoch = atomic_load_explicit(&s_home_click_fallback_epoch,
-                           memory_order_acquire);
+        memory_order_acquire);
 
     while (atomic_flag_test_and_set_explicit(
                 &s_home_click_fallback_lock, memory_order_acquire))

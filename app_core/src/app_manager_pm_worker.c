@@ -38,9 +38,9 @@ static void _control_discard_shutdown_pending(void)
 static esp_err_t _control_execute_input(const control_command_t *command)
 {
     esp_err_t result = app_manager_control_handle_input(command->data.input.key,
-                       command->data.input.event,
-                       command->data.input.generation,
-                       command->data.input.event_us);
+        command->data.input.event,
+        command->data.input.generation,
+        command->data.input.event_us);
     if (command->data.input.key == APP_MANAGER_KEY_POWER)
     {
         atomic_fetch_and_explicit(
@@ -194,7 +194,7 @@ static bool _control_process_pending_power(void)
                               memory_order_acq_rel);
 
     const bool wake = atomic_exchange_explicit(&s_power_pending_wake, false,
-                      memory_order_acq_rel);
+        memory_order_acq_rel);
     if (wake || app_manager_control_screen_needs_wake())
     {
         if (s_state == APP_MANAGER_PM_STANDBY_PREPARING)

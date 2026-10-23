@@ -259,7 +259,7 @@ static void _switcher_activate_task(const char *app_id, bool current)
         },
     };
     esp_err_t admitted = app_manager_navigate_async(&request,
-                         _switcher_activate_complete, (void *)app_id);
+        _switcher_activate_complete, (void *)app_id);
     if (admitted != ESP_OK)
     {
         LOG_W("task switch admission failed: %s", esp_err_to_name(admitted));
@@ -1101,7 +1101,7 @@ esp_err_t app_manager_task_switcher_init(void *display)
 
     s_switcher.state = APP_MANAGER_TASK_SWITCHER_HIDDEN;
     s_switcher.memory_timer = lv_timer_create(_switcher_memory_tick, 1000U,
-                              NULL);
+        NULL);
     if (s_switcher.memory_timer != NULL)
     {
         lv_timer_pause(s_switcher.memory_timer);

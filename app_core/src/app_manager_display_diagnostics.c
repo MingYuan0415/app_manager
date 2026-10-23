@@ -211,7 +211,7 @@ _app_manager_display_diagnostics_active_effect(void)
         return NULL;
     }
     const int effect_index = atomic_load_explicit(&s_transition_effect_index,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     if (effect_index < 0 ||
             effect_index >= APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_COUNT)
     {
@@ -485,7 +485,7 @@ static int _app_manager_display_diagnostics_active_effect_index(void)
         return -1;
     }
     const int effect_index = atomic_load_explicit(&s_transition_effect_index,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     return effect_index >= 0 &&
            effect_index < APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_COUNT ?
            effect_index : -1;
@@ -523,7 +523,7 @@ static void _app_manager_display_diagnostics_span_finish(
     app_manager_display_timing_kind_t kind)
 {
     const int64_t start_us = atomic_exchange_explicit(&span->start_us, 0,
-                             memory_order_acq_rel);
+        memory_order_acq_rel);
     if (start_us == 0)
     {
         return;
@@ -542,7 +542,7 @@ static void _app_manager_display_diagnostics_span_finish(
         _app_manager_display_diagnostics_timing(&s_total_metrics, kind),
         elapsed_us, true);
     const uint64_t pixel_count = atomic_load_explicit(&span->pixel_count,
-                                 memory_order_relaxed);
+        memory_order_relaxed);
     if (kind == APP_MANAGER_DISPLAY_TIMING_FLUSH)
     {
         atomic_fetch_add_explicit(&s_total_metrics.flush_pixel_count,
@@ -550,7 +550,7 @@ static void _app_manager_display_diagnostics_span_finish(
     }
 
     const int effect_index = atomic_load_explicit(&span->effect_index,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     if (effect_index >= 0 &&
             effect_index < APP_MANAGER_DISPLAY_BENCHMARK_EFFECT_COUNT)
     {
@@ -630,9 +630,9 @@ static void _app_manager_display_diagnostics_finish_transition(
         return;
     }
     const int effect_index = atomic_load_explicit(&s_transition_effect_index,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     const int64_t start_us = atomic_load_explicit(&s_transition_start_us,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     const uint32_t elapsed_us = _app_manager_display_diagnostics_elapsed_us(
                                     start_us, finish_us);
     atomic_uint *total_count = cancelled ?
@@ -1153,7 +1153,7 @@ static void _app_manager_display_diagnostics_copy_metrics(
                                      &metrics->active_duration_us,
                                      memory_order_relaxed);
     report->interval_count = atomic_load_explicit(&metrics->interval_count,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     report->interval_within_target_count = atomic_load_explicit(
             &metrics->interval_within_target_count, memory_order_relaxed);
     report->maximum_consecutive_long_intervals = atomic_load_explicit(
@@ -1168,14 +1168,14 @@ static void _app_manager_display_diagnostics_copy_metrics(
                                       &metrics->maximum_interval_us,
                                       memory_order_relaxed);
     report->render_count = atomic_load_explicit(&metrics->render.count,
-                           memory_order_relaxed);
+        memory_order_relaxed);
     report->render_us = atomic_load_explicit(&metrics->render.total_us,
-                        memory_order_relaxed);
+        memory_order_relaxed);
     report->maximum_render_us = atomic_load_explicit(
                                     &metrics->render.maximum_us,
                                     memory_order_relaxed);
     report->flush_count = atomic_load_explicit(&metrics->flush.count,
-                          memory_order_relaxed);
+        memory_order_relaxed);
     report->flush_pixel_count = atomic_load_explicit(
                                     &metrics->flush_pixel_count,
                                     memory_order_relaxed);
@@ -1188,7 +1188,7 @@ static void _app_manager_display_diagnostics_copy_metrics(
                                    &metrics->flush_wait.count,
                                    memory_order_relaxed);
     report->flush_wait_us = atomic_load_explicit(&metrics->flush_wait.total_us,
-                            memory_order_relaxed);
+        memory_order_relaxed);
     report->maximum_flush_wait_us = atomic_load_explicit(
                                         &metrics->flush_wait.maximum_us,
                                         memory_order_relaxed);
@@ -1202,7 +1202,7 @@ static void _app_manager_display_diagnostics_copy_metrics(
                                        &metrics->submit_failure_count,
                                        memory_order_relaxed);
     report->submit_wait_us = atomic_load_explicit(&metrics->submit_wait_us,
-                             memory_order_relaxed);
+        memory_order_relaxed);
     report->maximum_submit_wait_us = atomic_load_explicit(
                                          &metrics->maximum_submit_wait_us,
                                          memory_order_relaxed);
@@ -1570,7 +1570,7 @@ esp_err_t app_manager_display_diagnostics_begin_benchmark(
     atomic_store_explicit(&s_benchmark_start_us, esp_timer_get_time(),
                           memory_order_release);
     uint32_t generation = atomic_load_explicit(&s_benchmark_generation,
-                          memory_order_relaxed) + 1U;
+        memory_order_relaxed) + 1U;
     if (generation == 0U)
     {
         generation = 1U;
@@ -1638,12 +1638,12 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
     memset(report, 0, sizeof(*report));
     report->render_task_core_id = -1;
     report->sample_count = atomic_load_explicit(&s_sample_count,
-                           memory_order_relaxed);
+        memory_order_relaxed);
     const uint32_t minimum_fps = atomic_load_explicit(&s_minimum_fps,
-                                 memory_order_relaxed);
+        memory_order_relaxed);
     report->minimum_fps = minimum_fps == UINT_MAX ? 0U : minimum_fps;
     report->sample_error_count = atomic_load_explicit(&s_sample_error_count,
-                                 memory_order_relaxed);
+        memory_order_relaxed);
     report->lvgl_lock_error_count = atomic_load_explicit(
                                         &s_lvgl_lock_error_count,
                                         memory_order_relaxed);
@@ -1654,7 +1654,7 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
                                            &s_maximum_fps_lock_wait_us,
                                            memory_order_relaxed);
     report->fps_failure_count = atomic_load_explicit(&s_fps_failure_count,
-                                memory_order_relaxed);
+        memory_order_relaxed);
     const size_t minimum_internal_free = atomic_load_explicit(
             &s_minimum_internal_free, memory_order_relaxed);
     report->minimum_internal_free = minimum_internal_free == SIZE_MAX ? 0U :
@@ -1684,7 +1684,7 @@ esp_err_t app_manager_display_diagnostics_end_benchmark(
                                     minimum_psram_largest;
     _app_manager_display_diagnostics_read_render_task(report);
     report->dma_failure_count = atomic_load_explicit(&s_dma_failure_count,
-                                memory_order_relaxed);
+        memory_order_relaxed);
     app_manager_display_effect_benchmark_report_t aggregate = {0};
     _app_manager_display_diagnostics_copy_metrics(&s_total_metrics,
             &aggregate);

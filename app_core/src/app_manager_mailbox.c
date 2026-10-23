@@ -364,7 +364,7 @@ static esp_err_t _mailbox_stop_admission(void)
     }
 
     const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
-                                memory_order_acquire);
+        memory_order_acquire);
     if (worker != NULL && s_queue != NULL && s_ready != NULL)
     {
         (void)xSemaphoreTake(s_ready, 0);
@@ -471,7 +471,7 @@ esp_err_t app_manager_mailbox_deinit(void)
         goto exit;
     }
     const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
-                                memory_order_acquire);
+        memory_order_acquire);
     if (worker != NULL && xTaskGetCurrentTaskHandle() == worker)
     {
         goto exit;
@@ -554,7 +554,7 @@ esp_err_t app_manager_mailbox_shutdown_call(app_manager_ui_call_fn cb, void *arg
         goto exit;
     }
     const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
-                                memory_order_acquire);
+        memory_order_acquire);
     if (worker != NULL && xTaskGetCurrentTaskHandle() == worker)
     {
         result = ESP_ERR_INVALID_STATE;
@@ -680,7 +680,7 @@ esp_err_t app_manager_mailbox_call(app_manager_ui_call_fn cb, void *arg,
         goto exit;
     }
     const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
-                                memory_order_acquire);
+        memory_order_acquire);
     if (xTaskGetCurrentTaskHandle() == worker)
     {
         result = cb(arg);
@@ -756,7 +756,7 @@ esp_err_t app_manager_get_ui_dispatch_fn(app_manager_ui_dispatch_fn *out_fn)
 bool app_manager_mailbox_is_worker(void)
 {
     const TaskHandle_t worker = atomic_load_explicit(&s_worker_task,
-                                memory_order_acquire);
+        memory_order_acquire);
     return atomic_load(&s_initialized) && worker != NULL &&
            xTaskGetCurrentTaskHandle() == worker;
 }

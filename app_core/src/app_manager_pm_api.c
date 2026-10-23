@@ -44,7 +44,7 @@ static esp_err_t _app_manager_input_inject_home(
     }
 
     uint32_t generation = atomic_load_explicit(&s_home_sequence_state,
-                          memory_order_acquire) &
+        memory_order_acquire) &
                           HOME_SEQUENCE_GENERATION_MASK;
     const bool input_needs_wake = app_manager_control_input_needs_wake();
     if (event == APP_MANAGER_KEY_EVENT_DOWN ||

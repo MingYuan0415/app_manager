@@ -1087,7 +1087,7 @@ esp_err_t app_manager_control_center_set_enabled(bool enabled)
         return _cc_set_enabled_on_ui(&enabled);
     }
     const esp_err_t result = app_manager_ui_call(_cc_set_enabled_on_ui,
-                             &enabled, UINT32_MAX);
+        &enabled, UINT32_MAX);
     if (result == ESP_ERR_INVALID_STATE)
     {
         /* Before init or during teardown: retain for the next init. */

@@ -870,7 +870,7 @@ static esp_err_t _lifecycle_create_app(const char *app_id,
             strcmp(target_page_id, root_route->page_id) != 0)
     {
         target_route = app_manager_builtin_find_page(descriptor,
-                       target_page_id);
+            target_page_id);
         if (target_route == NULL)
         {
             return ESP_ERR_NOT_FOUND;
@@ -1654,7 +1654,7 @@ static esp_err_t _lifecycle_open_page(
     else
     {
         target_page = app_manager_nav_model_find_page(target_app,
-                      request->page_id);
+            request->page_id);
         if (target_page != NULL)
         {
             _lifecycle_update_intent(target_app, target_page, request);
@@ -1890,7 +1890,7 @@ static esp_err_t _lifecycle_exit_app(
         return ESP_ERR_NOT_FOUND;
     }
     app_manager_app_node_t *app = app_manager_nav_model_find_app(&s_model,
-                                  app_id);
+        app_id);
     if (app == NULL)
     {
         /* The target may still hold a cleanup_pending instance that the

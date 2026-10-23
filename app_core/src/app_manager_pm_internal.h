@@ -275,7 +275,7 @@ static inline bool _app_manager_control_home_sequence_is_wake(
     uint32_t generation)
 {
     const uint32_t state = atomic_load_explicit(&s_home_sequence_state,
-                           memory_order_acquire);
+        memory_order_acquire);
     return generation != 0U &&
            (state & HOME_SEQUENCE_GENERATION_MASK) == generation &&
            (state & HOME_SEQUENCE_WAKE_MASK) != 0U;
