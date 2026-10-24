@@ -28,6 +28,8 @@
 #define APP_MANAGER_ID_CALENDAR "calendar"
 /** @brief Stable identifier of the calculator application. */
 #define APP_MANAGER_ID_CALCULATOR "calculator"
+/** @brief Stable identifier of the file manager application. */
+#define APP_MANAGER_ID_FILES    "files"
 /** @brief Stable identifier of the hidden diagnostics application. */
 #define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
 
