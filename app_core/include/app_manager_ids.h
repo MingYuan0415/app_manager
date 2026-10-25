@@ -32,5 +32,7 @@
 #define APP_MANAGER_ID_FILES    "files"
 /** @brief Stable identifier of the hidden diagnostics application. */
 #define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
+/** @brief Stable identifier of the flybirds game application. */
+#define APP_MANAGER_ID_FLYBIRDS "flybirds"
 
 #endif /* __APP_MANAGER_IDS_H__ */
