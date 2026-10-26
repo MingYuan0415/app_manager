@@ -1,53 +1,73 @@
+**English** | [简体中文](README_ZH.md)
+
 # MicroTech App Manager 0.6.0
 
-`layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
-导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
-`layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
+`layers/app_manager` provides the application runtime on the ESP32-S3, static
+App registration, App/Page navigation, LVGL Screen transitions, display sleep,
+input routing and app-level PM. Business apps live in `layers/apps/`; the system
+assembly entry point is `main/app_runtime.c`.
 
-0.6.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
-使用静态 App descriptor 和 App 私有路由；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
-同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
-Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
+The core constraints of 0.6.0 are: the navigation model and all LVGL objects are
+modified only by the UI worker; apps and Pages use static App descriptors and
+App-private routes; every mounted Page owns an independent Screen; all
+synchronous and asynchronous navigation goes through the same fixed-capacity
+command gateway. Edge back presents gesture feedback only on the permanent Sys
+Layer; Page Screens always switch through the existing navigation animation and
+never track the finger in real time.
 
-## 1. 设计不变量
+## 1. Design Invariants
 
-以下约束属于公共行为，不应在局部重构中改变：
+The following constraints are public behavior and should not be changed in a
+local refactor:
 
-1. UI worker 是 nav model、页面生命周期和 LVGL 对象的唯一写入者。
-2. 物理上最多驻留 8 个 App、保留 12 个 Page，页面私有内存来自固定 arena。
-3. 稳定前台只挂载一个 Page Screen；动画期间临时同时保留 source 和 target。
-4. 后台 App 保留导航和私有状态，但不保留 Screen、timer、订阅、输入或活动会话。
-5. `ONPAUSE` 或 `ONSTOP` 清理失败时保留实例、句柄和 cleanup ownership，以便重试。
-6. App descriptor、Page route 和 Page definition 均为固件全生命周期 immutable 对象。
-7. 动画、生命周期和必要清理完成后，导航命令才完成。
-8. 屏幕休眠和 deinit 会先快进当前动画，再进入稳定页面状态并关闭新准入。
-9. PM generation/commit、mailbox 超时和显示 DMA fence 语义保持独立有效。
-10. 冷启动期间物理按键和 inactivity PM 保持关闭；首帧、面板和依赖服务提交后才开放。
-11. 边缘返回捕获条和 indicator 只属于 Sys Layer，不进入 Page Screen 生命周期。
-12. 手势 PRESSING 只更新 indicator；Page Screen 的位置、透明度和样式始终不实时跟手。
+1. The UI worker is the only writer of the nav model, page lifecycle and LVGL
+   objects.
+2. At most 8 Apps physically reside and 12 Pages are retained; page-private
+   memory comes from a fixed arena.
+3. A stable foreground mounts exactly one Page Screen; during animation the
+   source and target are temporarily retained together.
+4. Background Apps retain navigation and private state, but no Screen, timer,
+   subscription, input or active session.
+5. When `ONPAUSE` or `ONSTOP` cleanup fails, the instance, handles and cleanup
+   ownership are retained so the cleanup can be retried.
+6. App descriptors, Page routes and Page definitions are immutable objects for
+   the whole firmware lifetime.
+7. A navigation command completes only after animation, lifecycle and required
+   cleanup have finished.
+8. Screen sleep and deinit first fast-forward the current animation, then enter
+   a stable page state and close new admission.
+9. PM generation/commit, mailbox timeout and display DMA fence semantics remain
+   independently valid.
+10. During cold start, physical keys and inactivity PM stay closed; they open
+    only after the first frame, the panel and the dependent services have
+    committed.
+11. The edge back capture strips and indicator belong only to the Sys Layer and
+    never enter the Page Screen lifecycle.
+12. Gesture PRESSING only updates the indicator; the Page Screen position,
+    opacity and style never track the finger in real time.
 
-## 2. 模块职责
+## 2. Module Responsibilities
 
-| 路径 | 职责 |
+| Path | Responsibility |
 | --- | --- |
-| `app_core/include/app_manager_types.h` | descriptor、Typed Blob、导航、动画、生命周期和硬件端口类型 |
-| `app_core/include/app_manager.h` | 应用、导航、查询、UI dispatcher、显示和 PM 公共 API |
-| `app_core/include/app_manager_config.h` | 装配层使用的 BSP、资源、驻留策略和默认动画配置 |
-| `app_core/src/app_manager_builtin.c` | 静态 App registry、路由校验和查询 |
-| `app_core/src/app_manager_nav_model.c` | App/Page 固定槽、双向链表、arena 和模型不变量 |
-| `app_core/src/app_manager_navigation.c` | 固定容量 sync/async command gateway 和超时语义（产品基线 8 槽） |
-| `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
-| `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、全分辨率快照/Image 转场、原生回退和触摸屏障 |
-| `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
-| `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
-| `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
-| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：横向卡片轮播、逐卡关闭（按钮或上滑）、全部清除、设备内存概览与生命周期协作 |
-| `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
-| `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
-| `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
-| `app_theme/` | 七档语义字体角色与 AMOLED 颜色常量 |
+| `app_core/include/app_manager_types.h` | descriptor, Typed Blob, navigation, animation, lifecycle and hardware port types |
+| `app_core/include/app_manager.h` | App, navigation, query, UI dispatcher, display and PM public API |
+| `app_core/include/app_manager_config.h` | BSP, resource, residence policy and default animation configuration used by the assembly layer |
+| `app_core/src/app_manager_builtin.c` | static App registry, route validation and queries |
+| `app_core/src/app_manager_nav_model.c` | App/Page fixed slots, doubly linked lists, arena and model invariants |
+| `app_core/src/app_manager_navigation.c` | fixed-capacity sync/async command gateway and timeout semantics (product baseline 8 slots) |
+| `app_core/src/app_manager_lifecycle.c` | lifecycle execution, residence policy, failure rollback and cleanup ownership |
+| `app_core/src/app_manager_presentation.c` | neutral Screen, Page Screen, full-resolution snapshot/Image transition, native fallback and touch barrier |
+| `app_core/src/app_manager_back_gesture.c` | Sys Layer dual-side capture, programmatic A8 Canvas indicator, back-target gating and runtime switch |
+| `app_core/src/app_manager_mailbox.c` | fixed-capacity dispatcher from any task to the UI worker |
+| `app_core/src/app_manager_lvgl_adapter.c` | LVGL, display, touch, font, resource and suspend/resume transactions |
+| `app_core/src/app_manager_task_switcher.c` | Sys Layer system task switcher: horizontal card carousel, per-card close (button or swipe up), clear all, device memory overview and lifecycle cooperation |
+| `app_core/src/app_manager_pm*.c` | app-control, input merging, display PM and system standby cooperation |
+| `app_core/linker.lf` | retains the single App descriptor link section |
+| `app_core/tests/host/` | model, registry, gateway, lifecycle, mailbox, PM and adapter tests |
+| `app_theme/` | seven semantic font roles and AMOLED color constants |
 
-主要依赖关系如下：
+The main dependencies are:
 
 ```text
 ordinary task / UI callback / lifecycle callback / Sys Layer gesture
@@ -67,30 +87,36 @@ ordinary task / UI callback / lifecycle callback / Sys Layer gesture
  static app routes         LVGL Page Screens
 ```
 
-`app-control` 是显示、亮度、输入和 standby 策略的独立串行域。它通过 mailbox 请求
-UI pause/resume，不直接修改 nav model 或页面对象。
+`app-control` is an independent serial domain for display, brightness, input and
+standby policy. It requests UI pause/resume through the mailbox and never
+modifies the nav model or page objects directly.
 
-## 3. 固定容量与运行模型
+## 3. Fixed Capacity and Runtime Model
 
-| 资源 | 上限 | 满时行为 |
+| Resource | Limit | Behavior when full |
 | --- | ---: | --- |
-| 物理 App 槽 | 8 | 按驻留策略拒绝或淘汰 |
-| 物理 Page 槽 | 12 | `ESP_ERR_NO_MEM` |
-| 导航命令槽 | `CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY`（产品基线 8，Kconfig 缺省 24） | `ESP_ERR_NO_MEM` |
-| App/Page ID | 最多 31 字节加 `\0` | `ESP_ERR_INVALID_ARG` |
-| Typed Blob | 96 字节，其中 payload 88 字节 | `ESP_ERR_INVALID_ARG` |
-| 动画时长 | 1..2000 ms，0 表示使用默认值 | `ESP_ERR_INVALID_ARG` |
+| Physical App slots | 8 | Reject or evict according to the residence policy |
+| Physical Page slots | 12 | `ESP_ERR_NO_MEM` |
+| Navigation command slots | `CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY` (product baseline 8, Kconfig default 24) | `ESP_ERR_NO_MEM` |
+| App/Page ID | at most 31 bytes plus `\0` | `ESP_ERR_INVALID_ARG` |
+| Typed Blob | 96 bytes, of which 88 bytes are payload | `ESP_ERR_INVALID_ARG` |
+| Animation duration | 1..2000 ms, 0 means use the default | `ESP_ERR_INVALID_ARG` |
 
-构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
-`app_manager_image_resource_config_t` 将产品语义 ID 映射
-到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
-复制该 ID，任务切换器以 64 px 圆形图标底衬内嵌 56 px 图像显示，资源缺失或 ID 为零时
-回退 LVGL symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
-BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
-始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
-`app_manager_deinit()`，因此全部 LVGL Image 对象必须先由正常页面生命周期销毁。
+Read-only images generated by the build are aggregated by the Apps/App Theme
+manifests; the assembly layer uses `app_manager_image_resource_config_t` to map
+product semantic IDs to mmap asset indexes. The App descriptor binds the app
+icon with `uint32_t icon_id`, the recent-task snapshot copies that ID, and the
+task switcher draws a 56 px image inside a 64 px circular icon base, falling
+back to an LVGL symbol when the resource is missing or the ID is zero. At init,
+App Manager creates a small descriptor table in PSRAM and validates the LVGL 9
+BIN magic, `RGB565A8`, dimensions, even stride, independent A8 plane length and
+duplicate semantic IDs; the pixel payload always points directly at the mmap
+Flash address of the `res` partition. The descriptor returned by
+`app_manager_get_image()` lives until `app_manager_deinit()`, so all LVGL Image
+objects must be destroyed first by the normal page lifecycle.
 
-每个 App 节点拥有独立 Page 栈，App 节点本身组成前台历史：
+Each App node owns an independent Page stack; the App nodes themselves form the
+foreground history:
 
 ```text
 App history:  home <-> settings <-> setup
@@ -100,26 +126,34 @@ settings:     root <-> power <-> about
                                   ^ current_page
 ```
 
-页面 arena 按 `APP_MANAGER_MAX_PAGE_INSTANCES` 分槽，每槽大小由
-`CONFIG_APP_MANAGER_PAGE_STATE_BYTES` 唯一确定。Page definition 的 `memory_size` 必须
-不大于 `APP_MANAGER_PAGE_STATE_BYTES`；页面分配和释放时只清零声明的范围。
-`app_manager_this_page_memory()` 只在当前生命周期回调期间有效；ops 通过 callback-scoped
-context 访问同一 Page state。页面成功释放后不得继续保存该指针。
+The page arena is split into slots by `APP_MANAGER_MAX_PAGE_INSTANCES`; the size
+of each slot is defined solely by `CONFIG_APP_MANAGER_PAGE_STATE_BYTES`. The
+`memory_size` of a Page definition must not exceed
+`APP_MANAGER_PAGE_STATE_BYTES`; page allocation and release only zero the
+declared range. `app_manager_this_page_memory()` is valid only during the
+current lifecycle callback; ops reach the same Page state through the
+callback-scoped context. The pointer must not be kept after the page has been
+released successfully.
 
-`app_manager_config_t.max_resident_apps` 为 0 时使用物理上限 8。驻留策略为：
+When `app_manager_config_t.max_resident_apps` is 0, the physical limit of 8 is
+used. The residence policies are:
 
-- `APP_MANAGER_RESIDENT_REJECT`：达到上限后拒绝新 App。
-- `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`：淘汰最旧、非 pinned 的后台 App。
+- `APP_MANAGER_RESIDENT_REJECT`: reject new Apps once the limit is reached.
+- `APP_MANAGER_RESIDENT_EVICT_OLDEST_BACKGROUND`: evict the oldest, non-pinned
+  background App.
 
-`APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
-双击 HOME 打开系统任务切换器；单击 HOME 在任务切换器或控制中心可见时先关闭该
-表面，否则按当前活跃 App 路由：活跃为 Home 时进入应用目录，否则回到 HOME 根页
-（见第 10.1 节）。需要释放
-其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
+`APP_MANAGER_APP_FLAG_PINNED` prevents automatic eviction and ordinary
+background cleanup. HOME should be marked pinned; double-clicking HOME opens the
+system task switcher; a single HOME click first closes the task switcher or
+control center when that surface is visible, otherwise it routes by the current
+active App: enter the app directory when Home is active, else return to the HOME
+root page (see section 10.1). To release other background Apps, submit
+`APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`.
 
-## 4. 静态 Registry 与 App-owned Routes
+## 4. Static Registry and App-owned Routes
 
-Page 实现由 immutable definition 描述，App 通过私有 route 表显式选择可导航页面：
+A Page implementation is described by an immutable definition, and an App
+explicitly selects its navigable pages through a private route table:
 
 ```c
 static const app_manager_page_definition_t s_example_root_definition =
@@ -141,32 +175,38 @@ APP_MANAGER_APP_EXPORT(example, 0U, "example", "example", "root",
                        APP_MANAGER_APP_FLAG_NONE, s_example_routes);
 ```
 
-只有 App descriptor 写入 `.app_manager_apps`；`app_core/linker.lf` 对该段执行
-`KEEP()` 并生成首尾符号。definition 和 route 表是普通 `const` 对象，通过 App
-descriptor 可达，不存在独立 Page 链接段。宿主测试没有 ESP-IDF linker fragment，
-因此内部 fixture 可通过 `app_manager_builtin.h` 中的
-`app_manager_register_builtin_descriptors()` 安装固件生命周期内有效的 App 数组；
-该函数不是运行时注册 API。
+Only App descriptors are written to `.app_manager_apps`; `app_core/linker.lf`
+applies `KEEP()` to that section and generates the start and end symbols. The
+definition and route tables are ordinary `const` objects reachable through the
+App descriptor, and there is no separate Page link section. Host tests have no
+ESP-IDF linker fragment, so internal fixtures may install a firmware-lifetime
+App array through `app_manager_register_builtin_descriptors()` from
+`app_manager_builtin.h`; that function is not a runtime registration API.
 
-初始化按编译期单页容量一次性校验：
+Initialization validates everything once against the compile-time per-page
+capacity:
 
-- App ID、Page ID 非空且长度合法；
-- App ID 全局不重复，同一 App 内 Page ID 不重复；
-- flags 合法，route 数组与数量一致且非空；
-- 每个 App 的根 Page 恰好存在于自己的 route 表；
-- route 的 definition 非空，且 definition 必须且只能设置 `.handler` 或 `.ops`；
-- definition 的 `memory_size` 不超过 `APP_MANAGER_PAGE_STATE_BYTES`。
+- App IDs and Page IDs are non-empty with valid lengths;
+- App IDs are globally unique and Page IDs are unique within an App;
+- flags are valid, and the route array is non-empty and matches its count;
+- the root Page of every App exists exactly in its own route table;
+- route definitions are non-null, and a definition must set exactly one of
+  `.handler` or `.ops`;
+- the definition `memory_size` does not exceed `APP_MANAGER_PAGE_STATE_BYTES`.
 
-同一 Page ID 可存在于不同 App；同一 definition 也可由多个 App route 引用。每个 route
-拥有独立的 `page_id` 和稳定、非托管 `user_data`，每次页面实例仍获得独立私有内存和
-导航栈。公共页面必须由目标 App 显式 opt-in；未绑定 route 时导航返回
-`ESP_ERR_NOT_FOUND`；公共 `app_manager_is_page_present()` 等布尔查询返回 `false`。
-所有 descriptor、route 和 definition 生命周期覆盖整个固件运行期，不提供动态 App、
-provider、lease、运行时裸 handler 创建或自由挂载接口。
+The same Page ID may exist in different Apps, and the same definition may be
+referenced by multiple App routes. Each route owns its own `page_id` and a
+stable, unmanaged `user_data`, while every page instance still gets independent
+private memory and navigation stack. Shared pages must be explicitly opted in by
+the target App; navigation returns `ESP_ERR_NOT_FOUND` when no route is bound,
+and public boolean queries such as `app_manager_is_page_present()` return
+`false`. All descriptors, routes and definitions live for the entire firmware
+runtime; there is no dynamic App, provider, lease, runtime bare-handler creation
+or free-mount interface.
 
-## 5. Typed Blob 与 New Intent
+## 5. Typed Blob and New Intent
 
-导航参数使用固定 96 字节的版本化值：
+Navigation arguments use a fixed 96-byte versioned value:
 
 ```c
 typedef struct app_manager_typed_blob
@@ -179,272 +219,358 @@ typedef struct app_manager_typed_blob
 } app_manager_typed_blob_t;
 ```
 
-提交命令时 request、ID 字符串和整个 blob 都复制到 command slot；调用返回后，调用方
-可立即释放 request 和 ID 存储。异步 completion 的 `context` 不复制，调用方必须保证它
-持续有效直到 completion 执行。
+When a command is submitted, the request, the ID strings and the whole blob are
+copied into the command slot, so the caller may release the request and ID
+storage as soon as the call returns. The `context` of an asynchronous completion
+is not copied, and the caller must keep it valid until the completion runs.
 
-有效 blob 必须满足：
+A valid blob must satisfy:
 
-- `version == APP_MANAGER_TYPED_BLOB_VERSION`；
-- `size <= APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES`；
-- `reserved == 0`。
+- `version == APP_MANAGER_TYPED_BLOB_VERSION`;
+- `size <= APP_MANAGER_TYPED_BLOB_PAYLOAD_BYTES`;
+- `reserved == 0`.
 
-首次创建 App/Page 时，参数在 `ONSTART` 前已经可通过
-`app_manager_this_page_arguments()` 读取。重复 RUN 已有 App 或 OPEN 已有 Page 会完整
-替换原参数并发送 `ONNEWINTENT`。后台目标的 `ONNEWINTENT` 发生在其
-`ONMOUNT/ONRESUME` 之前；若目标正在前台，Screen 仍然可用，但 UI 只能在
-`ONMOUNT` 中创建。
+When an App/Page is first created, the arguments are already readable through
+`app_manager_this_page_arguments()` before `ONSTART`. A repeated RUN of an
+existing App, or OPEN of an existing Page, fully replaces the previous arguments
+and sends `ONNEWINTENT`. For a background target, `ONNEWINTENT` happens before
+its `ONMOUNT/ONRESUME`; if the target is in the foreground the Screen is still
+available, but UI may only be created in `ONMOUNT`.
 
-## 6. 页面生命周期
+## 6. Page Lifecycle
 
-一个正常页面实例遵循：
+A normal page instance follows:
 
 ```text
 ONSTART -> ONMOUNT -> ONRESUME -> ONPAUSE -> ONUNMOUNT -> ONSTOP
 ```
 
-`ONNEWINTENT` 是已有实例接收新参数的旁路消息，不替代上述阶段。普通导航中，source
-成功 `ONPAUSE` 后，target 会在 presentation start 和目标首帧之前收到 `ONRESUME`。
-此时 target 已拥有前台活动资源，但 nav model 尚未提交；动画成功结束、source 清理完成
-后才成为稳定前台。若提交前失败，已经 RESUME 的 target 会收到补偿性 `ONPAUSE`，因此
-页面必须允许一次 `ONRESUME -> ONPAUSE` 配对发生在从未稳定可见的导航尝试中。
+`ONNEWINTENT` is a side-channel message that delivers new arguments to an
+existing instance and does not replace the phases above. In ordinary navigation,
+after the source successfully `ONPAUSE`s, the target receives `ONRESUME` before
+presentation start and the target first frame. At that point the target already
+owns foreground active resources but the nav model has not committed yet; it
+becomes the stable foreground only after the animation ends successfully and
+source cleanup completes. If it fails before the commit, a target that already
+RESUMEd receives a compensating `ONPAUSE`, so pages must allow one
+`ONRESUME -> ONPAUSE` pair to occur in a navigation attempt that never became
+stably visible.
 
-| 消息 | 所有权边界 | 应执行的操作 |
+| Message | Ownership boundary | What should be done |
 | --- | --- | --- |
-| `ONSTART` | Page 实例和私有内存开始存在 | 初始化非视觉状态和长期句柄的无效值 |
-| `ONMOUNT` | 框架已创建该 Page 的 Screen | 只在 `app_manager_this_page_screen()` 下创建 UI |
-| `ONRESUME` | source 已暂停，Page 即将参与目标首帧；nav 尚未提交 | 启动 timer、订阅、输入和活动会话 |
-| `ONPAUSE` | Page 离开前台，或未提交导航正在补偿回滚 | 停止 timer、退订、关闭输入和活动会话 |
-| `ONUNMOUNT` | Screen 仍可访问 | 删除页面 UI 并清空所有 LVGL 对象指针 |
-| `ONSTOP` | Page 实例即将释放 | 释放剩余非视觉资源；此时没有可用 Screen |
-| `ONNEWINTENT` | 已有实例参数已更新 | 读取并消费最新 Typed Blob |
+| `ONSTART` | The Page instance and private memory start to exist | Initialize non-visual state and invalid values for long-lived handles |
+| `ONMOUNT` | The framework has created the Screen for this Page | Create UI only under `app_manager_this_page_screen()` |
+| `ONRESUME` | The source has paused, the Page is about to join the target first frame; nav has not committed | Start timers, subscriptions, input and active sessions |
+| `ONPAUSE` | The Page leaves the foreground, or an uncommitted navigation is compensating a rollback | Stop timers, unsubscribe, close input and active sessions |
+| `ONUNMOUNT` | The Screen is still accessible | Delete page UI and clear all LVGL object pointers |
+| `ONSTOP` | The Page instance is about to be released | Release remaining non-visual resources; no Screen is available here |
+| `ONNEWINTENT` | The arguments of an existing instance have been updated | Read and consume the latest Typed Blob |
 
-资源放置规则：
+Resource placement rules:
 
-- `ONMOUNT/ONUNMOUNT` 只管理 LVGL UI。
-- `ONRESUME/ONPAUSE` 只管理前台活动资源。
-- `ONSTART/ONSTOP` 管理页面实例级非视觉状态。
-- `ONRESUME` 启动的 timer、订阅、输入和活动会话可在动画期间产生副作用；回调只能操作
-  target 自己的已挂载 Screen，不得把动画完成或 nav model 提交作为隐含前提。
-- `ONRESUME/ONPAUSE` 必须成对可补偿。`ONPAUSE` 清理失败时保留有效 handle 并报告错误，
-  不得提前销毁 UI 或假定 source 已恢复。
-- 不得用 `lv_screen_active()` 作为页面根节点；它在动画期间并不表示当前 lifecycle callback 的
-  所有者。
-- lifecycle callback、ops context、`this_page_*` 返回值和 route `user_data` 不提供跨任务
-  UI 所有权。
-- 清理错误只允许从 `ONPAUSE` 或 `ONSTOP` 报告。
+- `ONMOUNT/ONUNMOUNT` manage LVGL UI only.
+- `ONRESUME/ONPAUSE` manage foreground active resources only.
+- `ONSTART/ONSTOP` manage page instance-level non-visual state.
+- Timers, subscriptions, input and active sessions started by `ONRESUME` can
+  produce side effects during the animation; callbacks may only operate on the
+  target's own mounted Screen and must not implicitly assume that the animation
+  has finished or the nav model has committed.
+- `ONRESUME/ONPAUSE` must be compensable as a pair. When `ONPAUSE` cleanup
+  fails, retain the valid handles and report the error; do not destroy UI early
+  or assume the source has been restored.
+- Do not use `lv_screen_active()` as the page root; during an animation it does
+  not represent the owner of the current lifecycle callback.
+- Lifecycle callbacks, ops context, `this_page_*` return values and route
+  `user_data` do not provide cross-task UI ownership.
+- Cleanup errors may only be reported from `ONPAUSE` or `ONSTOP`.
 
-## 7. 独立 Screen 与转换引擎
+## 7. Per-Page Screen and Transition Engine
 
-presentation 初始化一个永久 neutral Screen。Page 在 MOUNT 前由框架创建独立
-LVGL Screen，在 UNMOUNT 后删除。稳定前台只有一个 Page Screen；后台页面没有
-LVGL 对象。默认 `RGB565` 配置为转场准备两张常驻的全分辨率 RGB565 PSRAM 快照：在
-368 x 448 面板上每张 329,728 B、合计 659,456 B（644 KiB）。它们由
-`CONFIG_APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION` 控制，不使用 internal/DMA heap。
+presentation initializes one permanent neutral Screen. Before MOUNT the
+framework creates an independent LVGL Screen for the Page and deletes it after
+UNMOUNT. A stable foreground has exactly one Page Screen; background pages have
+no LVGL objects. The default `RGB565` configuration prepares two resident
+full-resolution RGB565 PSRAM snapshots for transitions: 329,728 B each on a 368
+x 448 panel, 659,456 B total (644 KiB). They are controlled by
+`CONFIG_APP_MANAGER_PRESENTATION_SNAPSHOT_ANIMATION` and do not use the
+internal/DMA heap.
 
-对有效的非 `NONE` 转场，后端先采集 source 与 target，再将两张 Image 放入 target Screen
-的全屏不透明 child overlay 并只动画 Image；target 因而在动画开始后保持 active，而其 live
-对象树被 overlay 覆盖。动画完成时先删除 overlay，随后才交付既有 lifecycle completion，
-避免 source 清理时仍有 Image 引用快照。快照模式只支持普通 `RGB565`，并依赖 PSRAM；
-`RGB565_SWAPPED` 实验配置、显式关闭功能或快照资源/采集/对象/动画失败时，自动回退
-`lv_screen_load_anim()` 原生路径。原生调用仍使用 `auto_del=false`，Screen 的最终删除继续由
-lifecycle 决定。非空 Page Screen 必须至少有一个覆盖全屏的不透明直接 child，整个对象树也
-不得设置 `LV_OBJ_FLAG_OVERFLOW_VISIBLE`；透明根或需要屏外绘制的页面会在该次转场回退
-原生动画。
+For a valid non-`NONE` transition the backend first captures the source and the
+target, then places both Images into a full-screen opaque child overlay on the
+target Screen and animates only the Images; the target therefore stays active
+once the animation starts while its live object tree is covered by the overlay.
+When the animation completes, the overlay is deleted first and only then is the
+existing lifecycle completion delivered, so source cleanup never runs while an
+Image still references a snapshot. Snapshot mode supports only plain `RGB565`
+and depends on PSRAM; the `RGB565_SWAPPED` experimental configuration, an
+explicit disable, or a snapshot resource/capture/object/animation failure falls
+back automatically to the native `lv_screen_load_anim()` path. The native call
+still uses `auto_del=false`, and final Screen deletion continues to be decided
+by the lifecycle. A non-empty Page Screen must have at least one opaque direct
+child covering the full screen, and the whole object tree must not set
+`LV_OBJ_FLAG_OVERFLOW_VISIBLE`; a transparent root or a page that needs
+off-screen drawing falls back to the native animation for that transition.
 
-支持 14 种实际效果和一个配置占位值：
+14 real effects plus one configuration placeholder are supported:
 
-| 类别 | 枚举 |
+| Category | Enum |
 | --- | --- |
-| 配置占位 | `DEFAULT` |
-| 立即切换 | `NONE` |
-| 淡入 | `FADE` |
-| 覆盖 | `COVER_LEFT`、`COVER_RIGHT`、`COVER_UP`、`COVER_DOWN` |
-| 推动 | `PUSH_LEFT`、`PUSH_RIGHT`、`PUSH_UP`、`PUSH_DOWN` |
-| 揭示 | `REVEAL_LEFT`、`REVEAL_RIGHT`、`REVEAL_UP`、`REVEAL_DOWN` |
+| Configuration placeholder | `DEFAULT` |
+| Immediate switch | `NONE` |
+| Fade | `FADE` |
+| Cover | `COVER_LEFT`, `COVER_RIGHT`, `COVER_UP`, `COVER_DOWN` |
+| Push | `PUSH_LEFT`, `PUSH_RIGHT`, `PUSH_UP`, `PUSH_DOWN` |
+| Reveal | `REVEAL_LEFT`, `REVEAL_RIGHT`, `REVEAL_UP`, `REVEAL_DOWN` |
 
-四类默认转换保存在 `app_manager_config_t`：
+Four default transitions are stored in `app_manager_config_t`:
 
-| 场景 | 默认值 |
+| Scenario | Default |
 | --- | --- |
-| App 前进 | `FADE`, 220 ms |
-| App 返回 | `FADE`, 220 ms |
-| Page 前进 | `PUSH_LEFT`, 220 ms |
-| Page 返回 | `PUSH_RIGHT`, 220 ms |
+| App forward | `FADE`, 220 ms |
+| App back | `FADE`, 220 ms |
+| Page forward | `PUSH_LEFT`, 220 ms |
+| Page back | `PUSH_RIGHT`, 220 ms |
 
-每个 `app_manager_nav_request_t` 可覆盖 effect 和 duration。`DEFAULT` 使用场景默认
-effect；duration 为 0 使用场景默认时长；`NONE` 始终禁用动画并忽略时长。
+Each `app_manager_nav_request_t` may override the effect and duration. `DEFAULT`
+uses the scenario default effect; a duration of 0 uses the scenario default
+duration; `NONE` always disables the animation and ignores the duration.
 
-### 7.1 提交顺序
+### 7.1 Commit Order
 
-App/Page 前进：
+App/Page forward:
 
 ```text
-target START 或 NEW_INTENT
+target START or NEW_INTENT
 target MOUNT
 source PAUSE
 target RESUME
-presentation start，提交目标首帧并播放 source -> target
+presentation start, commit the target first frame and play source -> target
 source UNMOUNT
-提交 nav model
-完成命令
+commit nav model
+complete command
 ```
 
-Page 返回或 App 退出：
+Page back or App exit:
 
 ```text
-target MOUNT（没有目标时使用 neutral）
+target MOUNT (neutral when there is no target)
 source PAUSE
-target RESUME（没有目标时跳过）
-presentation start，提交目标首帧并播放 source -> target/neutral
+target RESUME (skipped when there is no target)
+presentation start, commit the target first frame and play source -> target/neutral
 source UNMOUNT -> STOP
-提交 nav model
-完成命令
+commit nav model
+complete command
 ```
 
-target `ONRESUME` 先于 presentation start，因此它的 timer、订阅、输入和活动会话在整段
-动画期间已经运行；透明屏障只阻止 LVGL 触摸，不撤销这些资源产生的服务请求、事件回调
-或其他外部副作用。target lifecycle callback 此时可以更新自己的 Screen，但不得依据 active/present
-查询判断导航已经提交。
+The target `ONRESUME` precedes presentation start, so its timers, subscriptions,
+input and active sessions are already running for the whole animation; the
+transparent barrier only blocks LVGL touches and does not withdraw service
+requests, event callbacks or other external side effects produced by those
+resources. The target lifecycle callback may update its own Screen at this
+point, but must not judge whether navigation has committed from active/present
+queries.
 
-presentation 无法启动时，若能立即加载 target，则降级为 `NONE` 并继续执行动画后的清理
-和提交；否则框架先向 target 发送补偿性 `ONPAUSE`，再恢复 source（START/MOUNT/立即加载/
-RESUME），最后 UNMOUNT target 并回滚其创建状态。动画结束后的 source `STOP` 失败也使用
-相同补偿顺序，最终以原错误完成命令。target 补偿 PAUSE 失败时不得 UNMOUNT target 或 RESUME source；框架保留 target
-的 Screen 和活动资源并提交为前台，以原始错误完成命令。source 根据转换类型保留为
-`UNMOUNT_ONLY`、`DESTROY_PAGE` 或 `DESTROY_APP` cleanup owner；后续导航先重试该动作，
-避免两个页面同时持有前台会话。`UNMOUNT_ONLY` 不会 STOP 后台驻留 Page；
-`DESTROY_APP` 只销毁页面、Screen 和运行节点，静态 descriptor 始终有效。
+When presentation cannot start, the framework degrades to `NONE` and continues
+with the post-animation cleanup and commit if the target can be loaded
+immediately; otherwise it first sends a compensating `ONPAUSE` to the target,
+then restores the source (START/MOUNT/immediate load/RESUME), and finally
+UNMOUNTs the target and rolls back its created state. A source `STOP` failure
+after the animation uses the same compensation order and still completes the
+command with the original error. If the compensating target PAUSE fails, the
+framework must not UNMOUNT the target or RESUME the source; it keeps the target
+Screen and active resources and commits it as the foreground, completing the
+command with the original error. Depending on the transition type, the source is
+retained as a `UNMOUNT_ONLY`, `DESTROY_PAGE` or `DESTROY_APP` cleanup owner; the
+next navigation retries that action first, so two pages never hold a foreground
+session at the same time. `UNMOUNT_ONLY` does not STOP a background resident
+Page; `DESTROY_APP` destroys only the page, Screen and runtime node, and the
+static descriptor always stays valid.
 
-`BACK_TO` 只在起点和最终目标之间播放一次动画；中间页面按栈顶到栈底执行 STOP/free，
-清理失败前已经成功移除的页面属于允许的部分提交。
+`BACK_TO` plays one animation between the start point and the final target only;
+intermediate pages run STOP/free from stack top to bottom, and pages already
+removed successfully before a cleanup failure count as an allowed partial
+commit.
 
-动画期间 presentation 在 Sys Layer 放置透明触摸屏障。它只阻止 LVGL 触摸，不阻止
-HOME、POWER 或 app-control。新导航到达时先把当前动画推进到完成回调和稳定 target，
-再执行 FIFO 中的下一条命令。Screen 创建或动画启动失败遵循上述降级或补偿回滚规则，
-任何失败都不能绕过 target PAUSE、遗失 cleanup ownership 或形成双 active 会话。
+During an animation presentation places a transparent touch barrier on the Sys
+Layer. It blocks LVGL touches only, not HOME, POWER or app-control. When new
+navigation arrives, the current animation is first pushed to its completion
+callback and stable target, and then the next command in the FIFO runs. Screen
+creation or animation start failures follow the degradation or compensating
+rollback rules above; no failure may bypass target PAUSE, lose cleanup ownership
+or produce two active sessions.
 
-`app_manager_is_transitioning()` 可区分动画临时状态。动画期间 active/present/userdata
-等拓扑查询返回与 Screen 暂停相同的保守值，不能把 `false` 或 `NULL` 解释为实例已被
-销毁。
+`app_manager_is_transitioning()` distinguishes the temporary animation state.
+During an animation the topology queries such as active/present/userdata return
+the same conservative values as a paused Screen, so `false` or `NULL` must not
+be read as the instance having been destroyed.
 
-### 7.2 Sys Layer 边缘返回
+### 7.2 Sys Layer Edge Back
 
-边缘返回属于 app-manager 的系统级输入，不属于任何 App 或 Page。框架在 LVGL
-Sys Layer 上永久创建左右两个透明捕获条；捕获条使用 `LV_OBJ_FLAG_CLICKABLE` 和
-`LV_OBJ_FLAG_PRESS_LOCK`，保证按下后移出窄边缘区域仍能收到本次指针序列。手势反馈是
-独立的 `64x144` A8 Canvas indicator，不接收点击，也不进入 Page 的
-MOUNT/UNMOUNT 生命周期。框架不携带静态图片，也不依赖 LVGL Vector 或 ThorVG；弧形
-alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本次手势所属的屏幕外侧
-水平移入；两侧图标文本都使用 `LV_SYMBOL_LEFT`，不改用 `LV_SYMBOL_RIGHT`。
+Edge back is a system-level input of the app-manager and belongs to no App or
+Page. The framework permanently creates a transparent capture strip on each of
+the left and right sides of the LVGL Sys Layer; the strips use
+`LV_OBJ_FLAG_CLICKABLE` and `LV_OBJ_FLAG_PRESS_LOCK` so that a press that moves
+out of the narrow edge region still receives the whole pointer sequence. The
+gesture feedback is an independent `64x144` A8 Canvas indicator that accepts no
+clicks and never enters the Page MOUNT/UNMOUNT lifecycle. The framework carries
+no static images and depends on neither LVGL Vector nor ThorVG; the arc-shaped
+alpha mask is generated programmatically with Q15 integer arithmetic at init.
+The indicator slides in horizontally from outside the screen edge that owns the
+gesture; both side labels use `LV_SYMBOL_LEFT` and never switch to
+`LV_SYMBOL_RIGHT`.
 
-一次有效手势必须同时满足：
+A valid gesture must satisfy all of:
 
-- 全局边缘返回开关已启用；
-- Screen 处于稳定可交互状态，没有页面动画、Screen suspend 或 deinit；
-- 当前页面存在合法返回目标；
-- 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
+- the global edge back switch is enabled;
+- the Screen is in a stable interactive state, with no page animation, Screen
+  suspend or deinit;
+- the current page has a valid back target;
+- the pointer starts on the left or right capture strip and moves into the
+  screen to the commit threshold.
 
-0.6.0 的几何参数按显示分辨率计算并限制上下界：
+The 0.6.0 geometry parameters are computed from the display resolution and
+clamped to lower and upper bounds:
 
-| 参数 | 计算规则 |
+| Parameter | Rule |
 | --- | --- |
-| 边缘捕获宽度 | 屏宽 8%，限制为 24..32 px；368 px 屏宽下为 29 px |
-| 提交距离 | 屏宽 15%，限制为 48..80 px；368 px 屏宽下为 55 px |
-| 方向判定 slop | 屏宽 3%，限制为 10..16 px |
-| armed 回退滞回 | 提交距离的 1/5，限制为 10..18 px |
-| Canvas 尺寸 | 固定 64x144 px，手势期间不缩放、不变形 |
-| indicator Y 锚点 | 按下时以触点居中并限制 8 px 垂直边距，本次手势内保持固定 |
-| indicator 样式 | 固定 `APP_THEME_COLOR_PLUME_HI`（`#222A31`）、不透明度 220；仅轮廓边缘使用 1 px alpha 抗锯齿 |
+| Edge capture width | 8% of screen width, clamped to 24..32 px; 29 px on a 368 px wide screen |
+| Commit distance | 15% of screen width, clamped to 48..80 px; 55 px on a 368 px wide screen |
+| Direction slop | 3% of screen width, clamped to 10..16 px |
+| Armed release hysteresis | 1/5 of the commit distance, clamped to 10..18 px |
+| Canvas size | fixed 64x144 px, never scaled or deformed during the gesture |
+| Indicator Y anchor | centered on the touch point at press time, clamped to an 8 px vertical margin, fixed within the gesture |
+| Indicator style | fixed `APP_THEME_COLOR_PLUME_HI` (`#222A31`), opacity 220; only the contour edge uses 1 px alpha antialiasing |
 
-Canvas 使用一块 9,220 bytes（64x144 A8 + 4 B 对齐余量）的固定外部 RAM BSS draw buffer
-（`APP_MANAGER_EXT_BSS` -> `.ext_ram.bss`；产品启用
-`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`），不在手势期间分配内存。
-弧形按行计算：先按 `u = abs(2*y-(H-1))/(H-1)` 将行坐标归一化到 Q15，再计算
-`smooth = u * u * (3 - 2 * u)` 和 `depth = 62 - (62 - 28) * smooth`，把有效深度
-从中部 62 px 平滑收窄到上下端 28 px。
-左侧填充 `[0, depth)`，右侧填充 `[64-depth, 64)`；左右手势共用同一缓冲区，仅在捕获
-侧发生变化时重新生成镜像轮廓并 invalidate Canvas。
+The Canvas uses one fixed 9,220-byte draw buffer (64x144 A8 plus 4 B alignment
+slack) in external RAM BSS (`APP_MANAGER_EXT_BSS` -> `.ext_ram.bss`; the product
+enables `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`) and allocates no memory
+during the gesture. The arc is computed per row: the row coordinate is first
+normalized to Q15 with `u = abs(2*y-(H-1))/(H-1)`, then
+`smooth = u * u * (3 - 2 * u)` and `depth = 62 - (62 - 28) * smooth` narrow the
+effective depth smoothly from 62 px in the middle to 28 px at the top and
+bottom ends. The left side fills `[0, depth)` and the right side fills
+`[64-depth, 64)`; both directions share the same buffer and regenerate the
+mirrored contour and invalidate the Canvas only when the capture side changes.
 
-向内位移达到 slop，且垂直位移不大于向内位移的两倍时锁定水平方向。尚未锁定时，只有
-垂直位移达到两个 slop，且大于两倍的非负向内位移时才抑制本次序列；位于两者之间的
-斜向移动保持未决并继续观察，避免轻微垂直偏移导致误取消。明显向外移动超过一个 slop
-时仍立即取消。向内位移达到提交距离后进入 armed；回撤到“提交距离减滞回值”以下才
-解除 armed，避免阈值附近抖动反复切换。
+The horizontal direction locks once the inward displacement reaches the slop and
+the vertical displacement is no more than twice the inward displacement. Before
+the lock, the sequence is suppressed only when the vertical displacement reaches
+two slops and is greater than twice the non-negative inward displacement;
+diagonal movement between those two conditions stays pending and keeps
+observing, so a slight vertical offset does not cause a false cancel. An obvious
+outward movement larger than one slop still cancels immediately. Reaching the
+commit distance enters armed; only a retraction below "commit distance minus
+hysteresis" leaves armed, so jitter around the threshold does not flip the state
+repeatedly.
 
-Home 始终没有手势返回入口，即使全局开关已启用。其他 App 的子页返回上一 Page；
-非 Home 根页只有在 App 历史中存在前一个 App 时才能手势返回。没有目标时捕获条保持
-无效，边缘输入继续由正常 LVGL hit-test 处理。
+Home never has a gesture back entry even when the global switch is enabled. A
+sub-page of another App returns to the previous Page; a non-Home root page can
+gesture back only when a previous App exists in the App history. With no target
+the capture strip stays inactive and edge input continues through the normal
+LVGL hit-test.
 
-`PRESSING` 期间框架只按 `inward / trigger_distance` 更新 Canvas 的水平位置。左侧 X 从
-`-64` 移到 `0`，右侧 X 从屏宽移到“屏宽减 64”；Canvas 尺寸、轮廓、不透明度和 Y
-锚点全程不变。`LV_SYMBOL_LEFT` Label 是 Canvas 子对象，仅在进入 ARMED 后显示，回撤
-解除 ARMED 后立即隐藏。Page Screen 的坐标、透明度、样式和 active 状态不随手指实时
-变化，也不创建全屏快照。`PRESSING` 阶段绝不采集快照；释放前未达到阈值、方向错误、输入
-取消或状态被抢占时，只复位
-indicator，不产生导航命令；达到阈值后提交一条既有异步 `BACK`，并由 Page/App 返回
-场景的默认动画完成实际 Screen 切换。
+During `PRESSING` the framework only updates the Canvas horizontal position by
+`inward / trigger_distance`. The left X moves from `-64` to `0`, the right X
+moves from the screen width to "screen width minus 64"; the Canvas size,
+contour, opacity and Y anchor stay unchanged throughout. The `LV_SYMBOL_LEFT`
+Label is a Canvas child, appears only after ARMED is entered and hides
+immediately once a retraction leaves ARMED. The Page Screen coordinates,
+opacity, style and active state do not change with the finger in real time, and
+no full-screen snapshot is created. The `PRESSING` phase never captures a
+snapshot; when the threshold is not reached before release, the direction is
+wrong, input is cancelled or the state is preempted, only the indicator is reset
+and no navigation command is produced; after the threshold is reached one
+existing asynchronous `BACK` is submitted, and the default animation of the
+Page/App back scenario performs the actual Screen switch.
 
-按下时手势控制器会取得 navigation epoch token，并在移动和释放时持续校验。若期间已有
-其他导航获得准入，token 立即失效，本次手势只隐藏 indicator，不再提交过期 `BACK`；
-释放时的条件提交还会再次核对 epoch 和当前 source App。成功提交后命令仍进入统一的
-固定容量命令 FIFO，不建立第二套导航队列。
+On press the gesture controller takes a navigation epoch token and keeps
+validating it while moving and on release. If another navigation gained
+admission in the meantime, the token becomes invalid at once, the gesture only
+hides the indicator and no longer submits a stale `BACK`; the conditional commit
+on release also re-checks the epoch and the current source App. After a
+successful submit the command still enters the unified fixed-capacity command
+FIFO; no second navigation queue is created.
 
-新导航开始、Screen suspend 或 deinit 会取消尚未提交的指针序列并隐藏 indicator；
-Screen resume 或导航稳定结束后重新计算当前页面是否允许捕获。已经成功准入 navigation
-gateway 的手势 `BACK` 不会因随后关闭开关而撤销，仍按普通异步导航的 exactly-once
-完成语义达到稳定状态。
+New navigation, Screen suspend or deinit cancels an unsubmitted pointer sequence
+and hides the indicator; Screen resume or a stable navigation end recomputes
+whether the current page may capture. A gesture `BACK` that already gained
+navigation gateway admission is not withdrawn by a later switch-off and still
+reaches a stable state with the exactly-once completion semantics of ordinary
+asynchronous navigation.
 
-运行时开关是公共 API，不增加 `app_manager_config_t` 字段：
+The runtime switch is public API and adds no `app_manager_config_t` field:
 
 ```c
 esp_err_t app_manager_back_gesture_set_enabled(bool enabled);
 bool app_manager_back_gesture_is_enabled(void);
 ```
 
-初始化成功后全局开关默认为 `true`。
-`app_manager_back_gesture_set_enabled(false)` 会阻止新手势并复位尚未提交的 indicator；
-`app_manager_back_gesture_is_enabled()` 只报告这个全局策略值，不表示当前页面一定存在返回
-目标。Home、无 App 历史、Screen 暂停或动画期间，策略值仍可能为 `true`，但有效捕获为
-`false`；初始化前和 deinit 后 getter 返回 `false`。setter 在策略已应用或已保存供下次
-Screen resume 使用时返回 `ESP_OK`，否则返回准入或 UI dispatcher 错误。业务页面不得
-直接访问或重排 Sys Layer 捕获对象。
+The global switch defaults to `true` after successful initialization.
+`app_manager_back_gesture_set_enabled(false)` blocks new gestures and resets an
+unsubmitted indicator; `app_manager_back_gesture_is_enabled()` reports only this
+global policy value and does not mean the current page necessarily has a back
+target. On Home, with no App history, while the Screen is paused or during an
+animation the policy value may still be `true` while effective capture is
+`false`; before initialization and after deinit the getter returns `false`. The
+setter returns `ESP_OK` when the policy is already applied or saved for the next
+Screen resume, otherwise it returns an admission or UI dispatcher error.
+Business pages must not access or rearrange the Sys Layer capture objects
+directly.
 
-### 7.3 控制中心
+### 7.3 Control Center
 
-控制中心是 app-manager 的系统级界面（`app_manager_control_center.c`），不属于任何
-App 或 Page。它在 LVGL Sys Layer 创建一条顶部捕获带（高度 40 px，水平方向左侧内缩
-边缘返回带宽度，368 px 屏宽下为 29 px；右侧为页头动作按钮保留 58 px，即 42 px 按钮 +
-16 px 页边距）。捕获带不可见，其高度即唯一的抓取区域——按压必须落在带内才会接管手势，
-因此取 40 px 覆盖落在屏幕边框上的手指；带子右端停在 `app_ui_page_set_action()` 的按钮
-左侧，不会抢占页面自身控件。
-任意稳定页面从顶部下滑超过 48 px 即打开；表面打开时捕获带禁用，点击 scrim（卡片外）、
-edge-back、普通导航或单击 HOME 都会关闭。
+The control center is a system-level interface of the app-manager
+(`app_manager_control_center.c`) and belongs to no App or Page. It creates a top
+capture band on the LVGL Sys Layer (height 40 px; horizontally inset on the left
+by the edge back width, 29 px on a 368 px wide screen, and reserving 58 px on
+the right for the page header action button, i.e. 42 px button + 16 px page
+margin). The capture band is invisible and its height is the only capture region
+— a press must land inside the band to take over the gesture, so 40 px is chosen
+to cover a finger resting on the screen border; the right end of the band stops
+left of the `app_ui_page_set_action()` button and never preempts the page's own
+widgets. A downward swipe of more than 48 px from the top of any stable page
+opens it; while the surface is open the capture band is disabled, and clicking
+the scrim (outside the card), edge-back, ordinary navigation or a single click
+on HOME all close it.
 
-过渡：打开时卡片从屏幕上方滑入到最终位置、scrim 同步由全透明淡到 `CC_SCRIM_OPA`；点击
-scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入时长一致），由同一条进度动画
-同时驱动卡片位移与遮罩不透明度，因此不会脱节。退场一开始表面即视为不可见
-（`is_visible()` 返回 false、捕获带保持禁用），动画结束后才隐藏对象并恢复捕获带，避免退回
-途中被再次拉起。熄屏、待机、navigation begin、策略禁用、`hide()` 与 deinit 走瞬时隐藏并
-取消进行中的动画，不阻塞转场。过渡期间磁贴、亮度滑条与熄屏/待机按钮不接受输入。
+Transition: when opening, the card slides in from above the screen to its final
+position and the scrim fades from fully transparent to `CC_SCRIM_OPA` in step;
+closing by clicking the scrim plays the reverse. Both are 180 ms (matching the
+task switcher fade-in duration) and are driven by the same progress animation
+for card offset and scrim opacity, so they never drift apart. The surface counts
+as invisible as soon as the exit starts (`is_visible()` returns false and the
+capture band stays disabled), and the objects are hidden and the capture band
+restored only after the animation ends, so a retracting swipe cannot pull it up
+again. Screen off, standby, navigation begin, policy disable, `hide()` and
+deinit use an instant hide and cancel the running animation without blocking the
+transition. During the transition the tiles, the brightness slider and the
+screen-off/standby buttons accept no input.
 
-表面内容：时间/日期、亮度滑条（拖动用临时亮度预览，松手持久化）、Wi-Fi 与蓝牙磁贴
-（圆形图标底与图标同取三态颜色，关闭 `INK_SOFT` / 已开启未连接 `AMBER` / 已连接
-`MINT`，底色使用对应 tint）、立即熄屏与立即待机。表面为懒构建：`app_manager_get_image()` 只在 `app_manager_init()` 到达 READY 后
-可用，因此在首次 `show` 时才创建图标节点；首次打开要构建对象并解码图标，入场动画可能晚
-启动一两帧，后续打开没有这份开销。
+Surface content: time/date, a brightness slider (a temporary brightness preview
+while dragging, persisted on release), Wi-Fi and Bluetooth tiles (the circular
+icon base and the icon share a tri-state color — off `INK_SOFT` / enabled but
+not connected `AMBER` / connected `MINT` — and the base uses the corresponding
+tint), screen off now and standby now. The surface is built lazily:
+`app_manager_get_image()` is usable only after `app_manager_init()` reaches
+READY, so the icon nodes are created on the first `show`; the first open has to
+build the objects and decode the icons and its entrance animation may start a
+frame or two late, while later opens have no such cost.
 
-服务桥：app_manager 不依赖 connectivity/device_link/time，控制中心经注入的
-`app_manager_control_center_ops_t`（`app_manager_config_t` 可选字段）读取与请求；
-`main/app_runtime_control.c` 从 `connectivity_manager`、`device_link_service`、
-`time_service` 适配。可空 ops 会隐藏对应磁贴。ops 的 getter 在 LVGL worker 上运行且
-非阻塞；setter 只入队（Bluetooth 使用 0 等待）。
+Service bridge: app_manager does not depend on connectivity/device_link/time;
+the control center reads and requests through the injected
+`app_manager_control_center_ops_t` (an optional `app_manager_config_t` field);
+`main/app_runtime_control.c` adapts it from `connectivity_manager`,
+`device_link_service` and `time_service`. A null ops hides the corresponding
+tile. The ops getters run on the LVGL worker and are non-blocking; the setters
+only enqueue (0 wait for Bluetooth).
 
-门禁与所有权套用任务切换器：Screen 稳定、无转场、未 suspend、任务切换器不可见时才允许
-拉取；navigation begin 同步隐藏（取消过渡）；screen suspend 取消动画并隐藏；deinit 先取消
-动画再释放表面与捕获带。
+Gating and ownership follow the task switcher: pulling down is allowed only when
+the Screen is stable, with no transition, not suspended and with the task
+switcher invisible; navigation begin hides it synchronously (cancelling the
+transition); screen suspend cancels the animation and hides it; deinit cancels
+the animation first and then releases the surface and the capture band.
 
-运行时开关与公共 API：
+Runtime switch and public API:
 
 ```c
 esp_err_t app_manager_control_center_show(void);
@@ -455,36 +581,39 @@ bool      app_manager_control_center_is_enabled(void);
 esp_err_t app_manager_pm_request_standby(void);
 ```
 
-`app_manager_pm_request_standby()` 复用 suspend 路径，屏幕熄灭后立即进入 standby，不等待
-配置的待机延时；任何用户活动或唤醒都会取消该意图。
+`app_manager_pm_request_standby()` reuses the suspend path and enters standby
+immediately after the screen turns off, without waiting for the configured
+standby delay; any user activity or wake cancels that intent.
 
-## 8. 统一导航 Gateway
+## 8. Unified Navigation Gateway
 
-所有导航使用 `app_manager_nav_request_t`：
+All navigation uses `app_manager_nav_request_t`:
 
-| operation | 语义 |
+| operation | Semantics |
 | --- | --- |
-| `RUN` | 创建 App，或把已有 App 提到前台 |
-| `EXIT` | 退出指定 App |
-| `EXIT_SELF` | 退出发起生命周期回调所属的 App |
-| `OPEN_PAGE` | 打开静态 Page；必要时启动或前置目标 App |
-| `BACK` | 返回一页；根页返回等价于退出当前 App |
-| `BACK_TO` | 返回到当前 App 栈中已有的指定 Page |
-| `REMOVE_PAGE` | 删除指定 Page；删除当前页按 BACK 处理 |
-| `CLEANUP_BACKGROUND` | 重试清理所有非 pinned 后台 App |
+| `RUN` | Create an App, or bring an existing App to the foreground |
+| `EXIT` | Exit the specified App |
+| `EXIT_SELF` | Exit the App that owns the calling lifecycle callback |
+| `OPEN_PAGE` | Open a static Page; start or foreground the target App when needed |
+| `BACK` | Go back one page; back on a root page is equivalent to exiting the current App |
+| `BACK_TO` | Return to a specified Page already present in the current App stack |
+| `REMOVE_PAGE` | Delete the specified Page; deleting the current page is handled as BACK |
+| `CLEANUP_BACKGROUND` | Retry cleanup of all non-pinned background Apps |
 
-`EXIT_SELF` 只在 lifecycle callback 内接受，request 的 `app_id` 必须为 `NULL`；gateway
-会在 callback 返回前复制 owner ID。普通 task 或一般 LVGL event 应使用 `EXIT`、`BACK`
-或其他显式导航操作。
+`EXIT_SELF` is accepted only inside a lifecycle callback and the request
+`app_id` must be `NULL`; the gateway copies the owner ID before the callback
+returns. Ordinary tasks or general LVGL events should use `EXIT`, `BACK` or
+another explicit navigation operation.
 
-`OPEN_PAGE` 只接受 registry 中的静态 Page ID：
+`OPEN_PAGE` accepts only static Page IDs from the registry:
 
-- App 不存在时创建 App、根页以及目标页；
-- App 在后台时把它提到前台；
-- Page 已存在时更新 intent，并执行一次 back-to；
-- Page 不存在时创建并压入目标 App 的页面栈。
+- if the App does not exist, create the App, the root page and the target page;
+- if the App is in the background, bring it to the foreground;
+- if the Page already exists, update the intent and perform a back-to;
+- if the Page does not exist, create it and push it onto the target App page
+  stack.
 
-### 8.1 同步 API
+### 8.1 Synchronous API
 
 ```c
 app_manager_nav_request_t request =
@@ -497,22 +626,25 @@ app_manager_nav_request_t request =
 esp_err_t result = app_manager_navigate(&request, UINT32_MAX);
 ```
 
-`app_manager_navigate()` 只能由非 UI task 调用。它等待动画、生命周期和必要清理达到
-稳定结果；在 UI worker 上调用返回 `ESP_ERR_INVALID_STATE`。
+`app_manager_navigate()` may only be called from a non-UI task. It waits for the
+animation, lifecycle and required cleanup to reach a stable result; calling it
+on the UI worker returns `ESP_ERR_INVALID_STATE`.
 
-同步超时沿用 mailbox 安全语义：
+A synchronous timeout follows the mailbox safety semantics:
 
-- 命令尚未开始时取消，回调不会执行；
-- 命令已经开始时继续等待稳定完成，但最终向调用者返回 `ESP_ERR_TIMEOUT`。
+- if the command has not started, it is cancelled and no callback runs;
+- if the command has already started, the call keeps waiting for a stable
+  completion but finally returns `ESP_ERR_TIMEOUT` to the caller.
 
-因此同步 API 返回后，栈上 request 可以安全销毁，即使实际等待超过指定 timeout。
+Therefore, once the synchronous API returns, a stack-allocated request may be
+destroyed safely even if the actual wait exceeded the specified timeout.
 
-### 8.2 异步 API
+### 8.2 Asynchronous API
 
 ```c
 static void _navigation_complete(esp_err_t result, void *context)
 {
-    /* 在 UI worker 上运行。 */
+    /* Runs on the UI worker. */
 }
 
 app_manager_nav_request_t request =
@@ -526,146 +658,198 @@ esp_err_t admitted = app_manager_navigate_async(
                          &request, _navigation_complete, context);
 ```
 
-`app_manager_navigate_async()` 可从普通 task、LVGL event、navigation completion 或
-lifecycle callback 调用。返回值只表示 command slot 和 mailbox 准入；准入成功后的最终
-结果由 UI worker 上的 completion 给出。生命周期回调内的重入请求进入同一 FIFO，不会
-递归修改当前 nav model。
+`app_manager_navigate_async()` may be called from an ordinary task, an LVGL
+event, a navigation completion or a lifecycle callback. The return value only
+reports command slot and mailbox admission; the final result after successful
+admission is given by the completion on the UI worker. Re-entrant requests from
+inside a lifecycle callback enter the same FIFO and never modify the current nav
+model recursively.
 
-固定 command pool 容量由 `CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY` 决定（产品基线 8）。池满或 mailbox 拒绝时立即返回 `ESP_ERR_NO_MEM`，此时
-completion 不会执行。
+The fixed command pool capacity is set by
+`CONFIG_APP_MANAGER_NAV_COMMAND_CAPACITY` (product baseline 8). When the pool is
+full or the mailbox rejects the request, `ESP_ERR_NO_MEM` is returned
+immediately and the completion does not run.
 
-## 9. 清理失败与失败回滚
+## 9. Cleanup Failure and Rollback
 
-raw handler 是 `void`。`ONPAUSE` 或 `ONSTOP` 释放资源失败时必须报告：
+A raw handler returns `void`. A failure to release resources in `ONPAUSE` or
+`ONSTOP` must be reported:
 
 ```c
 esp_err_t result = event_bus_unsubscribe(state->subscription);
 if (result != ESP_OK)
 {
     app_manager_this_page_report_cleanup_error(result);
-    return; /* 保留有效 handle，后续重试。 */
+    return; /* Keep the valid handle and retry later. */
 }
 state->subscription = EVENT_BUS_SUB_HANDLE_INVALID;
 ```
 
-typed ops 的 `pause` 和 `stop` 直接返回 `esp_err_t`；未提供的回调视为成功的 no-op，
-不得再调用 `app_manager_this_page_report_cleanup_error()` 重复报告。
+The typed ops `pause` and `stop` return `esp_err_t` directly; a missing callback
+counts as a successful no-op and must not call
+`app_manager_this_page_report_cleanup_error()` to report it again.
 
-框架只记录当前回调报告的第一个非 `ESP_OK` 错误：
+The framework records only the first non-`ESP_OK` error reported in the current
+callback:
 
-- PAUSE 失败时页面仍保持 active，不继续 UNMOUNT/STOP；
-- STOP 失败时实例、私有内存和未释放句柄继续归原 owner；
-- 未提交 target 已经 RESUME 时，回滚必须先执行 target PAUSE，再 UNMOUNT target 和
-  RESUME source；应用应把它视为正常的补偿性生命周期配对；
-- target 的补偿 PAUSE 失败时保留 target 的 Screen、活动资源和 recovery ownership，
-  不得继续 UNMOUNT target 或 RESUME source；
-- 返回/退出的 STOP 失败会在 target 补偿成功后恢复 source Page，而不是提交半个前台；
-- 后台清理、驻留淘汰和 deinit 可再次执行同一清理；
-- 释放失败后不得提前清空 handle，否则框架无法替业务代码恢复所有权证据。
+- on a PAUSE failure the page stays active and UNMOUNT/STOP do not continue;
+- on a STOP failure the instance, private memory and unreleased handles stay
+  with the original owner;
+- when an uncommitted target has already RESUMEd, the rollback must first PAUSE
+  the target, then UNMOUNT the target and RESUME the source; apps should treat
+  this as a normal compensating lifecycle pair;
+- when the compensating target PAUSE fails, the target Screen, active resources
+  and recovery ownership are retained and the framework must not continue to
+  UNMOUNT the target or RESUME the source;
+- a STOP failure on back/exit restores the source Page after the target
+  compensation succeeds instead of committing half a foreground;
+- background cleanup, residence eviction and deinit may run the same cleanup
+  again;
+- handles must not be cleared early after a release failure, otherwise the
+  framework cannot keep the ownership evidence for the business code.
 
-`ONMOUNT/ONUNMOUNT` 不提供 cleanup error 通道。LVGL Screen 创建、删除或动画启动失败
-由 presentation/lifecycle 自身回滚。任何失败路径都不得丢失 Page slot、Screen
-或 cleanup ownership。
+`ONMOUNT/ONUNMOUNT` provide no cleanup error channel. LVGL Screen creation,
+deletion or animation start failures are rolled back by presentation/lifecycle
+itself. No failure path may lose a Page slot, a Screen or cleanup ownership.
 
-## 10. Screen Suspend、Resume 与 Deinit
+## 10. Screen Suspend, Resume, and Deinit
 
-### 10.1 双击 HOME 与系统任务切换器
+### 10.1 Double-click HOME and the System Task Switcher
 
-HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第二次点击提交
-`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` 系统命令；窗口到期且没有第二次点击时
-解析单击动作：任务切换器可见时提交 `APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW`
-切换关闭（与被覆盖的控制中心同时可见时关闭位于上层的切换器），控制中心可见时提交
-`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW` 切换关闭并播放退场动画，两者均不可见时按当前
-活跃 App 快照路由：活跃为 Home 时提交 `RUN` 进入应用目录，否则提交
-`OPEN_PAGE(home, root)`，快照不可用时不动作。这些动作都经统一 navigation gateway
-异步提交，且只有 worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被
-取消的先行命令。
-切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
-HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby 准备和 deinit 都取消
-待定窗口。worker 按窗口剩余时间缩短轮询等待，单击延迟不超过 350 ms 加一个轮询周期。
+A single and a double click on HOME are disambiguated by app-control within a
+350 ms window: a second click inside the window submits the
+`APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` system command; when the window
+expires without a second click the single-click action is resolved: when the
+task switcher is visible, submit `APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW` to
+toggle it closed (when it is visible together with an overlaid control center,
+the switcher on top is closed); when the control center is visible, submit
+`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW` to toggle it closed and play the
+exit animation; when neither is visible, route by the current active App
+snapshot: submit `RUN` to enter the app directory when Home is active, otherwise
+submit `OPEN_PAGE(home, root)`, and do nothing when the snapshot is unavailable.
+All these actions are submitted asynchronously through the unified navigation
+gateway and are admitted only after the worker state machine has decided on a
+single action, so the navigation FIFO never contains a preceding command that
+could be cancelled. A second double click while the switcher is open closes it
+and returns to the original foreground task. A HOME sequence that starts with
+display sleep or a standby wake only wakes the device and takes no part in
+disambiguation; a long press, POWER screen off, standby preparation and deinit
+all cancel the pending window. The worker shortens its poll wait by the
+remaining window time, so the single-click latency is at most 350 ms plus one
+poll period.
 
-最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
-App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App 保持运行且不收到
-PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
-同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）或单击 HOME
-关闭切换器并回原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
-当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 px 宽、
-约 187 px 高的内容自适应卡片，顶部 64 px 圆形图标底衬内嵌 56 px 图像，名称与状态行
-（当前 / 点按切换 / 关闭失败）在图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，
-不保留屏幕像素缓存；表面底部显示内部 RAM 与 PSRAM 的 used/total 文本与使用条
-（≥85% 变红），打开/重建时刷新并每 1 s 刷新一次；打开时表面 180 ms 淡入。点击后台任务
-卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
-64 px）提交 `EXIT` 并原地刷新列表。CLICKED 抑制：跟随轮播的横向滚动由 LVGL 原生
-scroll 抑制；未形成滚动的拖拽在位移超过 10 px 时于松手吞掉点击，卡片与关闭按钮
-同样抑制。点击动作在事件时刻捕获 `app_id` 与列表 generation 再经 `lv_async_call`
-执行，覆盖激活、关闭按钮和上滑关闭，同帧内的列表重建不会让延迟动作命中错误任务。
-切换失败时切换器重新打开并在对应卡片显示“切换失败”。列表重建（关闭完成、淘汰、
-清除失败重试、重新打开）回到轮播起始位置。
-"全部清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁
-全部非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行
-前同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记
-保持可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列、
-清空卡片与 busy 外壳并隐藏表面（root 骨架保留），再进入页面 PAUSE；resume 后保持
-关闭。deinit 删除切换器和 presentation Sys Layer 对象。
+Recent tasks are a system-level interface of App Manager
+(`app_manager_task_switcher.c`) and belong to no App or Page: it creates a
+full-screen surface on the LVGL Sys Layer; while open, the original foreground
+App keeps running and receives no PAUSE/UNMOUNT, and touch is fully taken over
+by the switcher — the full-screen root stays CLICKABLE, the title bar and the
+memory footer also swallow clicks, and the covered page receives no touch at
+all; clicking the surface itself (not a card) or clicking HOME once closes the
+switcher and returns to the original task. Opening copies the MRU task list
+(including the current task and `cleanup_pending` state) through
+`app_manager_lifecycle_recent_tasks_call()` and builds a horizontally scrollable
+card carousel: each content-sized card is 240 px wide and about 187 px high,
+with a 56 px image inside a 64 px circular icon base at the top, the name and
+status line (`"当前"` / `"点按切换"` / `"关闭失败"`, i.e. current / switch with a tap /
+close failed) centered below the icon, and a 44 px independent close button at
+the top right of every non-current card; no screen pixel cache is kept. The
+bottom of the surface shows internal RAM and PSRAM used/total text and usage
+bars (turning red at ≥85%), refreshed on open/rebuild and every 1 s; the surface
+fades in for 180 ms on open. Clicking a background task card restores it through
+ordinary RUN (the navigation gateway hides the switcher automatically before
+execution); "close" is submitted through the card's top right button or an
+upward swipe of more than 64 px on that card (horizontal displacement not
+exceeding 64 px) as `EXIT` and the list is rebuilt in place. CLICKED
+suppression: the horizontal scrolling that follows the carousel is suppressed by
+the native LVGL scroll; a drag that did not become a scroll swallows the click
+on release once it exceeds 10 px, and cards and close buttons suppress it the
+same way. Click actions capture the `app_id` and the list generation at event
+time and execute through `lv_async_call`, covering activation, the close button
+and swipe-to-close, so a list rebuild in the same frame cannot make a deferred
+action hit the wrong task. On a failed switch the switcher reopens and shows
+`"切换失败"` (switch failed) on the corresponding card. A list rebuild (close
+completion, eviction, cleanup-failure retry, reopening) returns to the carousel
+start position. "Clear all" is a composite system command `CLEAR_ALL` that first
+switches to Home and then, inside the same gateway command, destroys all
+non-pinned/hidden tasks (including the foreground task from before opening) and
+closes the switcher when done. Ordinary navigation hides the switcher
+synchronously before execution; an `EXIT` issued by the switcher itself stays
+visible through the command-level `keep_switcher_alive` flag and shows a busy
+shell, then rebuilds in place after completion or failure. screen suspend first
+cancels the pointer sequence, clears the cards and the busy shell and hides the
+surface (the root skeleton is kept), and only then enters page PAUSE; after
+resume it stays closed. deinit deletes the switcher and the presentation Sys
+Layer objects.
 
-最近任务数据由 `app_manager_get_recent_tasks()` 提供：按 MRU 顺序返回最多
-`APP_MANAGER_MAX_RECENT_TASKS` 个非 pinned、非 hidden 的驻留 App，每项包含静态
-descriptor（含 `display_name` 和 `icon_id`）、保留的当前 Page ID、`active` 与
-`cleanup_pending` 状态。App 销毁（EXIT、淘汰、回滚清理、deinit）时由生命周期统一
-释放实例；图标缺失时切换器使用符号回退。
-清理失败的任务保留在列表中并标记 `cleanup_pending`，允许再次重试；处于该状态的
-实例从公共拓扑查询（`app_manager_is_page_present` 等）保守隐藏，但保留驻留计数、
-保留在 recent-tasks 列表中，下一次导航先重试其清理再继续。
+Recent-task data is provided by `app_manager_get_recent_tasks()`: up to
+`APP_MANAGER_MAX_RECENT_TASKS` non-pinned, non-hidden resident Apps in MRU
+order, each item carrying the static descriptor (including `display_name` and
+`icon_id`), the retained current Page ID, and the `active` and `cleanup_pending`
+states. When an App is destroyed (EXIT, eviction, rollback cleanup, deinit) the
+lifecycle releases the instance uniformly; when an icon is missing the switcher
+falls back to a symbol. A task whose cleanup failed stays in the list marked
+`cleanup_pending` and may be retried; an instance in that state is
+conservatively hidden from public topology queries
+(`app_manager_is_page_present` etc.) while keeping its residence count and
+staying in the recent-tasks list, and the next navigation retries its cleanup
+before continuing.
 
-Screen suspend 不播放动画：
+Screen suspend plays no animation:
 
 ```text
-快进当前动画并提交稳定 target
+fast-forward the current animation and commit the stable target
 current PAUSE
 load neutral
-current UNMOUNT，删除 Page Screen
-保存运行 App 数快照
-关闭 Screen 访问准入并排空在途访问
+current UNMOUNT, delete the Page Screen
+save the running App count snapshot
+close Screen access admission and drain in-flight access
 pause LVGL adapter
-等待 panel IO / DMA fence
-提交硬件 suspend
+wait for panel IO / DMA fence
+commit hardware suspend
 ```
 
-Screen resume 同样不播放动画：
+Screen resume likewise plays no animation:
 
 ```text
-硬件 resume_prepare（面板仍隐藏）
+hardware resume_prepare (panel still hidden)
 resume LVGL adapter
 current MOUNT
 load current Screen
 current RESUME
-刷新并等待 fence
-恢复 indev、亮度和 resume_commit
+refresh and wait for the fence
+restore indev, brightness and resume_commit
 ```
 
-PAUSING、PAUSED 和动画期间的拓扑查询是保守值。成功进入 PAUSED 后，
-`app_manager_get_running_apps()` 和 `app_manager_is_all_closed()` 使用暂停时保存的
-running-count 快照；其余 active/present 查询返回 `false` 或 `NULL`。
+Topology queries during PAUSING, PAUSED and animation are conservative values.
+After PAUSED has been entered successfully, `app_manager_get_running_apps()` and
+`app_manager_is_all_closed()` use the running-count snapshot saved at pause
+time; the remaining active/present queries return `false` or `NULL`.
 
-`app_manager_deinit()` 不能从 UI worker 调用。正常顺序为：
+`app_manager_deinit()` must not be called from the UI worker. The normal order
+is:
 
-1. app-control 停止生产者、注销输入并取消 standby（`app_manager_control_deinit`）；
-2. 边缘返回停止准入；navigation 停止准入、排空命令并快进最后动画；
-3. lifecycle 置 CLOSED，等待已准入访问退出；
-4. UI worker 依次 deinit 控制中心、任务切换器、lifecycle（PAUSE/UNMOUNT/STOP、
-   删除 Screen、释放运行节点）、边缘返回对象和 presentation（neutral Screen、屏障、
-   completion timer）；
-5. 重置 registry，关闭 mailbox 并释放命令池；
-6. 暂停并 fence LVGL adapter，释放主题与字体（adapter VFS 仍挂载）；
-7. deinit LVGL adapter；
-8. 释放资源映射（mmap assets）。
+1. app-control stops producers, unregisters input and cancels standby
+   (`app_manager_control_deinit`);
+2. edge back stops admission; navigation stops admission, drains commands and
+   fast-forwards the last animation;
+3. lifecycle enters CLOSED and waits for admitted access to leave;
+4. the UI worker deinits, in order, the control center, the task switcher,
+   lifecycle (PAUSE/UNMOUNT/STOP, delete Screens, release runtime nodes), the
+   edge back objects and presentation (neutral Screen, barrier, completion
+   timer);
+5. reset the registry, close the mailbox and release the command pool;
+6. pause and fence the LVGL adapter and release themes and fonts (the adapter
+   VFS stays mounted);
+7. deinit the LVGL adapter;
+8. release the resource mappings (mmap assets).
 
-任一步清理失败都保留对应 ready/ownership 状态；再次调用 `app_manager_deinit()` 继续
-重试。冷启动、Screen resume 和 deinit 不播放页面动画。
+A cleanup failure at any step keeps the corresponding ready/ownership state; a
+further `app_manager_deinit()` call keeps retrying. Cold start, Screen resume
+and deinit play no page animation.
 
-## 11. 显示与 PM 协作
+## 11. Display and PM Cooperation
 
-app-control task 串行管理显示和 standby：
+The app-control task manages display and standby serially:
 
 ```text
 ACTIVE -> DIM -> SCREEN_OFF -> STANDBY_PREPARING -> STANDBY
@@ -674,195 +858,244 @@ ACTIVE -> DIM -> SCREEN_OFF -> STANDBY_PREPARING -> STANDBY
                     user activity / wake
 ```
 
-POWER、HOME、touch 和 system wake 通过 generation/pending 状态合并。standby guard 在
-系统提交点重新检查本地 epoch、显示规范休眠状态和 wake intent；commit callback 只做
-无阻塞原子记录，最终状态仍由 app-control 核对后发布。
-显示已休眠时，由物理按键开始的唤醒序列只恢复显示，其尾随 `UP/CLICK` 不再重放为
-导航或关屏操作；下一次在活动显示上开始的独立按键序列恢复正常语义。
+POWER, HOME, touch and system wake are merged through generation/pending state.
+The standby guard re-checks the local epoch, the canonical display sleep state
+and the wake intent at the system commit point; the commit callback only makes
+non-blocking atomic records, and the final state is still published after
+app-control has reconciled it. When the display is already asleep, a wake
+sequence started by a physical key only restores the display and its trailing
+`UP/CLICK` is no longer replayed as navigation or screen-off; the next
+independent key sequence started on an active display resumes normal semantics.
 
-亮度寄存器和 LVGL color flush 共用 panel IO。所有正常亮度、临时亮度、DIM 和恢复亮度
-都同步派发到 UI worker，不能从 app-control 或启动 task 直接调用 BSP panel 操作。冷启动
-的 input/PM admission 在 `app_manager_init()` 后仍保持关闭；`app_manager_startup_commit()`
-注册物理输入并从首屏真正可操作的时刻重置 inactivity epoch。
-正常亮度、熄屏和待机延迟由 App Manager 自身持久化。DIM 延迟为只读值，
-来自 NVS 键 `pm_dim_to`，缺省为 15 s；当前没有公开的 DIM 设置 API。
-同步 PM setter 只接受非 UI worker 调用（UI worker 上返回
-`ESP_ERR_INVALID_STATE`），设置页通过 `*_async` post 提交并经 getter 观察持久化
-结果；恢复出厂在初始化前调用
-`app_manager_factory_reset_persisted_state()` 幂等删除这些设置，后续初始化恢复默认值。
+The brightness register and the LVGL color flush share panel IO. All normal,
+temporary, DIM and restore brightness are dispatched synchronously to the UI
+worker; BSP panel operations must never be called directly from app-control or
+the startup task. Cold-start input/PM admission stays closed after
+`app_manager_init()`; `app_manager_startup_commit()` registers physical input
+and resets the inactivity epoch at the moment the first screen really becomes
+usable. Normal brightness, screen-off and standby delays are persisted by App
+Manager itself. The DIM delay is read-only, comes from the NVS key `pm_dim_to`
+and defaults to 15 s; there is currently no public DIM setting API. The
+synchronous PM setters only accept non-UI worker callers (returning
+`ESP_ERR_INVALID_STATE` on the UI worker); the settings pages submit through the
+`*_async` post and observe the persisted result through the getters. Factory
+reset calls `app_manager_factory_reset_persisted_state()` before initialization
+to delete these settings idempotently, and the following initialization restores
+the defaults.
 
-显示恢复遵循 `resume_prepare -> adapter resume -> Page MOUNT/RESUME -> refresh/fence ->
-resume_commit`。面板显示和物理触摸只在完整恢复帧提交后启用，避免旧帧、触摸穿透和
-DMA 未完成。
+Display resume follows `resume_prepare -> adapter resume -> Page MOUNT/RESUME ->
+refresh/fence -> resume_commit`. Panel display and physical touch are enabled
+only after the complete restore frame has been committed, avoiding stale frames,
+touch pass-through and incomplete DMA.
 
-非 TE 显示路径的三个容量参数承担不同职责：App Manager 使用 60 行 PSRAM 双绘制缓冲，
-BSP 将每次 SPI DMA 传输限制为 10 行（7,360 B），并将传输队列深度限制为 2；因此 LVGL
-可以按较大条带渲染，同时内部 DMA bounce buffer 峰值限制为 14,720 B。该路径不启用
-PSRAM 直 DMA，也不依赖周期性 SPI fence。
+On the non-TE display path three capacity parameters play different roles: App
+Manager uses 60-row PSRAM double draw buffers, BSP limits each SPI DMA transfer
+to 10 rows (7,360 B) and the transfer queue depth to 2; LVGL can therefore
+render in larger strips while the internal DMA bounce buffer peaks at 14,720 B.
+That path enables no PSRAM direct DMA and depends on no periodic SPI fence.
 
-`CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS` 仅用于开发验收。启用后，低优先级 PSRAM 栈
-任务周期采样 adapter FPS、DMA/internal heap 和 PSRAM；LVGL display event 同时记录
-render、flush、flush-wait，panel 代理记录提交次数、像素、失败和同步调用耗时。
-presentation 只在 `lv_anim_get()` 确认真正启动后记录动画边界，并按具体 effect 汇总
-active duration、final-flush interval 的 P50/P95/P99/max、33,333 us 达标数以及连续超过
-41,667 us 的最大长度。adapter FPS 只作为观察信息；benchmark 的 `passed` 仅表示采样、
-DMA、panel 提交和动画统计完整性通过，具体帧率门槛由上板验收逻辑判定。停止诊断时先
-注销 display event，再确认任务退出并释放 PSRAM 栈，之后才允许销毁 LVGL adapter。
-characterization 的第一阶段固定为 display-only，第二阶段的 full、audio-only 或
-tcp-only 由根 benchmark 运行时 profile 选择；STRESS 使用 profile 中的 load。campaign
-模式、时长、IPv4 host、port 和 rate 不属于 App Manager Kconfig，由
-`tests/display/profiles/*.json` 生成的类型化配置传给 `display_benchmark_start()`。
-App Manager Kconfig 只保留 diagnostics 和显示静态资源/功能 gate。
+`CONFIG_APP_MANAGER_DISPLAY_DIAGNOSTICS` is for development acceptance only.
+When enabled, a low-priority PSRAM-stack task periodically samples adapter FPS,
+DMA/internal heap and PSRAM; LVGL display events also record render, flush and
+flush-wait, and the panel proxy records commit count, pixels, failures and
+synchronous call duration. presentation records animation boundaries only after
+`lv_anim_get()` confirms the animation really started, and aggregates per effect
+the active duration, the P50/P95/P99/max of the final-flush interval, the count
+meeting 33,333 us and the longest run above 41,667 us. adapter FPS is
+observation only; benchmark `passed` means only that sampling, DMA, panel commit
+and animation statistics are complete, and the actual frame-rate threshold is
+judged by the on-device acceptance logic. Stopping diagnostics unregisters the
+display event first, then confirms the task has exited and releases the PSRAM
+stack, and only after that may the LVGL adapter be destroyed. The first
+characterization stage is fixed to display-only; the second stage, full,
+audio-only or tcp-only, is chosen by the root benchmark runtime profile; STRESS
+uses the load from the profile. The campaign mode, duration, IPv4 host, port and
+rate are not part of App Manager Kconfig but are passed to
+`display_benchmark_start()` as typed configuration generated from
+`tests/display/profiles/*.json`. App Manager Kconfig keeps only diagnostics and
+the display static resource/feature gates.
 
-`CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` 默认关闭。仅在调试生命周期顺序时启用；它统一
-输出 `START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT` 的 INFO trace。关闭时编译器会
-裁剪事件名表和日志调用，不影响 lifecycle callback、observer 或状态迁移。
+`CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` is off by default. Enable it only when
+debugging lifecycle ordering; it uniformly emits INFO traces for
+`START/MOUNT/RESUME/PAUSE/UNMOUNT/STOP/NEW_INTENT`. When disabled the compiler
+strips the event name table and the log calls, without affecting lifecycle
+callbacks, observers or state transitions.
 
-`APP_MANAGER_MSG_COUNT` 是生命周期消息数量和数组边界，不是可分发消息。旧名称
-`APP_MANAGER_MSG_USER_END` 仅作为源码兼容别名保留，新代码不得使用。
+`APP_MANAGER_MSG_COUNT` is the number of lifecycle messages and an array bound,
+not a dispatchable message. The old name `APP_MANAGER_MSG_USER_END` is kept only
+as a source-compatibility alias and must not be used by new code.
 
-## 12. 应用开发契约
+## 12. Application Development Contract
 
-本节描述 `layers/apps` 中内置 App/Page 的现行契约。公共类型和容量以
-`app_core/include/app_manager_types.h` 和 `app_core/include/app_manager.h` 为准，应用不
-复制容量、队列或版本常量。
+This section describes the current contract for the built-in Apps/Pages in
+`layers/apps`. Public types and capacities are defined by
+`app_core/include/app_manager_types.h` and `app_core/include/app_manager.h`;
+apps do not duplicate capacity, queue or version constants.
 
-### 12.1 Page 模型与定义
+### 12.1 Page Models and Definitions
 
-内置 Page 按实际资源所有权组合以下模型：
+Built-in Pages combine the following models according to their actual resource
+ownership:
 
-| Page 模型 | 生命周期阶段 | 所有资源 |
+| Page model | Lifecycle phases | Owned resources |
 | --- | --- | --- |
-| 静态 | MOUNT、UNMOUNT | LVGL 对象 |
-| 刷新 | MOUNT、RESUME、PAUSE、UNMOUNT | timer、UI subscription |
-| 会话 | START 到 STOP | retained state、活动服务会话 |
-| Worker | RESUME、PAUSE | 页面 worker、线程安全 snapshot |
-| 参数 | START 或 NEWINTENT，以及所需 UI 阶段 | Typed Blob、route data |
+| Static | MOUNT, UNMOUNT | LVGL objects |
+| Refresh | MOUNT, RESUME, PAUSE, UNMOUNT | timer, UI subscription |
+| Session | START to STOP | retained state, active service sessions |
+| Worker | RESUME, PAUSE | page worker, thread-safe snapshot |
+| Arguments | START or NEWINTENT, plus the required UI phases | Typed Blob, route data |
 
-Page definition 必须且只能设置 `.ops` 或 `.handler`。类型化 ops 用于普通生命周期阶段；
-raw handler 仅保留直接接收 `app_manager_msg_type_t` 和 route `user_data` 的兼容能力，不作为
-新应用首选接口。应用只需实现实际需要的 ops，未提供的回调是成功的 no-op。`STOP` 即使当前
-产品页面暂无使用，仍保留为最终实例清理边界。
+A Page definition must set exactly one of `.ops` or `.handler`. Typed ops are
+used for ordinary lifecycle phases; the raw handler is retained only as a
+compatibility capability that receives `app_manager_msg_type_t` and the route
+`user_data` directly and is not the preferred interface for new apps. An app
+only implements the ops it actually needs; missing callbacks are successful
+no-ops. `STOP` stays as the final instance cleanup boundary even though current
+product pages do not use it yet.
 
-Page state 只保存实例私有状态，其 `memory_size` 不超过
-`APP_MANAGER_PAGE_STATE_BYTES`；大 payload 独立分配，不放入 Page state，也不通过跨实例
-全局状态保存。immutable Page definition 由所属 App 的静态 route 绑定，同一 definition
-可由多个 App 显式引用，但每个实例拥有独立 state 和导航栈。运行时不存在脱离 route 的
-裸 Page。
+Page state holds instance-private state only, and its `memory_size` does not
+exceed `APP_MANAGER_PAGE_STATE_BYTES`; large payloads are allocated separately
+and are neither placed in Page state nor kept in cross-instance global state. An
+immutable Page definition is bound by the static route of its owning App; the
+same definition may be referenced explicitly by several Apps, but every instance
+owns independent state and a navigation stack. At runtime there is no bare Page
+without a route.
 
-### 12.2 Context 与生命周期所有权
+### 12.2 Context and Lifecycle Ownership
 
-`app_manager_page_context_t` 仅在当前 ops 回调期间有效：
+`app_manager_page_context_t` is valid only during the current ops callback:
 
-- `state` 指向框架清零的 Page 私有内存，持续到成功 STOP；START 只需设置无效 handle 和
-  其他非零初值。
-- `route_user_data` 来自 immutable route，其存储覆盖整个固件运行期。
-- `screen` 在 MOUNT、RESUME、PAUSE、UNMOUNT 中有效；START、STOP 中为 `NULL`；
-  NEWINTENT 仅在实例已挂载时携带 Screen。
-- `arguments` 指向当前不可变 Typed Blob，只能在回调期间读取；回调结束后仍需使用的
-  payload 由 Page 校验并复制。
+- `state` points at the framework-zeroed Page private memory and lasts until a
+  successful STOP; START only needs to set invalid handles and other non-zero
+  initial values.
+- `route_user_data` comes from the immutable route and its storage covers the
+  whole firmware runtime.
+- `screen` is valid in MOUNT, RESUME, PAUSE and UNMOUNT; it is `NULL` in START
+  and STOP; NEWINTENT carries a Screen only when the instance is already
+  mounted.
+- `arguments` points at the current immutable Typed Blob and can only be read
+  during the callback; payload that must be used after the callback is validated
+  and copied by the Page.
 
-正常生命周期为：
+The normal lifecycle is:
 
 ```text
 START -> MOUNT -> RESUME -> PAUSE -> UNMOUNT -> STOP
 ```
 
-已有实例接收新参数时旁路调用 NEWINTENT。导航提交前失败时，target 可能收到补偿性的
-`RESUME -> PAUSE`，即使它从未成为稳定前台。
+An existing instance receives new arguments through the side-channel NEWINTENT
+call. If navigation fails before commit, the target may receive a compensating
+`RESUME -> PAUSE` even though it never became the stable foreground.
 
-| 阶段 | 当前所有权边界 |
+| Phase | Current ownership boundary |
 | --- | --- |
-| START | 初始化实例级非视觉状态和无效 handle |
-| MOUNT | 在 `context->screen` 下创建完整 UI |
-| RESUME | 启动 timer、订阅、输入、worker 和活动会话 |
-| PAUSE | 逆序停止活动资源；失败时保留有效 handle 并返回错误 |
-| UNMOUNT | 删除 UI 并清空全部 LVGL 指针 |
-| STOP | 释放 START 资源，不重复执行 PAUSE |
-| NEWINTENT | 校验并复制最新 arguments，按当前挂载状态更新 UI |
+| START | Initialize instance-level non-visual state and invalid handles |
+| MOUNT | Create the complete UI under `context->screen` |
+| RESUME | Start timers, subscriptions, input, workers and active sessions |
+| PAUSE | Stop active resources in reverse order; on failure keep valid handles and return the error |
+| UNMOUNT | Delete UI and clear every LVGL pointer |
+| STOP | Release START resources without repeating PAUSE |
+| NEWINTENT | Validate and copy the latest arguments and update the UI for the current mount state |
 
-ops 的 PAUSE/STOP 直接返回 `esp_err_t`；raw handler 的 PAUSE/STOP 通过
-`app_manager_this_page_report_cleanup_error()` 报告第一个释放错误，两种通道不混用。
-清理失败时，实例、资源和有效 handle 仍归原 owner，后续生命周期请求可重试。PAUSE 或
-STOP 成功后才清空对应 handle。
+The ops PAUSE/STOP return `esp_err_t` directly; the raw handler PAUSE/STOP
+report the first release error through
+`app_manager_this_page_report_cleanup_error()`, and the two channels are never
+mixed. On a cleanup failure the instance, resources and valid handles stay with
+the original owner and later lifecycle requests may retry. The corresponding
+handles are cleared only after PAUSE or STOP succeeds.
 
-### 12.3 导航与参数
+### 12.3 Navigation and Arguments
 
-- 普通 RUN、OPEN_PAGE 和 BACK 由 `app_ui_request_*` 发起。
-- 自定义转场、Typed Blob 或 completion 使用 `app_manager_navigate_async()`。
-- LVGL event callback 使用异步导航；UI worker 不调用同步
-  `app_manager_navigate()`。
-- request、ID 和 Typed Blob 在准入时按值复制；completion context 不复制。
-- 参数 Page 使用应用私有 type 和 payload，并校验 blob version、type 和精确 size，再以
-  `memcpy` 解码。
-- 目标 Page 必须存在于目标 App 的静态 route 表。
+- Ordinary RUN, OPEN_PAGE and BACK are issued by `app_ui_request_*`.
+- Custom transitions, Typed Blob or completion use
+  `app_manager_navigate_async()`.
+- LVGL event callbacks use asynchronous navigation; the UI worker never calls
+  the synchronous `app_manager_navigate()`.
+- The request, IDs and Typed Blob are copied by value at admission; the
+  completion context is not copied.
+- Argument pages use an app-private type and payload, validate the blob version,
+  type and exact size, and then decode with `memcpy`.
+- The target Page must exist in the static route table of the target App.
 
-Weather 的 root、forecast、alerts 和 alert-detail 使用类型化 ops；alert-detail 通过
-Typed Blob 接收预警标识并处理 NEWINTENT：已挂载实例立即刷新，后台实例保留复制后的参数
-并在 RESUME 时刷新。Weather 同时是订阅 handle、immutable snapshot 和 PAUSE 所有权的
-现有参考。主页、应用目录、设置、网络设置、时钟、录音、水平仪和诊断页面均采用同一 typed ops 约定。
+Weather root, forecast, alerts and alert-detail use typed ops; alert-detail
+receives the alert identifier through a Typed Blob and handles NEWINTENT: a
+mounted instance refreshes immediately, while a background instance keeps the
+copied arguments and refreshes on RESUME. Weather is also the existing reference
+for subscription handles, immutable snapshots and PAUSE ownership. The home, app
+directory, settings, network settings, clock, recording, level and diagnostics
+pages all follow the same typed ops convention.
 
-### 12.4 并发与资源边界
+### 12.4 Concurrency and Resource Boundaries
 
-- UI worker 不执行文件、音频、网络解析或硬件阻塞操作。
-- 页面 worker 只通过线程安全 snapshot 或 UI dispatcher 更新 UI，并在 PAUSE 返回前同步
-  停止。
-- UI subscription 不保证 publisher 已停止；退订失败时保留 handle。
-- LVGL 指针只在 mounted 生命周期解引用，动画回调只修改本 Page 的 Screen。
-- 应用不创建第二个 LVGL task、tick、Screen manager，也不绕过 App Manager 获取显示
-  所有权。
+- The UI worker performs no file, audio, network parsing or blocking hardware
+  operations.
+- Page workers update the UI only through thread-safe snapshots or the UI
+  dispatcher, and stop synchronously before PAUSE returns.
+- A UI subscription does not guarantee that the publisher has stopped; keep the
+  handle when unsubscribe fails.
+- LVGL pointers are dereferenced only in the mounted lifecycle, and animation
+  callbacks modify only this Page's Screen.
+- Apps do not create a second LVGL task, tick or Screen manager, and do not
+  obtain display ownership by bypassing App Manager.
 
-### 12.5 验证边界
+### 12.5 Verification Boundary
 
-App Manager 宿主测试覆盖 registry、lifecycle、ops/raw 互斥、context、参数以及 PAUSE/
-STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、object、timer、订阅、worker
-和 snapshot 基线。相关命令与 sanitizer 配置见第 14 节。
+The App Manager host tests cover registry, lifecycle, ops/raw mutual exclusion,
+context, arguments and PAUSE/STOP failure retry. App and cross-layer host tests
+cover the Screen, object, timer, subscription, worker and snapshot baselines of
+the real Pages. The relevant commands and sanitizer configurations are in
+section 14.
 
-宿主测试不证明真机显示、触摸、DMA、射频、功耗或性能；这些结果只由对应的上板测试和
-资源观测确认。
+Host tests do not prove on-device display, touch, DMA, RF, power or performance;
+those results are confirmed only by the corresponding board tests and resource
+observations.
 
-## 13. 初始化配置
+## 13. Initialization Configuration
 
-`app_manager_config_t` 中与 0.6.0 导航直接相关的字段：
+The fields of `app_manager_config_t` directly relevant to 0.6.0 navigation:
 
-| 字段 | 含义 |
+| Field | Meaning |
 | --- | --- |
-| `resident_policy` | 满容量拒绝或淘汰最旧后台 App |
-| `app_forward_transition` | App 前进默认动画 |
-| `app_back_transition` | App 返回默认动画 |
-| `page_forward_transition` | Page 前进默认动画 |
-| `page_back_transition` | Page 返回默认动画 |
-| `control_center_ops` | 可选；控制中心服务桥，NULL 隐藏网络/时间磁贴 |
-| `font_sizes` / `font_count` | 非 NULL 时必须为 `APP_THEME_FONT_MAX`（7）项，按角色顺序；`font_count` 同理 |
-| `max_resident_apps` | 驻留上限；0 使用物理上限 8，大于 8 的值被拒绝 |
-| `control_task_priority` | app-control worker 优先级，必须在 `[1, configMAX_PRIORITIES)` |
+| `resident_policy` | Reject at full capacity or evict the oldest background App |
+| `app_forward_transition` | Default App forward animation |
+| `app_back_transition` | Default App back animation |
+| `page_forward_transition` | Default Page forward animation |
+| `page_back_transition` | Default Page back animation |
+| `control_center_ops` | Optional; control center service bridge, NULL hides the network/time tiles |
+| `font_sizes` / `font_count` | When non-NULL, they must be `APP_THEME_FONT_MAX` (7) entries in role order; the same applies to `font_count` |
+| `max_resident_apps` | Residence limit; 0 uses the physical limit 8, and values above 8 are rejected |
+| `control_task_priority` | app-control worker priority, must be in `[1, configMAX_PRIORITIES)` |
 
-其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
-`standby_ops`。`screen_ops` 的 suspend/resume_prepare 在 app-control 上执行，
-set_brightness/set_brightness_temp/resume_commit 分发到 UI worker。配置结构由初始化
-路径读取，硬件操作表会复制到内部 owner。边缘返回不增加配置字段；初始化后默认启用，
-需要运行时关闭时调用公共开关 API。
+The remaining required fields provide display/touch, fonts and the resource
+drive letter, as well as `screen_ops`, `input_ops` and `standby_ops`. The
+suspend/resume_prepare of `screen_ops` run on app-control, while
+set_brightness/set_brightness_temp/resume_commit are dispatched to the UI
+worker. The configuration structure is read by the initialization path and the
+hardware operation table is copied into an internal owner. Edge back adds no
+configuration field; it is enabled by default after initialization, and the
+public switch API is called when it must be disabled at runtime.
 
-推荐启动顺序：
+Recommended startup order:
 
 ```text
 BSP / system PM ready
-app_manager_init（input/PM admission closed）
+app_manager_init (input/PM admission closed)
 register UI dispatcher with event bus
 start power service
 start connectivity services
-navigate RUN SETUP（首次启动）或 HOME
-app_manager_display_commit_initial（show panel, keep indev closed）
-app_manager_startup_commit（open touch, key, and PM admission）
+navigate RUN SETUP (first boot) or HOME
+app_manager_display_commit_initial (show panel, keep indev closed)
+app_manager_startup_commit (open touch, key, and PM admission)
 ```
 
-`main/app_runtime.c` 在首帧提交前初始化连接服务；面板在 display_commit_initial
-之前保持关闭，因此连接服务初始化会计入首帧前的隐藏时间。首次启动进入 SETUP，
-后续启动进入 HOME。
+`main/app_runtime.c` initializes the connectivity services before the first
+frame is committed; the panel stays off until display_commit_initial, so
+connectivity service initialization counts toward the hidden time before the
+first frame. The first boot enters SETUP and later boots enter HOME.
 
-## 14. 测试与验证
+## 14. Tests and Verification
 
-app-core 宿主套件：
+app-core host suite:
 
 ```sh
 cmake -S layers/app_manager/app_core/tests/host \
@@ -871,11 +1104,14 @@ cmake --build /tmp/mt-app-core
 ctest --test-dir /tmp/mt-app-core --output-on-failure
 ```
 
-该套件包括 `mailbox`、`navigation`、`registry`、`nav_model`、`lifecycle`（含
-debug-log 变体）、`persistence`、`control`、`adapter`（含高度与 OS 组合变体）和
-`display_diagnostics`（含启用/禁用与单任务/无 OS 变体）。其中 navigation/lifecycle 测试覆盖边缘返回的 epoch 准入、条件 BACK、
-并发 FIFO 和稳定 back-target；Sys Layer 对象、几何识别及跨层资源清理由下述
-cross-layer 套件覆盖。ASan/UBSan 与 TSan 分别使用：
+The suite includes `mailbox`, `navigation`, `registry`, `nav_model`, `lifecycle`
+(including the debug-log variant), `persistence`, `control`, `adapter`
+(including height and OS combination variants) and `display_diagnostics`
+(including enabled /disabled and single-task/no-OS variants). The
+navigation/lifecycle tests cover edge back epoch admission, conditional BACK,
+the concurrent FIFO and the stable back-target; Sys Layer objects, geometry
+recognition and cross-layer resource cleanup are covered by the cross-layer
+suite below. ASan/UBSan and TSan use:
 
 ```sh
 cmake -S layers/app_manager/app_core/tests/host \
@@ -891,7 +1127,7 @@ cmake --build /tmp/mt-app-core-tsan
 ctest --test-dir /tmp/mt-app-core-tsan --output-on-failure
 ```
 
-应用、main 和跨层套件：
+App, main and cross-layer suites:
 
 ```sh
 cmake -S layers/apps/tests/host -B /tmp/mt-apps -G Ninja
@@ -907,53 +1143,77 @@ cmake --build /tmp/mt-integration
 ctest --test-dir /tmp/mt-integration --output-on-failure
 ```
 
-对应 sanitizer cache 变量为 `APPS_SANITIZER`、`MAIN_HOST_SANITIZER` 和
-`CROSS_LAYER_SANITIZER`，取值同样是 `address` 或 `thread`。跨层 `presentation` 测试
-覆盖 14 种效果、快照起始/中间/完成、原生回退、立即完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
-App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘手势。手势断言除
-导航结果外，还应检查稳定时一个 Page Screen、普通非 `NONE` 转场的 overlay/Image 在完成后
-释放、`PRESSING` 期间不创建快照、Page Screen 不随 `PRESSING` 改变、Canvas 固定为
-`64x144`、indicator Y 锚点固定、左右弧形互为镜像，
-以及 indicator、timer、订阅和活动会话在取消或完成后回到基线。A8 buffer 测试还应采样
-顶部、四分之一、中部和底部的 depth 与边缘 alpha，验证 Q15 曲线和 1 px 抗锯齿；
-368 px 屏宽下检查捕获条为 29 px、提交距离为 55 px，并分别检查左侧 X 为
-`-64/-31/0`、右侧 X 为 `368/335/304`（中间值对应 inward=28）；左侧 `x=28` 命中而
-`x=29` 不命中，右侧
-`x=339` 命中而 `x=338` 不命中，提交边界应覆盖向内位移 `54/55`。同时确认轻微斜滑
-能够锁定水平，明显垂直或向外移动被取消，以及箭头在阈值前隐藏、ARMED 后显示、迟滞
-回撤后再次隐藏。
+The corresponding sanitizer cache variables are `APPS_SANITIZER`,
+`MAIN_HOST_SANITIZER` and `CROSS_LAYER_SANITIZER`, again taking `address` or
+`thread`. The cross-layer `presentation` tests cover the 14 effects, snapshot
+start/middle/completion, native fallback, immediate completion, the touch
+barrier and fast-forward; `cross_layer` covers real app App/Page forward and
+back, Screen pause/resume, cleanup rollback and Sys Layer edge gestures. Besides
+the navigation result, gesture assertions should also check that exactly one
+Page Screen exists at stability, that the overlay/Image of an ordinary
+non-`NONE` transition is released after completion, that no snapshot is created
+during `PRESSING`, that the Page Screen does not change with `PRESSING`, that
+the Canvas stays `64x144`, that the indicator Y anchor is fixed, that the left
+and right arcs mirror each other, and that the indicator, timers, subscriptions
+and active sessions return to the baseline after cancellation or completion. A8
+buffer tests should additionally sample depth and edge alpha at the top,
+quarter, middle and bottom to verify the Q15 curve and the 1 px antialiasing; on
+a 368 px wide screen, check the 29 px capture strip and the 55 px commit
+distance, and separately check that the left X is `-64/-31/0` and the right X is
+`368/335/304` (the middle values correspond to inward=28); the left hit at
+`x=28` with no hit at `x=29`, and the right hit at `x=339` with no hit at
+`x=338`, and the commit boundary should cover inward displacements `54/55`. Also
+confirm that a slight diagonal swipe locks the horizontal direction, that an
+obvious vertical or outward movement is cancelled, and that the arrow is hidden
+before the threshold, visible after ARMED and hidden again after a hysteresis
+retraction.
 
-控制中心的导航系统命令（`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW`）在 app-core
-宿主套件中以 stub 覆盖；Sys Layer 表面与顶部捕获带由跨层套件编译真实模块覆盖，
-`sim.control_center` 提供确定性的打开/关闭与可见性查询。
+The control center navigation system command
+(`APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW`) is covered by a stub in the
+app-core host suite; the Sys Layer surface and the top capture band are compiled
+as real modules in the cross-layer suite, and `sim.control_center` provides
+deterministic open/close and visibility queries.
 
-提交前清单以根仓库 `AGENTS.md` 与 `doc/code-style.md` §8.2 为准，本节不另立门禁。
-C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
+The pre-commit checklist follows the root repository `AGENTS.md` and
+`doc/code-style.md` §8.2; this section adds no separate gate. C/C++ files run
+AStyle as described in `doc/code-style.md`. Display and lifecycle changes still
+need on-device loop verification:
 
-- App/Page 双向切换至少 100 次，无空白帧和触摸穿透；
-- 左右边缘分别执行至少 100 次提交和取消，Home、无目标、休眠和动画抢占均不误导航；
-- 拖动时 Sys Layer Canvas 仅从屏幕外水平平移，固定尺寸、轮廓、不透明度和 Y 锚点；
-  箭头仅在 ARMED 时可见，Page Screen 在释放提交前保持不动；
-- 动画平均帧率不低于 25 FPS；
-- Screen、LVGL object、timer、订阅和活动会话无增长；
-- 无 panel IO、DMA 或 fence 错误；
-- 记录内部 RAM/PSRAM 低水位及 ROM/RAM 增量，新增内部 BSS 不超过 10 KiB；
-  手势 A8 buffer 位于 PSRAM，不计入该预算。
+- App/Page bidirectional switching at least 100 times, with no blank frames and
+  no touch pass-through;
+- at least 100 commits and cancellations on the left and right edges
+  respectively, with no false navigation on Home, no-target, sleep or animation
+  preemption;
+- while dragging, the Sys Layer Canvas only translates horizontally from
+  off-screen, with fixed size, contour, opacity and Y anchor; the arrow is
+  visible only in ARMED and the Page Screen stays still until the release
+  commit;
+- average animation frame rate of at least 25 FPS;
+- no growth in Screens, LVGL objects, timers, subscriptions and active sessions;
+- no panel IO, DMA or fence errors;
+- record internal RAM/PSRAM low-water marks and ROM/RAM deltas; newly added
+  internal BSS must not exceed 10 KiB, and the gesture A8 buffer lives in PSRAM
+  and does not count toward that budget.
 
-## 15. 明确边界
+## 15. Explicit Boundaries
 
-0.6.0 不包含：
+0.6.0 does not include:
 
-- 动态 App、provider 插件 ABI、运行时 Page 挂载、裸 handler 创建或脚本应用；
-- Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后
-  才按普通 Page/App 返回动画决定是否创建全分辨率快照；
-- 静态 indicator 图片、LVGL Vector 或 ThorVG；弧形只由固定 A8 Canvas 程序化生成；
-- popup/overlay manager；系统任务切换器是 App Manager 自有的 Sys Layer 界面，
-  不属于业务 overlay 框架，业务 App 不得创建或复用该表面；
-- 多个 app-manager 实例；
-- 对 ESP-IDF、LVGL 或 `managed_components/` 的本地修改。
+- dynamic Apps, provider plugin ABI, runtime Page mounting, bare handler
+  creation or scripted apps;
+- real-time finger-following Page Screen back or custom ZOOM; edge dragging only
+  updates the Sys Layer indicator, and only after the release commit does the
+  ordinary Page/App back animation decide whether to create a full-resolution
+  snapshot;
+- static indicator images, LVGL Vector or ThorVG; the arc is generated
+  programmatically only by the fixed A8 Canvas;
+- a popup/overlay manager; the system task switcher is an App Manager-owned Sys
+  Layer interface that is not part of a business overlay framework, and business
+  apps must not create or reuse that surface;
+- multiple app-manager instances;
+- local modifications to ESP-IDF, LVGL or `managed_components/`.
 
-## 16. 推荐阅读顺序
+## 16. Recommended Reading Order
 
 1. `app_core/include/app_manager_types.h`
 2. `app_core/include/app_manager.h`
@@ -969,4 +1229,4 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 ## 17. License
 
-本模块采用 [MIT License](LICENSE)。
+This module is released under the [MIT License](LICENSE).
