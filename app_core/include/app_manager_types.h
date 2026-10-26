@@ -372,7 +372,8 @@ typedef enum
  * @brief Non-blocking bridge used by the system control-center surface.
  *
  * All getters run on the LVGL worker and must be cheap and thread-safe; all
- * setters are non-blocking requests. A NULL function hides its tile.
+ * setters are non-blocking requests. A NULL function hides the tile or row it
+ * would serve; the volume row needs both get_volume and set_volume.
  */
 typedef struct app_manager_control_center_ops
 {
@@ -389,6 +390,15 @@ typedef struct app_manager_control_center_ops
     bool (*get_bluetooth_transitioning)(void);
     /** Return borrowed "HH:MM" and date strings, or an error when unset. */
     esp_err_t (*get_clock)(const char **time_text, const char **date_text);
+    /** Read the speaker volume in percent, or an error when unavailable. */
+    esp_err_t (*get_volume)(uint8_t *percent);
+    /** Request a speaker volume in percent; 0 through 100. May be throttled
+     *  while a drag is in progress, so it must not persist on its own. */
+    esp_err_t (*set_volume)(uint8_t percent);
+    /** Apply a speaker volume in percent and persist it for the next boot.
+     *  Called once when a drag settles; NULL falls back to set_volume at
+     *  release time without persisting. */
+    esp_err_t (*set_volume_persisted)(uint8_t percent);
 } app_manager_control_center_ops_t;
 
 /* ── UI dispatcher 函数指针类型（mailbox 满时返回 ESP_ERR_NO_MEM） ── */

@@ -31,6 +31,7 @@
 #define CC_IMAGE_WIFI        0x5788U
 #define CC_IMAGE_BLUETOOTH   0x5787U
 #define CC_IMAGE_BRIGHTNESS  0x578AU
+#define CC_IMAGE_VOLUME      0x5785U
 #define CC_IMAGE_POWER       0x578BU
 #define CC_IMAGE_STANDBY     0x578CU
 
@@ -46,10 +47,30 @@
 #define CC_BAND_ACTION_RESERVE_PX 58
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
-#define CC_CARD_HEIGHT       312
+/* Card geometry. The card is sized from its rows at build time (see
+ * _cc_build()): 70 px header block (the clock and date are aligned inside it),
+ * then a 60 px slider row per slider, the 80 px tile row and the 56 px action
+ * row, separated by 12 px gaps; the gap after the last row is the bottom
+ * padding. Rows without an ops bridge are not built and the card shrinks with
+ * them. */
+#define CC_HEADER_HEIGHT     70
+#define CC_ROW_GAP           12
+#define CC_SLIDER_ROW_HEIGHT 60
 #define CC_TILE_HEIGHT       80
+#define CC_ACTION_HEIGHT     56
 #define CC_WELL_SIZE         40
+/* Widest reading is "100%": measured ink is 49 px at the SMALL role, so 52 px
+ * keeps the track length stable without clipping. */
+#define CC_VALUE_LABEL_W     52
 #define CC_POLL_MS           1000U
+/* Applying the speaker level is a synchronous codec control transfer (one I2C
+ * register write, ~0.3 ms at the 100 kHz bus the codec opens with) taken under
+ * the audio service lock, so a drag that crosses 100 steps would otherwise hold
+ * that lock 100 times inside render callbacks. 60 ms keeps the audible change
+ * continuous while capping the rate; the label still updates on every step.
+ * Nothing in this path persists: storage is written once per drag through
+ * set_volume_persisted, matching how brightness keeps its NVS write on release. */
+#define CC_VOLUME_APPLY_MS   60U
 #define CC_SCRIM_OPA         225
 
 /* The surface transition follows the pull direction: the card slides down from
@@ -87,6 +108,22 @@ typedef struct app_manager_control_center
     lv_obj_t *clock_label;
     lv_obj_t *date_label;
     lv_obj_t *brightness_slider;
+    lv_obj_t *volume_slider;
+    lv_obj_t *volume_label;
+    bool volume_dragging;
+    uint8_t volume_applied;
+    /* Tick of the last accepted set_volume during a drag; CC_VOLUME_APPLY_MS
+     * gates the next one. */
+    uint32_t volume_apply_at;
+    /* Last level handed to the service during this drag and whether it was
+     * refused, so a release does not resend a level that just failed. */
+    uint8_t volume_attempted;
+    bool volume_attempt_failed;
+    /* Level already written to storage, so a release that lands on the same
+     * value does not write the codec and the key a second time. */
+    uint8_t volume_persisted;
+    bool volume_persisted_valid;
+    int32_t card_height;
     lv_obj_t *wifi_button;
     lv_obj_t *wifi_icon;
     lv_obj_t *wifi_label;
@@ -193,7 +230,7 @@ static void _cc_radio_paint(lv_obj_t *icon, app_manager_radio_state_t state)
 
 static int32_t _cc_panel_offscreen_y(void)
 {
-    return -(CC_CARD_HEIGHT + CC_CARD_MARGIN);
+    return -(s_cc.card_height + CC_CARD_MARGIN);
 }
 
 /* One progress value drives both halves of the transition: the card travels
@@ -271,6 +308,7 @@ static void _cc_anim_park(void)
 static void _cc_close_now(void)
 {
     _cc_anim_park();
+    s_cc.volume_dragging = false;
     if (s_cc.root != NULL)
     {
         lv_obj_set_hidden(s_cc.root, true);
@@ -296,6 +334,7 @@ static void _cc_close_completed(lv_anim_t *animation)
     }
     _cc_anim_apply(CC_ANIM_PROGRESS_MAX);
     _cc_set_state(CC_STATE_HIDDEN);
+    s_cc.volume_dragging = false;
     if (s_cc.poll_timer != NULL)
     {
         lv_timer_pause(s_cc.poll_timer);
@@ -391,6 +430,117 @@ static void _cc_brightness_event(lv_event_t *event)
     }
 }
 
+static void _cc_volume_text(uint8_t percent)
+{
+    if (s_cc.volume_label != NULL)
+    {
+        lv_label_set_text_fmt(s_cc.volume_label, "%u%%", (unsigned)percent);
+    }
+}
+
+/* Send the level to the service. The label already shows it, so a rejected
+ * request keeps the knob where the user put it and leaves volume_applied stale;
+ * the next poll then re-syncs the row from the service instead of the label
+ * claiming a level that never applied. */
+static esp_err_t _cc_volume_apply(uint8_t percent)
+{
+    if (s_cc.ops.set_volume == NULL || percent == s_cc.volume_applied)
+    {
+        return ESP_OK;
+    }
+    const esp_err_t result = s_cc.ops.set_volume(percent);
+    s_cc.volume_attempted = percent;
+    s_cc.volume_attempt_failed = result != ESP_OK;
+    if (result == ESP_OK)
+    {
+        s_cc.volume_applied = percent;
+    }
+    /* Stamp every attempt, refused or not, so a failing service is not retried
+     * on every knob step. volume_applied stays stale on failure, which is what
+     * lets the poll recover the row. */
+    s_cc.volume_apply_at = lv_tick_get();
+    return result;
+}
+
+/* The speaker level is applied as the knob moves: unlike brightness there is
+ * no preview API, and the audible change is the only feedback beyond the value
+ * label. The value label therefore tracks every step, while the codec write is
+ * rate-limited to CC_VOLUME_APPLY_MS and always forced on release. */
+static void _cc_volume_event(lv_event_t *event)
+{
+    if (s_cc.volume_slider == NULL || s_cc.state != CC_STATE_VISIBLE)
+    {
+        return;
+    }
+    const lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
+    {
+        /* The knob may already be gone when the surface closes mid-drag. */
+        if (s_cc.volume_dragging)
+        {
+            s_cc.volume_dragging = false;
+            /* Throttling may have skipped the final step, so the level the
+             * finger stopped on is forced through here — unless the service
+             * just refused that same level, in which case the poll owns the
+             * recovery and a resend would mask the failure. */
+            const uint8_t settled =
+                (uint8_t)(int32_t)lv_slider_get_value(s_cc.volume_slider);
+            const bool refused_settled = s_cc.volume_attempt_failed &&
+                                         settled == s_cc.volume_attempted;
+            if (refused_settled)
+            {
+                return;
+            }
+            /* Persistence happens once per drag, never while the knob moves:
+             * the throttled steps above must stay off the storage. The
+             * persisted setter also applies the level, so the resend below is
+             * only needed when that callback is absent — otherwise the codec
+             * would be written twice for one release. A drag that ends on the
+             * level already stored has nothing to send. */
+            if (s_cc.volume_persisted_valid &&
+                    settled == s_cc.volume_persisted)
+            {
+                return;
+            }
+            if (s_cc.ops.set_volume_persisted != NULL)
+            {
+                if (s_cc.ops.set_volume_persisted(settled) == ESP_OK)
+                {
+                    s_cc.volume_applied = settled;
+                    s_cc.volume_persisted = settled;
+                    s_cc.volume_persisted_valid = true;
+                }
+            }
+            else if (settled != s_cc.volume_applied)
+            {
+                (void)_cc_volume_apply(settled);
+            }
+        }
+        return;
+    }
+    if (code != LV_EVENT_VALUE_CHANGED ||
+            lv_obj_has_state(s_cc.volume_slider, LV_STATE_DISABLED))
+    {
+        return;
+    }
+    s_cc.volume_dragging = true;
+    const uint8_t percent =
+        (uint8_t)(int32_t)lv_slider_get_value(s_cc.volume_slider);
+    _cc_volume_text(percent);
+    if (percent == s_cc.volume_applied)
+    {
+        return;
+    }
+    if ((uint32_t)(lv_tick_get() - s_cc.volume_apply_at) <
+            CC_VOLUME_APPLY_MS)
+    {
+        return;
+    }
+    /* A new step is a new intent, so an earlier refusal no longer applies. */
+    s_cc.volume_attempt_failed = false;
+    _cc_volume_apply(percent);
+}
+
 static void _cc_wifi_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
@@ -435,6 +585,49 @@ static void _cc_bt_event(lv_event_t *event)
     }
     (void)s_cc.ops.set_bluetooth(state == APP_MANAGER_RADIO_OFF);
     _cc_refresh_values();
+}
+
+/* The speaker row mirrors the service: a rejected or externally changed level
+ * (another owner, an error path) is picked up on the next poll. A drag in
+ * progress owns the knob, so the poll must not fight it. */
+static void _cc_refresh_volume(void)
+{
+    if (s_cc.volume_slider == NULL || s_cc.ops.get_volume == NULL)
+    {
+        return;
+    }
+    if (s_cc.volume_dragging)
+    {
+        return;
+    }
+    uint8_t percent = 0U;
+    if (s_cc.ops.get_volume(&percent) != ESP_OK)
+    {
+        /* No audio path (board without a codec, service still starting):
+         * grey the control rather than let a drag pretend to work. */
+        lv_obj_add_state(s_cc.volume_slider, LV_STATE_DISABLED);
+        if (s_cc.volume_label != NULL)
+        {
+            lv_label_set_text(s_cc.volume_label, "--");
+        }
+        return;
+    }
+    lv_obj_remove_state(s_cc.volume_slider, LV_STATE_DISABLED);
+    if (percent > 100U)
+    {
+        percent = 100U;
+    }
+    s_cc.volume_applied = percent;
+    /* A refused request leaves the knob where the finger put it, so the row
+     * would otherwise show a level the codec never took. Compare against the
+     * knob, not against the cached value, or a rejection between two drags
+     * stays invisible. */
+    if (lv_slider_get_value(s_cc.volume_slider) != (int32_t)percent)
+    {
+        lv_slider_set_value(s_cc.volume_slider, (int32_t)percent,
+                            LV_ANIM_OFF);
+    }
+    _cc_volume_text(percent);
 }
 
 static void _cc_refresh_values(void)
@@ -495,6 +688,7 @@ static void _cc_refresh_values(void)
             }
         }
     }
+    _cc_refresh_volume();
 }
 
 static void _cc_poll_cb(lv_timer_t *timer)
@@ -589,16 +783,124 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     return tile;
 }
 
+/* Shared slider row: a 60 px rounded block holding the glyph, a growing
+ * slider and an optional right-aligned value label. Both the brightness and
+ * the speaker row use it so the two stay visually identical. */
+static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
+                                uint32_t image_id, const char *icon_fallback,
+                                uint32_t icon_color, int32_t minimum,
+                                int32_t maximum, int32_t value,
+                                lv_event_cb_t callback, lv_obj_t **slider_out,
+                                lv_obj_t **value_label_out)
+{
+    lv_obj_t *row = lv_obj_create(panel);
+    if (row == NULL)
+    {
+        return NULL;
+    }
+    *slider_out = NULL;
+    if (value_label_out != NULL)
+    {
+        *value_label_out = NULL;
+    }
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, width, CC_SLIDER_ROW_HEIGHT);
+    lv_obj_align(row, LV_ALIGN_TOP_LEFT, 12, y);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_set_style_pad_hor(row, 16, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(row, 30, 0);
+    lv_obj_set_scrollable(row, false);
+    lv_obj_t *icon = _cc_icon(row, image_id, 24, icon_fallback);
+    if (icon != NULL)
+    {
+        _cc_icon_color(icon, icon_color);
+    }
+
+    lv_obj_t *slider = lv_slider_create(row);
+    if (slider != NULL)
+    {
+        lv_obj_set_flex_grow(slider, 1);
+        lv_obj_set_height(slider, 20);
+        lv_slider_set_range(slider, minimum, maximum);
+        lv_slider_set_value(slider, value, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_TRACK),
+                                  LV_PART_MAIN);
+        /* The 20 px knob overhangs the track by 2 px of knob padding on each
+         * side; inset the track by the knob radius so the handle stays inside
+         * the slider box at both ends instead of reaching into the value
+         * label. */
+        lv_obj_set_style_pad_left(slider, 12, LV_PART_MAIN);
+        lv_obj_set_style_pad_right(slider, 12, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_AZURE),
+                                  LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_INK),
+                                  LV_PART_KNOB);
+        lv_obj_set_style_pad_all(slider, 2, LV_PART_KNOB);
+        lv_obj_set_style_shadow_width(slider, 0, LV_PART_KNOB);
+        lv_obj_set_ext_click_area(slider, 16);
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_RELEASED, NULL);
+        /* A finger that leaves the track mid-drag ends the gesture here; the
+         * poll may re-sync the knob only after this. */
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_PRESS_LOST, NULL);
+    }
+    *slider_out = slider;
+
+    if (value_label_out != NULL)
+    {
+        /* Fixed width built from the widest reading ("100%"), so the track
+         * never changes length while the level moves. */
+        lv_obj_t *value_label = lv_label_create(row);
+        lv_obj_set_width(value_label, CC_VALUE_LABEL_W);
+        lv_label_set_long_mode(value_label, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_style_text_color(value_label,
+                                    lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
+        lv_obj_set_style_text_font(value_label,
+                                   app_manager_get_font(APP_THEME_FONT_SMALL), 0);
+        lv_label_set_text(value_label, "--");
+        *value_label_out = value_label;
+    }
+    return row;
+}
+
 static void _cc_build(void)
 {
     const int32_t panel_w = s_cc.width - 2 * CC_CARD_MARGIN;
     const int32_t inner_w = panel_w - 24;
+    const bool has_wifi = s_cc.ops.get_wifi != NULL;
+    const bool has_bt = s_cc.ops.get_bluetooth != NULL;
+    /* Both halves of the speaker bridge are required: a write-only row could
+     * not show the level it applied, and a read-only row could not apply
+     * anything. */
+    const bool has_volume = s_cc.ops.get_volume != NULL &&
+                            s_cc.ops.set_volume != NULL;
+
+    /* Rows stack on one cursor; the trailing gap doubles as the bottom
+     * padding, so the card ends exactly with its last row. */
+    int32_t cursor = CC_HEADER_HEIGHT;
+    cursor += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
+    if (has_volume)
+    {
+        cursor += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
+    }
+    if (has_wifi || has_bt)
+    {
+        cursor += CC_TILE_HEIGHT + CC_ROW_GAP;
+    }
+    cursor += CC_ACTION_HEIGHT + CC_ROW_GAP;
+    s_cc.card_height = cursor;
 
     lv_obj_t *panel = lv_obj_create(s_cc.root);
     s_cc.panel = panel;
     lv_obj_remove_style_all(panel);
     lv_obj_set_pos(panel, CC_CARD_MARGIN, CC_CARD_MARGIN);
-    lv_obj_set_size(panel, panel_w, CC_CARD_HEIGHT);
+    lv_obj_set_size(panel, panel_w, s_cc.card_height);
     lv_obj_set_style_bg_color(panel, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(panel, 28, 0);
@@ -620,83 +922,62 @@ static void _cc_build(void)
     lv_obj_align(s_cc.date_label, LV_ALIGN_TOP_RIGHT, -20, 26);
     lv_label_set_text(s_cc.date_label, "时间未同步");
 
+    int32_t y = CC_HEADER_HEIGHT;
+
     /* Brightness row. */
-    lv_obj_t *brightness = lv_obj_create(panel);
-    lv_obj_remove_style_all(brightness);
-    lv_obj_set_size(brightness, inner_w, 60);
-    lv_obj_align(brightness, LV_ALIGN_TOP_LEFT, 12, 70);
-    lv_obj_set_flex_flow(brightness, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(brightness, LV_FLEX_ALIGN_START,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(brightness, 12, 0);
-    lv_obj_set_style_pad_hor(brightness, 16, 0);
-    lv_obj_set_style_bg_color(brightness,
-                              lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
-    lv_obj_set_style_bg_opa(brightness, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(brightness, 30, 0);
-    lv_obj_set_scrollable(brightness, false);
-    lv_obj_t *bright_icon = _cc_icon(brightness, CC_IMAGE_BRIGHTNESS, 24,
-                                     LV_SYMBOL_IMAGE);
-    if (bright_icon != NULL)
+    (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_BRIGHTNESS,
+                         LV_SYMBOL_IMAGE, APP_THEME_COLOR_AMBER, 16, 255, 128,
+                         _cc_brightness_event, &s_cc.brightness_slider, NULL);
+    y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
+
+    /* Speaker volume row. */
+    if (has_volume)
     {
-        _cc_icon_color(bright_icon, APP_THEME_COLOR_AMBER);
+        (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_VOLUME,
+                             LV_SYMBOL_VOLUME_MAX, APP_THEME_COLOR_AZURE,
+                             0, 100, 0, _cc_volume_event,
+                             &s_cc.volume_slider, &s_cc.volume_label);
+        y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
     }
-    s_cc.brightness_slider = lv_slider_create(brightness);
-    if (s_cc.brightness_slider != NULL)
+    else
     {
-        lv_obj_set_flex_grow(s_cc.brightness_slider, 1);
-        lv_obj_set_height(s_cc.brightness_slider, 20);
-        lv_slider_set_range(s_cc.brightness_slider, 16, 255);
-        lv_slider_set_value(s_cc.brightness_slider, 128, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_cc.brightness_slider,
-                                  lv_color_hex(APP_THEME_COLOR_TRACK),
-                                  LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_cc.brightness_slider,
-                                  lv_color_hex(APP_THEME_COLOR_AZURE),
-                                  LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(s_cc.brightness_slider,
-                                  lv_color_hex(APP_THEME_COLOR_INK), LV_PART_KNOB);
-        lv_obj_set_style_pad_all(s_cc.brightness_slider, 2, LV_PART_KNOB);
-        lv_obj_set_style_shadow_width(s_cc.brightness_slider, 0,
-                                      LV_PART_KNOB);
-        lv_obj_set_ext_click_area(s_cc.brightness_slider, 16);
-        lv_obj_add_event_cb(s_cc.brightness_slider, _cc_brightness_event,
-                            LV_EVENT_VALUE_CHANGED, NULL);
-        lv_obj_add_event_cb(s_cc.brightness_slider, _cc_brightness_event,
-                            LV_EVENT_RELEASED, NULL);
+        s_cc.volume_slider = NULL;
+        s_cc.volume_label = NULL;
     }
 
     /* Wi-Fi / Bluetooth tiles. */
-    lv_obj_t *tiles = lv_obj_create(panel);
-    lv_obj_remove_style_all(tiles);
-    lv_obj_set_size(tiles, inner_w, CC_TILE_HEIGHT);
-    lv_obj_align(tiles, LV_ALIGN_TOP_LEFT, 12, 142);
-    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(tiles, 12, 0);
-    lv_obj_set_scrollable(tiles, false);
+    if (has_wifi || has_bt)
+    {
+        lv_obj_t *tiles = lv_obj_create(panel);
+        lv_obj_remove_style_all(tiles);
+        lv_obj_set_size(tiles, inner_w, CC_TILE_HEIGHT);
+        lv_obj_align(tiles, LV_ALIGN_TOP_LEFT, 12, y);
+        y += CC_TILE_HEIGHT + CC_ROW_GAP;
+        lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                              LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_column(tiles, 12, 0);
+        lv_obj_set_scrollable(tiles, false);
 
-    const bool has_wifi = s_cc.ops.get_wifi != NULL;
-    const bool has_bt = s_cc.ops.get_bluetooth != NULL;
-    if (has_wifi)
-    {
-        (void)_cc_tile(tiles, &s_cc.wifi_button, &s_cc.wifi_icon,
-                       &s_cc.wifi_label, CC_IMAGE_WIFI, _cc_wifi_event,
-                       "Wi-Fi", LV_SYMBOL_WIFI);
-    }
-    if (has_bt)
-    {
-        (void)_cc_tile(tiles, &s_cc.bt_button, &s_cc.bt_icon,
-                       &s_cc.bt_label, CC_IMAGE_BLUETOOTH, _cc_bt_event,
-                       "蓝牙", LV_SYMBOL_BLUETOOTH);
+        if (has_wifi)
+        {
+            (void)_cc_tile(tiles, &s_cc.wifi_button, &s_cc.wifi_icon,
+                           &s_cc.wifi_label, CC_IMAGE_WIFI, _cc_wifi_event,
+                           "Wi-Fi", LV_SYMBOL_WIFI);
+        }
+        if (has_bt)
+        {
+            (void)_cc_tile(tiles, &s_cc.bt_button, &s_cc.bt_icon,
+                           &s_cc.bt_label, CC_IMAGE_BLUETOOTH, _cc_bt_event,
+                           "蓝牙", LV_SYMBOL_BLUETOOTH);
+        }
     }
 
     /* Power actions. */
     lv_obj_t *actions = lv_obj_create(panel);
     lv_obj_remove_style_all(actions);
-    lv_obj_set_size(actions, inner_w, 56);
-    lv_obj_align(actions, LV_ALIGN_TOP_LEFT, 12, 234);
+    lv_obj_set_size(actions, inner_w, CC_ACTION_HEIGHT);
+    lv_obj_align(actions, LV_ALIGN_TOP_LEFT, 12, y);
     lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -716,7 +997,7 @@ static void _cc_build(void)
         {
             continue;
         }
-        lv_obj_set_height(buttons[i], 56);
+        lv_obj_set_height(buttons[i], CC_ACTION_HEIGHT);
         lv_obj_set_flex_grow(buttons[i], 1);
         lv_obj_set_style_radius(buttons[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(buttons[i],
@@ -776,6 +1057,14 @@ static void _cc_open(void)
     {
         lv_timer_resume(s_cc.poll_timer);
     }
+    s_cc.volume_dragging = false;
+    s_cc.volume_attempt_failed = false;
+    /* The stored level is unknown after a fresh open, so the first settle must
+     * always be written rather than assumed. */
+    s_cc.volume_persisted_valid = false;
+    /* A stale window from the previous session must not swallow the first
+     * step of the first drag after reopening. */
+    s_cc.volume_apply_at = lv_tick_get() - CC_VOLUME_APPLY_MS;
     _cc_refresh_values();
     _cc_anim_stop();
     _cc_anim_apply(0);

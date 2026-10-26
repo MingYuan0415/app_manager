@@ -543,26 +543,47 @@ capture band stays disabled), and the objects are hidden and the capture band
 restored only after the animation ends, so a retracting swipe cannot pull it up
 again. Screen off, standby, navigation begin, policy disable, `hide()` and
 deinit use an instant hide and cancel the running animation without blocking the
-transition. During the transition the tiles, the brightness slider and the
+transition. During the transition the tiles, both sliders and the
 screen-off/standby buttons accept no input.
 
 Surface content: time/date, a brightness slider (a temporary brightness preview
-while dragging, persisted on release), Wi-Fi and Bluetooth tiles (the circular
+while dragging, persisted on release), a speaker volume slider in 0–100 %
+(applied as the knob moves, with the level rendered right-aligned in the row
+and re-read from the service on every 1 s poll, which also greys the row while
+the bridge reports no audio path), Wi-Fi and Bluetooth tiles (the circular
 icon base and the icon share a tri-state color — off `INK_SOFT` / enabled but
 not connected `AMBER` / connected `MINT` — and the base uses the corresponding
-tint), screen off now and standby now. The surface is built lazily:
+tint), screen off now and standby now. The value label tracks every knob step
+while the codec write is rate-limited to `CC_VOLUME_APPLY_MS` (60 ms) and always
+forced on release, so a drag costs one serialized codec transfer per window
+instead of one per pixel; a level the service refuses is not retried on release,
+and the 1 s poll restores the row from the service. Nothing in that throttled
+path persists: storage is written once per drag through
+`set_volume_persisted`, matching how brightness keeps its NVS write on release.
+A settle that lands on the already-stored level sends nothing, and a refused
+level is never stored. The surface is built lazily:
 `app_manager_get_image()` is usable only after `app_manager_init()` reaches
 READY, so the icon nodes are created on the first `show`; the first open has to
 build the objects and decode the icons and its entrance animation may start a
-frame or two late, while later opens have no such cost.
+frame or two late, while later opens have no such cost. The card height is
+derived from the rows it actually builds, so a missing bridge shortens it
+instead of leaving a gap.
 
-Service bridge: app_manager does not depend on connectivity/device_link/time;
-the control center reads and requests through the injected
-`app_manager_control_center_ops_t` (an optional `app_manager_config_t` field);
-`main/app_runtime_control.c` adapts it from `connectivity_manager`,
-`device_link_service` and `time_service`. A null ops hides the corresponding
-tile. The ops getters run on the LVGL worker and are non-blocking; the setters
-only enqueue (0 wait for Bluetooth).
+Service bridge: app_manager does not depend on
+connectivity/device_link/time/audio; the control center reads and requests
+through the injected `app_manager_control_center_ops_t` (an optional
+`app_manager_config_t` field); `main/app_runtime_control.c` adapts it from
+`connectivity_manager`, `device_link_service`, `time_service` and
+`audio_service`. A null callback hides the corresponding tile or row; the volume
+row additionally requires both `get_volume` and `set_volume`, while a missing
+`set_volume_persisted` only drops persistence. The ops getters run on the LVGL
+worker and are non-blocking; the setters only enqueue (0 wait for Bluetooth) or
+perform the short codec control transfer the audio service serializes.
+Persistence is therefore not app_manager's concern: the `volume` key is owned by
+`audio_service`, which restores it after `audio_service_init()` and clears it on
+a factory reset. `main/app_runtime_control.c` only forwards the settle, so the
+surface keeps the distinction between a drag preview and a committed level
+without knowing where the level is stored.
 
 Gating and ownership follow the task switcher: pulling down is allowed only when
 the Screen is stable, with no transition, not suspended and with the task
@@ -1061,7 +1082,7 @@ The fields of `app_manager_config_t` directly relevant to 0.6.0 navigation:
 | `app_back_transition` | Default App back animation |
 | `page_forward_transition` | Default Page forward animation |
 | `page_back_transition` | Default Page back animation |
-| `control_center_ops` | Optional; control center service bridge, NULL hides the network/time tiles |
+| `control_center_ops` | Optional; control center service bridge, a NULL callback hides the tile or row it would serve |
 | `font_sizes` / `font_count` | When non-NULL, they must be `APP_THEME_FONT_MAX` (7) entries in role order; the same applies to `font_count` |
 | `max_resident_apps` | Residence limit; 0 uses the physical limit 8, and values above 8 are rejected |
 | `control_task_priority` | app-control worker priority, must be in `[1, configMAX_PRIORITIES)` |

@@ -1116,6 +1116,12 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->control_center_ops.get_bluetooth_transitioning &&
            config->control_center_ops.get_clock ==
            active->control_center_ops.get_clock &&
+           config->control_center_ops.get_volume ==
+           active->control_center_ops.get_volume &&
+           config->control_center_ops.set_volume ==
+           active->control_center_ops.set_volume &&
+           config->control_center_ops.set_volume_persisted ==
+           active->control_center_ops.set_volume_persisted &&
            config->max_resident_apps == active->max_resident_apps &&
            config->resident_policy == active->resident_policy &&
            _app_adapter_transition_equal(&config->app_forward_transition,
