@@ -438,7 +438,8 @@ scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入�
 写入按 `CC_VOLUME_APPLY_MS`（60 ms）限速并在松手时强制补发，因此一次拖动每个限速窗口
 只产生一次串行化的 codec 传输，而不是每个像素一次；服务拒绝的电平不会在松手时重试，
 由每秒一次的轮询把该行恢复成服务报告的值。上述限速路径完全不落盘：存储只在松手时经
-`set_volume_persisted` 写一次，与亮度把 NVS 写集中在松手一致。落点与已存值相同时不发任何
+`set_volume_persisted` 提交一次，它同步应用电平并把一字节 NVS 写排入 chore worker，
+LVGL worker 因此从不执行 flash 写；亮度同样把 NVS 写集中在松手。落点与已存值相同时不发任何
 请求，被拒绝的电平也不会写入。表面为懒构建：`app_manager_get_image()` 只在
 `app_manager_init()` 到达 READY 后
 可用，因此在首次 `show` 时才创建图标节点；首次打开要构建对象并解码图标，入场动画可能晚
@@ -451,7 +452,8 @@ scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入�
 `time_service`、`audio_service` 适配。可空回调会隐藏其对应的磁贴或行；音量行还要求
 `get_volume` 与 `set_volume` 同时存在，缺少 `set_volume_persisted` 只是放弃持久化。ops 的 getter 在 LVGL worker 上运行且
 非阻塞；setter 只入队（Bluetooth 使用 0 等待），或执行由 audio_service 串行化的短
-codec 控制传输。持久化因此不归 app_manager：`volume` 这个 key 由 `audio_service` 持有，
+codec 控制传输；落定的一字节 flash 提交由 `audio_service` 排入 chore worker，LVGL
+worker 从不执行它。持久化因此不归 app_manager：`volume` 这个 key 由 `audio_service` 持有，
 它在 `audio_service_init()` 之后恢复、由工厂复位擦除；`main/app_runtime_control.c`
 只转调落定请求，因此表面仍然区分「拖动预览」与「已提交电平」，却不必知道电平存在何处。
 

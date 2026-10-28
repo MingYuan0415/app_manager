@@ -396,8 +396,9 @@ typedef struct app_manager_control_center_ops
      *  while a drag is in progress, so it must not persist on its own. */
     esp_err_t (*set_volume)(uint8_t percent);
     /** Apply a speaker volume in percent and persist it for the next boot.
-     *  Called once when a drag settles; NULL falls back to set_volume at
-     *  release time without persisting. */
+     *  Called once when a drag settles; the service applies it synchronously
+     *  and queues the store. NULL falls back to set_volume at release time
+     *  without persisting. */
     esp_err_t (*set_volume_persisted)(uint8_t percent);
 } app_manager_control_center_ops_t;
 

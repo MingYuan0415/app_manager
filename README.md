@@ -558,8 +558,10 @@ while the codec write is rate-limited to `CC_VOLUME_APPLY_MS` (60 ms) and always
 forced on release, so a drag costs one serialized codec transfer per window
 instead of one per pixel; a level the service refuses is not retried on release,
 and the 1 s poll restores the row from the service. Nothing in that throttled
-path persists: storage is written once per drag through
-`set_volume_persisted`, matching how brightness keeps its NVS write on release.
+path persists: the settle commits once per drag through
+`set_volume_persisted`, which applies the level and queues the one-byte NVS
+write on the chore worker, so the LVGL worker never executes a flash write;
+brightness likewise keeps its NVS write on release.
 A settle that lands on the already-stored level sends nothing, and a refused
 level is never stored. The surface is built lazily:
 `app_manager_get_image()` is usable only after `app_manager_init()` reaches
@@ -578,12 +580,14 @@ through the injected `app_manager_control_center_ops_t` (an optional
 row additionally requires both `get_volume` and `set_volume`, while a missing
 `set_volume_persisted` only drops persistence. The ops getters run on the LVGL
 worker and are non-blocking; the setters only enqueue (0 wait for Bluetooth) or
-perform the short codec control transfer the audio service serializes.
-Persistence is therefore not app_manager's concern: the `volume` key is owned by
-`audio_service`, which restores it after `audio_service_init()` and clears it on
-a factory reset. `main/app_runtime_control.c` only forwards the settle, so the
-surface keeps the distinction between a drag preview and a committed level
-without knowing where the level is stored.
+perform the short codec control transfer the audio service serializes. The
+settle's one-byte flash commit is queued by `audio_service` to the chore worker,
+so the LVGL worker never executes it. Persistence is therefore not
+app_manager's concern: the `volume` key is owned by `audio_service`, which
+restores it after `audio_service_init()` and clears it on a factory reset.
+`main/app_runtime_control.c` only forwards the settle, so the surface keeps the
+distinction between a drag preview and a committed level without knowing where
+the level is stored.
 
 Gating and ownership follow the task switcher: pulling down is allowed only when
 the Screen is stable, with no transition, not suspended and with the task
