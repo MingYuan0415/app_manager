@@ -89,6 +89,15 @@ typedef enum
     CC_STATE_LEAVING
 } cc_state_t;
 
+/* A tile glyph opens its Settings page on a long press. LVGL still reports
+ * CLICKED on the release that ends a long press, so long_press_fired makes the
+ * toggle handler ignore that release; PRESSED clears it for the next touch. */
+typedef struct cc_tile_gesture
+{
+    const char *settings_page;
+    bool long_press_fired;
+} cc_tile_gesture_t;
+
 typedef struct app_manager_control_center
 {
     bool initialized;
@@ -127,9 +136,11 @@ typedef struct app_manager_control_center
     lv_obj_t *wifi_button;
     lv_obj_t *wifi_icon;
     lv_obj_t *wifi_label;
+    cc_tile_gesture_t wifi_gesture;
     lv_obj_t *bt_button;
     lv_obj_t *bt_icon;
     lv_obj_t *bt_label;
+    cc_tile_gesture_t bt_gesture;
     lv_timer_t *poll_timer;
 } app_manager_control_center_t;
 
@@ -172,6 +183,10 @@ static lv_obj_t *_cc_icon(lv_obj_t *parent, uint32_t image_id, int32_t size,
         if (image != NULL)
         {
             lv_obj_set_size(image, size, size);
+            /* An lv_image is clickable by default: left as the press target it
+             * would swallow the tile/row gesture and long-press would never
+             * reach the owner. */
+            lv_obj_set_clickable(image, false);
             lv_image_set_src(image, dsc);
             return image;
         }
@@ -541,11 +556,73 @@ static void _cc_volume_event(lv_event_t *event)
     _cc_volume_apply(percent);
 }
 
+/* Long-press destination for one control. The request uses the ordinary
+ * navigation gateway, whose execution hides the control center before the
+ * Settings page is prepared, so the surface is never left under it. */
+static void _cc_open_settings(const char *page_id)
+{
+    if (page_id == NULL)
+    {
+        return;
+    }
+    const app_manager_nav_request_t request =
+    {
+        .operation = APP_MANAGER_NAV_OP_OPEN_PAGE,
+        .app_id = APP_MANAGER_ID_SETTINGS,
+        .page_id = page_id,
+        .transition =
+        {
+            .effect = APP_MANAGER_TRANSITION_DEFAULT,
+        },
+    };
+    const esp_err_t result = app_manager_navigate_async(&request, NULL, NULL);
+    if (result != ESP_OK)
+    {
+        LOG_W("settings page admission failed: %s",
+              esp_err_to_name(result));
+    }
+}
+
+static void _cc_tile_pressed(lv_event_t *event)
+{
+    cc_tile_gesture_t *gesture = lv_event_get_user_data(event);
+    if (gesture != NULL)
+    {
+        gesture->long_press_fired = false;
+    }
+}
+
+static void _cc_tile_long_press(lv_event_t *event)
+{
+    cc_tile_gesture_t *gesture = lv_event_get_user_data(event);
+    if (s_cc.state != CC_STATE_VISIBLE || gesture == NULL)
+    {
+        return;
+    }
+    gesture->long_press_fired = true;
+    _cc_open_settings(gesture->settings_page);
+}
+
+static void _cc_row_long_press(lv_event_t *event)
+{
+    if (s_cc.state != CC_STATE_VISIBLE)
+    {
+        return;
+    }
+    _cc_open_settings(lv_event_get_user_data(event));
+}
+
 static void _cc_wifi_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
             s_cc.state != CC_STATE_VISIBLE)
     {
+        return;
+    }
+    cc_tile_gesture_t *gesture = lv_event_get_user_data(event);
+    if (gesture != NULL && gesture->long_press_fired)
+    {
+        gesture->long_press_fired = false;
         return;
     }
     if (s_cc.ops.get_wifi == NULL || s_cc.ops.set_wifi == NULL)
@@ -567,6 +644,12 @@ static void _cc_bt_event(lv_event_t *event)
     if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
             s_cc.state != CC_STATE_VISIBLE)
     {
+        return;
+    }
+    cc_tile_gesture_t *gesture = lv_event_get_user_data(event);
+    if (gesture != NULL && gesture->long_press_fired)
+    {
+        gesture->long_press_fired = false;
         return;
     }
     if (s_cc.ops.get_bluetooth == NULL || s_cc.ops.set_bluetooth == NULL)
@@ -703,7 +786,8 @@ static void _cc_poll_cb(lv_timer_t *timer)
 static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
                           lv_obj_t **icon_out, lv_obj_t **label_out,
                           uint32_t image_id, lv_event_cb_t callback,
-                          const char *title, const char *icon_fallback)
+                          cc_tile_gesture_t *gesture, const char *title,
+                          const char *icon_fallback)
 {
     lv_obj_t *tile = lv_button_create(parent);
     if (tile == NULL)
@@ -730,8 +814,16 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, NULL);
-    /* Click-only: a press that slides off the tile must not fire. */
+    lv_obj_add_event_cb(tile, callback, LV_EVENT_CLICKED, gesture);
+    /* Long press opens the matching Settings page. The press is click-only so
+     * sliding off the tile cancels it, and the release that ends a long press
+     * must not also toggle the radio. */
+    if (gesture != NULL && gesture->settings_page != NULL)
+    {
+        lv_obj_add_event_cb(tile, _cc_tile_pressed, LV_EVENT_PRESSED, gesture);
+        lv_obj_add_event_cb(tile, _cc_tile_long_press, LV_EVENT_LONG_PRESSED,
+                            gesture);
+    }
     lv_obj_set_press_lock(tile, false);
 
     lv_obj_t *well = lv_obj_create(tile);
@@ -788,8 +880,8 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
  * the speaker row use it so the two stay visually identical. */
 static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
                                 uint32_t image_id, const char *icon_fallback,
-                                uint32_t icon_color, int32_t minimum,
-                                int32_t maximum, int32_t value,
+                                uint32_t icon_color, const char *settings_page,
+                                int32_t minimum, int32_t maximum, int32_t value,
                                 lv_event_cb_t callback, lv_obj_t **slider_out,
                                 lv_obj_t **value_label_out)
 {
@@ -815,6 +907,15 @@ static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(row, 30, 0);
     lv_obj_set_scrollable(row, false);
+    /* The glyph and the row background are the long-press target; the slider
+     * itself keeps its own press so a drag never turns into a settings jump.
+     * Click-only, so sliding off the row cancels it. */
+    if (settings_page != NULL)
+    {
+        lv_obj_add_event_cb(row, _cc_row_long_press, LV_EVENT_LONG_PRESSED,
+                            (void *)settings_page);
+        lv_obj_set_press_lock(row, false);
+    }
     lv_obj_t *icon = _cc_icon(row, image_id, 24, icon_fallback);
     if (icon != NULL)
     {
@@ -926,8 +1027,10 @@ static void _cc_build(void)
 
     /* Brightness row. */
     (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_BRIGHTNESS,
-                         LV_SYMBOL_IMAGE, APP_THEME_COLOR_AMBER, 16, 255, 128,
-                         _cc_brightness_event, &s_cc.brightness_slider, NULL);
+                         LV_SYMBOL_IMAGE, APP_THEME_COLOR_AMBER,
+                         APP_MANAGER_ID_SETTINGS_DISPLAY,
+                         16, 255, 128, _cc_brightness_event,
+                         &s_cc.brightness_slider, NULL);
     y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
 
     /* Speaker volume row. */
@@ -935,6 +1038,7 @@ static void _cc_build(void)
     {
         (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_VOLUME,
                              LV_SYMBOL_VOLUME_MAX, APP_THEME_COLOR_AZURE,
+                             APP_MANAGER_ID_SETTINGS_SOUND,
                              0, 100, 0, _cc_volume_event,
                              &s_cc.volume_slider, &s_cc.volume_label);
         y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
@@ -961,15 +1065,18 @@ static void _cc_build(void)
 
         if (has_wifi)
         {
+            s_cc.wifi_gesture.settings_page = APP_MANAGER_ID_SETTINGS_WIFI;
             (void)_cc_tile(tiles, &s_cc.wifi_button, &s_cc.wifi_icon,
                            &s_cc.wifi_label, CC_IMAGE_WIFI, _cc_wifi_event,
-                           "Wi-Fi", LV_SYMBOL_WIFI);
+                           &s_cc.wifi_gesture, "Wi-Fi", LV_SYMBOL_WIFI);
         }
         if (has_bt)
         {
+            s_cc.bt_gesture.settings_page =
+                APP_MANAGER_ID_SETTINGS_BLUETOOTH;
             (void)_cc_tile(tiles, &s_cc.bt_button, &s_cc.bt_icon,
                            &s_cc.bt_label, CC_IMAGE_BLUETOOTH, _cc_bt_event,
-                           "蓝牙", LV_SYMBOL_BLUETOOTH);
+                           &s_cc.bt_gesture, "蓝牙", LV_SYMBOL_BLUETOOTH);
         }
     }
 

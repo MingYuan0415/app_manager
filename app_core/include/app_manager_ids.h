@@ -14,6 +14,14 @@
 #define APP_MANAGER_ID_MENU     "menu"
 /** @brief Stable identifier of the settings application. */
 #define APP_MANAGER_ID_SETTINGS "settings"
+/** @brief Page ID of the settings Wi-Fi page. */
+#define APP_MANAGER_ID_SETTINGS_WIFI "wifi"
+/** @brief Page ID of the settings Bluetooth page. */
+#define APP_MANAGER_ID_SETTINGS_BLUETOOTH "bluetooth"
+/** @brief Page ID of the settings display and power page. */
+#define APP_MANAGER_ID_SETTINGS_DISPLAY "display"
+/** @brief Page ID of the settings sound page. */
+#define APP_MANAGER_ID_SETTINGS_SOUND "sound"
 /** @brief Stable identifier of the setup application. */
 #define APP_MANAGER_ID_SETUP    "setup"
 /** @brief Stable identifier of the weather application. */

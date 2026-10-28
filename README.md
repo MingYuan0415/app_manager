@@ -569,7 +569,14 @@ READY, so the icon nodes are created on the first `show`; the first open has to
 build the objects and decode the icons and its entrance animation may start a
 frame or two late, while later opens have no such cost. The card height is
 derived from the rows it actually builds, so a missing bridge shortens it
-instead of leaving a gap.
+instead of leaving a gap. Long-pressing a control opens its Settings page: the
+brightness row opens "显示与电源" (display & power), the speaker row "声音"
+(sound), the Wi-Fi tile Wi-Fi and the Bluetooth tile "蓝牙" (Bluetooth). The
+jump is an `APP_MANAGER_NAV_OP_OPEN_PAGE` request through the ordinary
+navigation gateway, so the surface closes before the page is prepared. LVGL
+still reports `CLICKED` on the release that ends a long press, and the tile
+state suppresses that one release so the radio is not toggled as well; a press
+that slides off the control cancels both gestures.
 
 Service bridge: app_manager does not depend on
 connectivity/device_link/time/audio; the control center reads and requests

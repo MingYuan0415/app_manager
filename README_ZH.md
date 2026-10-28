@@ -444,7 +444,11 @@ LVGL worker 因此从不执行 flash 写；亮度同样把 NVS 写集中在松�
 `app_manager_init()` 到达 READY 后
 可用，因此在首次 `show` 时才创建图标节点；首次打开要构建对象并解码图标，入场动画可能晚
 启动一两帧，后续打开没有这份开销。卡片高度按实际构建的行计算，缺少服务桥时随之缩短，
-不会留下空隙。
+不会留下空隙。长按任一控件会打开对应的设置页：亮度行打开「显示与电源」、音量行打开
+「声音」、Wi-Fi 磁贴打开「Wi-Fi」、蓝牙磁贴打开「蓝牙」。跳转通过普通导航网关提交
+`APP_MANAGER_NAV_OP_OPEN_PAGE`，表面在目标页面准备前关闭。LVGL 在长按结束的松手时仍会
+上报 `CLICKED`，磁贴状态会吞掉这一次松手，因此无线电不会同时被切换；手指滑出控件时两种
+手势都会取消。
 
 服务桥：app_manager 不依赖 connectivity/device_link/time/audio，控制中心经注入的
 `app_manager_control_center_ops_t`（`app_manager_config_t` 可选字段）读取与请求；
