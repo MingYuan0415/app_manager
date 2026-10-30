@@ -42,5 +42,7 @@
 #define APP_MANAGER_ID_DIAGNOSTICS "diagnostics"
 /** @brief Stable identifier of the flybirds game application. */
 #define APP_MANAGER_ID_FLYBIRDS "flybirds"
+/** @brief Stable identifier of the QQ Music application. */
+#define APP_MANAGER_ID_MUSIC "music"
 
 #endif /* __APP_MANAGER_IDS_H__ */
