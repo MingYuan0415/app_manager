@@ -845,6 +845,7 @@ static void _app_adapter_cleanup_theme(void)
 {
     if (s_theme_ready)
     {
+        app_theme_lvgl_detach();
         app_theme_deinit();
         s_theme_ready = false;
     }
@@ -1441,6 +1442,11 @@ esp_err_t app_manager_init(const struct app_manager_config *config)
         goto fail;
     }
     result = _app_adapter_initialize_resources(config);
+    if (result != ESP_OK)
+    {
+        goto fail;
+    }
+    result = app_theme_lvgl_attach(s_display);
     if (result != ESP_OK)
     {
         goto fail;

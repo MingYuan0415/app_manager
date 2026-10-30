@@ -65,6 +65,8 @@ typedef enum
     MOCK_FONT_INIT,
     MOCK_FONT_GET,
     MOCK_THEME_SET_FONT,
+    MOCK_THEME_LVGL_ATTACH,
+    MOCK_THEME_LVGL_DETACH,
     MOCK_ADAPTER_START,
     MOCK_MAILBOX_INIT,
     MOCK_REGISTRY_VALIDATE,
@@ -97,6 +99,7 @@ typedef enum
 typedef struct live_resources
 {
     int theme;
+    int theme_lvgl;
     int adapter;
     int display;
     int touch;
@@ -503,6 +506,29 @@ esp_err_t app_theme_set_font(app_theme_font_id_t id, const lv_font_t *font)
         s_contract_error = true;
     }
     return _mock_should_fail(MOCK_THEME_SET_FONT) ? s_failure.result : ESP_OK;
+}
+
+esp_err_t app_theme_lvgl_attach(lv_display_t *display)
+{
+    _mock_observe_initializing_or_deinitializing();
+    if (display != &s_display_handle || s_live.display == 0 ||
+            s_live.theme == 0 || s_live.theme_lvgl != 0)
+    {
+        s_contract_error = true;
+    }
+    if (_mock_should_fail(MOCK_THEME_LVGL_ATTACH))
+    {
+        return s_failure.result;
+    }
+    s_live.theme_lvgl = 1;
+    return ESP_OK;
+}
+
+void app_theme_lvgl_detach(void)
+{
+    _mock_observe_initializing_or_deinitializing();
+    s_calls[MOCK_THEME_LVGL_DETACH]++;
+    s_live.theme_lvgl = 0;
 }
 
 esp_err_t esp_lv_adapter_init(const esp_lv_adapter_config_t *config)
@@ -1063,6 +1089,10 @@ esp_err_t esp_lv_adapter_ft_font_deinit(
 esp_err_t esp_lv_adapter_start(void)
 {
     _mock_observe_initializing_or_deinitializing();
+    if (s_live.theme_lvgl == 0)
+    {
+        s_contract_error = true;
+    }
     if (_mock_should_fail(MOCK_ADAPTER_START))
     {
         return s_failure.result;
@@ -1622,14 +1652,18 @@ static void _init_then_deinit_successfully(void)
 {
     app_manager_config_t config = _make_config();
     unsigned font_init_calls = s_calls[MOCK_FONT_INIT];
+    unsigned theme_attach_calls = s_calls[MOCK_THEME_LVGL_ATTACH];
+    unsigned theme_detach_calls = s_calls[MOCK_THEME_LVGL_DETACH];
     CHECK(app_manager_init(&config) == ESP_OK);
     CHECK(app_manager_is_initialized());
     CHECK(s_live.fonts == APP_THEME_FONT_MAX);
     CHECK(s_calls[MOCK_FONT_INIT] - font_init_calls == APP_THEME_FONT_MAX);
+    CHECK(s_calls[MOCK_THEME_LVGL_ATTACH] == theme_attach_calls + 1U);
     CHECK(!s_order_error);
     CHECK(!s_contract_error);
     CHECK(!s_state_observation_error);
     CHECK(app_manager_deinit() == ESP_OK);
+    CHECK(s_calls[MOCK_THEME_LVGL_DETACH] == theme_detach_calls + 1U);
     _check_clean_state();
 }
 
@@ -1967,6 +2001,7 @@ static void _test_each_init_failure_rolls_back(void)
         {MOCK_FONT_INIT, 4, "font init"},
         {MOCK_FONT_GET, 4, "font handle"},
         {MOCK_THEME_SET_FONT, 4, "theme font"},
+        {MOCK_THEME_LVGL_ATTACH, 1, "theme lvgl attach"},
         {MOCK_ADAPTER_START, 1, "adapter start"},
         {MOCK_MAILBOX_INIT, 1, "mailbox"},
         {MOCK_REGISTRY_VALIDATE, 1, "registry"},

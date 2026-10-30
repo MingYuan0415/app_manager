@@ -49,6 +49,35 @@ esp_err_t app_theme_set_font(app_theme_font_id_t id, const lv_font_t *font);
  */
 const lv_font_t *app_theme_get_font(app_theme_font_id_t id);
 
+/**
+ * @brief Attach the project LVGL theme to a display.
+ *
+ * The theme is a widget-mask variant of the pinned LVGL 9.6 default theme.
+ * It keeps the default-theme appearance for widgets used by MicroTech while
+ * omitting references to widgets the application does not use, allowing
+ * --gc-sections to drop their code.
+ *
+ * The theme owns one display at a time. Calling this function for a second
+ * display while the first display is still attached returns
+ * ESP_ERR_INVALID_STATE.
+ *
+ * @param display display that receives the theme; it must remain alive until
+ *                app_theme_lvgl_detach().
+ * @return ESP_OK on success; ESP_ERR_INVALID_ARG for NULL display;
+ *         ESP_ERR_INVALID_STATE when a different display is already attached;
+ *         ESP_ERR_NO_MEM when LVGL cannot create the theme.
+ */
+esp_err_t app_theme_lvgl_attach(lv_display_t *display);
+
+/**
+ * @brief Detach and release the project LVGL theme.
+ *
+ * Safe to call when no theme is attached. The caller must detach before
+ * app_theme_deinit() and while the display passed to
+ * app_theme_lvgl_attach() is still alive.
+ */
+void app_theme_lvgl_detach(void);
+
 #ifdef __cplusplus
 }
 #endif
