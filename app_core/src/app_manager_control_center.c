@@ -37,14 +37,14 @@
 
 /* The band is invisible: its height *is* the grab affordance, and a press must
  * start inside it. 20 px was about half a fingertip, so pulls beginning on the
- * bezel missed the band and scrolled the page instead. The right end stops at
- * the page action-button reserve so the band never covers a page's own
- * top-right control. */
+ * bezel missed the band and scrolled the page instead. Keep both top corners
+ * clear of the band so page back/menu controls and top-right page actions
+ * receive their full hit area. */
 #define CC_BAND_HEIGHT            40
 #define CC_BAND_EDGE_FALLBACK_PX  30
-/* Reserved for app_ui_page_set_action(): a 42 px button plus the 16 px page
- * margin. Keep in sync with layers/apps/common/src/app_ui.c. */
-#define CC_BAND_ACTION_RESERVE_PX 58
+/* A 52 px page control plus margin on either side. Keep in sync with the page
+ * header/action controls in layers/apps/common/src/app_ui.c. */
+#define CC_BAND_CONTROL_RESERVE_PX 76
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
 /* Card geometry. The card is sized from its rows at build time (see
@@ -1256,10 +1256,10 @@ static lv_obj_t *_cc_create_band(lv_obj_t *system_layer)
     }
     lv_obj_remove_style_all(band);
     const int32_t edge_width = app_manager_back_gesture_edge_width();
-    const int32_t left_inset = edge_width > 0 ?
-                               edge_width : CC_BAND_EDGE_FALLBACK_PX;
+    const int32_t left_inset = edge_width > CC_BAND_CONTROL_RESERVE_PX ?
+                               edge_width : CC_BAND_CONTROL_RESERVE_PX;
     const int32_t band_width = s_cc.width - left_inset -
-                               CC_BAND_ACTION_RESERVE_PX;
+                               CC_BAND_CONTROL_RESERVE_PX;
     if (band_width <= 0)
     {
         lv_obj_delete(band);

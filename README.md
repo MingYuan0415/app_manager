@@ -521,14 +521,12 @@ directly.
 
 The control center is a system-level interface of the app-manager
 (`app_manager_control_center.c`) and belongs to no App or Page. It creates a top
-capture band on the LVGL Sys Layer (height 40 px; horizontally inset on the left
-by the edge back width, 29 px on a 368 px wide screen, and reserving 58 px on
-the right for the page header action button, i.e. 42 px button + 16 px page
-margin). The capture band is invisible and its height is the only capture region
-— a press must land inside the band to take over the gesture, so 40 px is chosen
-to cover a finger resting on the screen border; the right end of the band stops
-left of the `app_ui_page_set_action()` button and never preempts the page's own
-widgets. A downward swipe of more than 48 px from the top of any stable page
+capture band on the LVGL Sys Layer (height 40 px; reserving 76 px at each top
+corner for page header controls and actions). The capture band is invisible and
+its height is the only capture region — a press must land inside the band to
+take over the gesture, so 40 px is chosen to cover a finger resting on the
+screen border; the corner reserves keep the band from preempting page back,
+menu, and action buttons. A downward swipe of more than 48 px from the top of any stable page
 opens it; while the surface is open the capture band is disabled, and clicking
 the scrim (outside the card), edge-back, ordinary navigation or a single click
 on HOME all close it.
