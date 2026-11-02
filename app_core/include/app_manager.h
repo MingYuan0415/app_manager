@@ -25,6 +25,15 @@ extern "C" {
  */
 esp_err_t app_manager_init(const struct app_manager_config *cfg);
 /**
+ * @brief Return the hardware identity copied during initialization.
+ *
+ * The strings are owned by the caller that supplied the configuration and
+ * remain valid for the application-manager lifetime.
+ *
+ * @return Device info, or NULL before initialization.
+ */
+const app_manager_device_info_t *app_manager_get_device_info(void);
+/**
  * @brief Stop the application manager and release every owned resource.
  * @return ESP_OK when released, otherwise a retryable cleanup error.
  */

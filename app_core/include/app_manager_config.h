@@ -35,6 +35,7 @@ typedef struct app_manager_config
     uint16_t                  resource_checksum; /**< Generated mmap checksum. */
     const app_manager_image_resource_config_t *image_resources; /**< Semantic image map. */
     size_t                    image_resource_count; /**< Semantic image map length. */
+    app_manager_device_info_t device_info;    /**< Hardware labels shown by Settings. */
     app_manager_screen_ctrl_ops_t screen_ops; /**< Required; suspend/resume run on app-control, brightness and resume_commit on the UI worker. */
     app_manager_input_ops_t       input_ops;  /**< Required typed input bridge. */
     app_manager_standby_ops_t     standby_ops; /**< Required non-blocking system-PM bridge. */

@@ -1069,6 +1069,11 @@ static bool _app_adapter_transition_equal(
            left->reserved == right->reserved;
 }
 
+const app_manager_device_info_t *app_manager_get_device_info(void)
+{
+    return s_active_config_valid ? &s_active_config.device_info : NULL;
+}
+
 static bool _app_adapter_config_equal(const app_manager_config_t *config)
 {
     const app_manager_config_t *active = &s_active_config;
@@ -1082,6 +1087,8 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            config->resource_checksum == active->resource_checksum &&
            config->image_resources == active->image_resources &&
            config->image_resource_count == active->image_resource_count &&
+           config->device_info.panel == active->device_info.panel &&
+           config->device_info.platform == active->device_info.platform &&
            config->screen_ops.suspend == active->screen_ops.suspend &&
            config->screen_ops.resume_prepare ==
            active->screen_ops.resume_prepare &&

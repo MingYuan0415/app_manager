@@ -432,6 +432,13 @@ typedef enum
 
 struct app_manager_config;
 
+/** @brief Human-readable hardware identity shown by the Settings app. */
+typedef struct app_manager_device_info
+{
+    const char *panel;    /**< Display description, for example "320 x 480 IPS". */
+    const char *platform; /**< Platform description, for example "ESP32-P4". */
+} app_manager_device_info_t;
+
 #ifdef __cplusplus
 }
 #endif
