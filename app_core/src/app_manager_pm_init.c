@@ -27,6 +27,7 @@ static void _control_release_primitives(void);
 app_manager_screen_ctrl_ops_t s_screen_ops;
 static app_manager_input_ops_t s_input_ops;
 app_manager_standby_ops_t s_standby_ops;
+static atomic_bool s_standby_supported;
 static uint32_t s_task_priority;
 QueueHandle_t s_queue;
 SemaphoreHandle_t s_call_lock;
@@ -221,7 +222,18 @@ static void _control_input_callback(app_manager_key_t key,
 
 static bool _control_config_valid(const app_manager_config_t *config)
 {
-    return config != NULL && config->screen_ops.suspend != NULL &&
+    if (config == NULL)
+    {
+        return false;
+    }
+    const bool standby_complete =
+        config->standby_ops.request_standby != NULL &&
+        config->standby_ops.cancel_standby != NULL;
+    const bool standby_absent =
+        config->standby_ops.request_standby == NULL &&
+        config->standby_ops.cancel_standby == NULL &&
+        config->standby_ops.is_standby_allowed == NULL;
+    return config->screen_ops.suspend != NULL &&
            config->screen_ops.resume_prepare != NULL &&
            config->screen_ops.resume_commit != NULL &&
            config->screen_ops.is_suspended != NULL &&
@@ -230,8 +242,7 @@ static bool _control_config_valid(const app_manager_config_t *config)
            config->screen_ops.set_brightness_temp != NULL &&
            config->input_ops.register_handler != NULL &&
            config->input_ops.unregister_handler != NULL &&
-           config->standby_ops.request_standby != NULL &&
-           config->standby_ops.cancel_standby != NULL &&
+           (config->standby_supported ? standby_complete : standby_absent) &&
            config->control_task_priority > 0U &&
            config->control_task_priority < configMAX_PRIORITIES;
 }
@@ -371,6 +382,7 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
     {
         return ESP_ERR_INVALID_STATE;
     }
+    atomic_store_explicit(&s_standby_supported, false, memory_order_release);
     if (!_control_config_valid(config))
     {
         atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
@@ -396,6 +408,8 @@ esp_err_t app_manager_control_init(const app_manager_config_t *config)
         atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
         return result;
     }
+    atomic_store_explicit(&s_standby_supported, config->standby_supported,
+                          memory_order_release);
     atomic_store(&s_lifecycle_state, CONTROL_READY);
     result = app_manager_control_apply_brightness(s_brightness, true);
     if (result != ESP_OK)
@@ -534,6 +548,7 @@ static void _control_clear_runtime(void)
     memset(&s_screen_ops, 0, sizeof(s_screen_ops));
     memset(&s_input_ops, 0, sizeof(s_input_ops));
     memset(&s_standby_ops, 0, sizeof(s_standby_ops));
+    atomic_store_explicit(&s_standby_supported, false, memory_order_release);
     s_task_priority = 0U;
     atomic_store(&s_wake_pending, false);
     atomic_store(&s_power_pending_events, 0U);
@@ -554,6 +569,11 @@ static void _control_clear_runtime(void)
     s_power_wake_click_pending = false;
     s_power_long_press_seen = false;
     atomic_store(&s_lifecycle_state, CONTROL_UNINITIALIZED);
+}
+
+bool app_manager_pm_is_standby_supported(void)
+{
+    return atomic_load_explicit(&s_standby_supported, memory_order_acquire);
 }
 
 esp_err_t app_manager_control_deinit(void)

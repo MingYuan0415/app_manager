@@ -1,12 +1,12 @@
 [English](README.md) | **简体中文**
 
-# MicroTech App Manager 0.6.0
+# MicroTech App Manager 0.7.0
 
 `layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
 导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-0.6.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+0.7.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
 使用静态 App descriptor 和 App 私有路由；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
 同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
 Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
@@ -347,7 +347,7 @@ alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本
 - 当前页面存在合法返回目标；
 - 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
 
-0.6.0 的几何参数按显示分辨率计算并限制上下界：
+0.7.0 的几何参数按显示分辨率计算并限制上下界：
 
 | 参数 | 计算规则 |
 | --- | --- |
@@ -473,10 +473,13 @@ bool      app_manager_control_center_is_visible(void);
 esp_err_t app_manager_control_center_set_enabled(bool enabled);
 bool      app_manager_control_center_is_enabled(void);
 esp_err_t app_manager_pm_request_standby(void);
+bool      app_manager_pm_is_standby_supported(void);
 ```
 
 `app_manager_pm_request_standby()` 复用 suspend 路径，屏幕熄灭后立即进入 standby，不等待
-配置的待机延时；任何用户活动或唤醒都会取消该意图。
+配置的待机延时；任何用户活动或唤醒都会取消该意图。不支持待机的产品上该接口返回
+`ESP_ERR_NOT_SUPPORTED`，调用方必须先通过 `app_manager_pm_is_standby_supported()`
+隐藏待机控件。
 
 ## 8. 统一导航 Gateway
 
@@ -843,7 +846,7 @@ STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、ob
 
 ## 13. 初始化配置
 
-`app_manager_config_t` 中与 0.6.0 导航直接相关的字段：
+`app_manager_config_t` 中与 0.7.0 导航直接相关的字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -853,15 +856,17 @@ STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、ob
 | `page_forward_transition` | Page 前进默认动画 |
 | `page_back_transition` | Page 返回默认动画 |
 | `control_center_ops` | 可选；控制中心服务桥，为 NULL 的回调隐藏其对应的磁贴或行 |
+| `standby_supported` | 仅在产品支持 CPU 待机时为 true；false 表示只提供熄屏 |
 | `font_sizes` / `font_count` | 非 NULL 时必须为 `APP_THEME_FONT_MAX`（7）项，按角色顺序；`font_count` 同理 |
 | `max_resident_apps` | 驻留上限；0 使用物理上限 8，大于 8 的值被拒绝 |
 | `control_task_priority` | app-control worker 优先级，必须在 `[1, configMAX_PRIORITIES)` |
 
-其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`、
-`standby_ops`。`screen_ops` 的 suspend/resume_prepare 在 app-control 上执行，
-set_brightness/set_brightness_temp/resume_commit 分发到 UI worker。配置结构由初始化
-路径读取，硬件操作表会复制到内部 owner。边缘返回不增加配置字段；初始化后默认启用，
-需要运行时关闭时调用公共开关 API。
+其余必需字段提供 display/touch、字体和资源盘符，以及 `screen_ops`、`input_ops`。
+`standby_ops` 为可选：`standby_supported` 为 true 时必须同时提供 request/cancel
+回调；为 false 时所有 standby 回调必须为 NULL，产品只提供熄屏。`screen_ops` 的
+suspend/resume_prepare 在 app-control 上执行，set_brightness/set_brightness_temp/
+resume_commit 分发到 UI worker。配置结构由初始化路径读取，硬件操作表会复制到内部
+owner。边缘返回不增加配置字段；初始化后默认启用，需要运行时关闭时调用公共开关 API。
 
 推荐启动顺序：
 
@@ -962,7 +967,7 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 ## 15. 明确边界
 
-0.6.0 不包含：
+0.7.0 不包含：
 
 - 动态 App、provider 插件 ABI、运行时 Page 挂载、裸 handler 创建或脚本应用；
 - Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后

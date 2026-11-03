@@ -293,6 +293,10 @@ esp_err_t app_manager_pm_request_screen_off(void)
 
 esp_err_t app_manager_pm_request_standby(void)
 {
+    if (!app_manager_pm_is_standby_supported())
+    {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     control_command_t command = {.type = CONTROL_STANDBY_NOW};
     return app_manager_control_post(command);
 }
@@ -421,6 +425,10 @@ esp_err_t app_manager_pm_set_timeout_ms_async(int32_t timeout_ms)
 
 int32_t app_manager_pm_get_standby_delay_ms(void)
 {
+    if (!app_manager_pm_is_standby_supported())
+    {
+        return -1;
+    }
     if (!app_manager_control_access_begin())
     {
         return APP_CONTROL_DEFAULT_STANDBY_MS;
@@ -438,6 +446,10 @@ esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms)
     {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!app_manager_pm_is_standby_supported())
+    {
+        return timeout_ms == -1 ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
+    }
     control_command_t command =
     {
         .type = CONTROL_SET_STANDBY_TIMEOUT,
@@ -451,6 +463,10 @@ esp_err_t app_manager_pm_set_standby_delay_ms_async(int32_t timeout_ms)
     if (timeout_ms < -1)
     {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!app_manager_pm_is_standby_supported())
+    {
+        return timeout_ms == -1 ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
     }
     control_command_t command =
     {

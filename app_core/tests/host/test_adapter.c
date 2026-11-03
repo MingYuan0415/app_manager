@@ -458,6 +458,7 @@ static app_manager_config_t _make_config(void)
             .request_standby = _standby_request,
             .cancel_standby = _standby_request,
         },
+        .standby_supported = true,
         .control_task_priority = 5U,
     };
     return config;

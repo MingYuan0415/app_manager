@@ -791,6 +791,7 @@ int main(void)
             .cancel_standby = _standby_cancel,
             .is_standby_allowed = _standby_is_allowed,
         },
+        .standby_supported = true,
         .control_task_priority = 5U,
     };
 
@@ -2009,6 +2010,47 @@ int main(void)
     assert(pthread_join(first_deinitializer, NULL) == 0);
     assert(first_deinit.result == ESP_OK);
     assert(s_input_callback == NULL);
+
+    /* A failed control initialization must not leave a stale capability bit. */
+    host_semaphore_test_reset();
+    host_semaphore_fail_create_on(1U);
+    assert(app_manager_control_init(&config) == ESP_ERR_NO_MEM);
+    assert(!app_manager_pm_is_standby_supported());
+    host_semaphore_test_reset();
+
+    app_manager_config_t invalid_standby = config;
+    memset(&invalid_standby.standby_ops, 0, sizeof(invalid_standby.standby_ops));
+    invalid_standby.standby_supported = true;
+    assert(app_manager_control_init(&invalid_standby) == ESP_ERR_INVALID_ARG);
+    assert(!app_manager_pm_is_standby_supported());
+
+    /* A board without standby must reject the capability at the API boundary
+     * while keeping the screen-off path fully functional. */
+    s_nv_standby_timeout = 1000U;
+    s_nv_standby_timeout_valid = true;
+    app_manager_config_t no_standby = config;
+    memset(&no_standby.standby_ops, 0, sizeof(no_standby.standby_ops));
+    no_standby.standby_supported = false;
+    assert(app_manager_control_init(&no_standby) == ESP_OK);
+    assert(!app_manager_pm_is_standby_supported());
+    assert(app_manager_pm_get_standby_delay_ms() == -1);
+    assert(app_manager_pm_set_standby_delay_ms(5000) ==
+           ESP_ERR_NOT_SUPPORTED);
+    assert(app_manager_pm_set_standby_delay_ms(-1) == ESP_OK);
+    assert(app_manager_pm_set_standby_delay_ms_async(5000) ==
+           ESP_ERR_NOT_SUPPORTED);
+    assert(app_manager_pm_set_standby_delay_ms_async(-1) == ESP_OK);
+    assert(app_manager_pm_request_standby() == ESP_ERR_NOT_SUPPORTED);
+    assert(app_manager_control_open_admission() == ESP_OK);
+    const int unsupported_standby_before =
+        atomic_load(&s_standby_request_count);
+    assert(app_manager_pm_request_screen_off() == ESP_OK);
+    wait_for_state(APP_MANAGER_PM_SCREEN_OFF);
+    usleep(150000);
+    assert(atomic_load(&s_standby_request_count) ==
+           unsupported_standby_before);
+    assert(app_manager_control_deinit() == ESP_OK);
+    assert(!app_manager_pm_is_standby_supported());
 
     puts("app-control production-core tests passed");
     return 0;

@@ -1,13 +1,13 @@
 **English** | [简体中文](README_ZH.md)
 
-# MicroTech App Manager 0.6.0
+# MicroTech App Manager 0.7.0
 
 `layers/app_manager` provides the application runtime on the ESP32-S3, static
 App registration, App/Page navigation, LVGL Screen transitions, display sleep,
 input routing and app-level PM. Business apps live in `layers/apps/`; the system
 assembly entry point is `main/app_runtime.c`.
 
-The core constraints of 0.6.0 are: the navigation model and all LVGL objects are
+The core constraints of 0.7.0 are: the navigation model and all LVGL objects are
 modified only by the UI worker; apps and Pages use static App descriptors and
 App-private routes; every mounted Page owns an independent Screen; all
 synchronous and asynchronous navigation goes through the same fixed-capacity
@@ -428,7 +428,7 @@ A valid gesture must satisfy all of:
 - the pointer starts on the left or right capture strip and moves into the
   screen to the commit threshold.
 
-The 0.6.0 geometry parameters are computed from the display resolution and
+The 0.7.0 geometry parameters are computed from the display resolution and
 clamped to lower and upper bounds:
 
 | Parameter | Rule |
@@ -609,11 +609,14 @@ bool      app_manager_control_center_is_visible(void);
 esp_err_t app_manager_control_center_set_enabled(bool enabled);
 bool      app_manager_control_center_is_enabled(void);
 esp_err_t app_manager_pm_request_standby(void);
+bool      app_manager_pm_is_standby_supported(void);
 ```
 
 `app_manager_pm_request_standby()` reuses the suspend path and enters standby
 immediately after the screen turns off, without waiting for the configured
-standby delay; any user activity or wake cancels that intent.
+standby delay; any user activity or wake cancels that intent. On a product
+without standby support it returns `ESP_ERR_NOT_SUPPORTED`, and callers must
+hide standby controls using `app_manager_pm_is_standby_supported()`.
 
 ## 8. Unified Navigation Gateway
 
@@ -1082,7 +1085,7 @@ observations.
 
 ## 13. Initialization Configuration
 
-The fields of `app_manager_config_t` directly relevant to 0.6.0 navigation:
+The fields of `app_manager_config_t` directly relevant to 0.7.0 navigation:
 
 | Field | Meaning |
 | --- | --- |
@@ -1092,14 +1095,17 @@ The fields of `app_manager_config_t` directly relevant to 0.6.0 navigation:
 | `page_forward_transition` | Default Page forward animation |
 | `page_back_transition` | Default Page back animation |
 | `control_center_ops` | Optional; control center service bridge, a NULL callback hides the tile or row it would serve |
+| `standby_supported` | True only when the product supports CPU standby; false exposes screen-off only |
 | `font_sizes` / `font_count` | When non-NULL, they must be `APP_THEME_FONT_MAX` (7) entries in role order; the same applies to `font_count` |
 | `max_resident_apps` | Residence limit; 0 uses the physical limit 8, and values above 8 are rejected |
 | `control_task_priority` | app-control worker priority, must be in `[1, configMAX_PRIORITIES)` |
 
 The remaining required fields provide display/touch, fonts and the resource
-drive letter, as well as `screen_ops`, `input_ops` and `standby_ops`. The
-suspend/resume_prepare of `screen_ops` run on app-control, while
-set_brightness/set_brightness_temp/resume_commit are dispatched to the UI
+drive letter, as well as `screen_ops` and `input_ops`. `standby_ops` is optional:
+when `standby_supported` is true both request and cancel callbacks are required;
+when false every standby callback must be NULL and the product exposes
+screen-off only. The suspend/resume_prepare of `screen_ops` run on app-control,
+while set_brightness/set_brightness_temp/resume_commit are dispatched to the UI
 worker. The configuration structure is read by the initialization path and the
 hardware operation table is copied into an internal owner. Edge back adds no
 configuration field; it is enabled by default after initialization, and the
@@ -1227,7 +1233,7 @@ need on-device loop verification:
 
 ## 15. Explicit Boundaries
 
-0.6.0 does not include:
+0.7.0 does not include:
 
 - dynamic Apps, provider plugin ABI, runtime Page mounting, bare handler
   creation or scripted apps;

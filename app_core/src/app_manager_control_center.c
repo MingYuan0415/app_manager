@@ -1091,8 +1091,9 @@ static void _cc_build(void)
     lv_obj_set_style_pad_column(actions, 12, 0);
     lv_obj_set_scrollable(actions, false);
 
+    const bool has_standby = app_manager_pm_is_standby_supported();
     lv_obj_t *off = lv_button_create(actions);
-    lv_obj_t *standby = lv_button_create(actions);
+    lv_obj_t *standby = has_standby ? lv_button_create(actions) : NULL;
     lv_obj_t *buttons[2] = { off, standby };
     const uint32_t ids[2] = { CC_IMAGE_POWER, CC_IMAGE_STANDBY };
     const char *titles[2] = { "熄屏", "待机" };

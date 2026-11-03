@@ -1106,6 +1106,7 @@ static bool _app_adapter_config_equal(const app_manager_config_t *config)
            active->input_ops.register_handler &&
            config->input_ops.unregister_handler ==
            active->input_ops.unregister_handler &&
+           config->standby_supported == active->standby_supported &&
            config->standby_ops.request_standby ==
            active->standby_ops.request_standby &&
            config->standby_ops.cancel_standby ==

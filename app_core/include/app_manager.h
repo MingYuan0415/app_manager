@@ -310,9 +310,20 @@ esp_err_t app_manager_pm_request_screen_off(void);
  * is off, without waiting for the configured standby delay. Any user activity
  * or wake cancels the latched intent.
  *
- * @return ESP_OK when the control queue accepts it, otherwise an ESP-IDF error.
+ * @return ESP_OK when the control queue accepts it; ESP_ERR_NOT_SUPPORTED when
+ *         the product has no standby capability; otherwise an ESP-IDF error.
  */
 esp_err_t app_manager_pm_request_standby(void);
+/**
+ * @brief Report whether this product supports CPU standby.
+ *
+ * A board that only supports screen-off returns false. Callers must not expose
+ * standby controls in that case; requesting standby returns
+ * ESP_ERR_NOT_SUPPORTED.
+ *
+ * @return true when a complete standby bridge is installed; false otherwise.
+ */
+bool      app_manager_pm_is_standby_supported(void);
 /**
  * @brief Notify application PM of task-context user activity.
  * @return ESP_OK when accepted, otherwise an ESP-IDF error.
@@ -376,13 +387,16 @@ esp_err_t app_manager_pm_set_timeout_ms(int32_t timeout_ms);
 esp_err_t app_manager_pm_set_timeout_ms_async(int32_t timeout_ms);
 /**
  * @brief Return the screen-off to standby delay in milliseconds.
- * @return Configured delay, or -1 when disabled.
+ * @return Configured delay; -1 when disabled or when the product does not
+ *         support standby.
  */
 int32_t  app_manager_pm_get_standby_delay_ms(void);
 /**
  * @brief Set and persist the screen-off to standby delay.
  * @param timeout_ms is -1 to disable or a valid delay in milliseconds.
- * @return ESP_OK when persisted, otherwise an ESP-IDF error.
+ * @return ESP_OK when persisted; on a product without standby, ESP_OK for -1
+ *         (idempotent disable) and ESP_ERR_NOT_SUPPORTED for a non-negative
+ *         delay; otherwise an ESP-IDF error.
  *         Must not run on the UI worker (returns ESP_ERR_INVALID_STATE);
  *         UI callers use the async variant.
  */
@@ -390,9 +404,11 @@ esp_err_t app_manager_pm_set_standby_delay_ms(int32_t timeout_ms);
 /**
  * @brief Enqueue a standby delay change; persistence runs on the app-control task.
  * @param timeout_ms is -1 to disable or a valid delay in milliseconds.
- * @return ESP_OK when queued (completion is observed via the getter),
- *         ESP_ERR_INVALID_ARG or ESP_ERR_INVALID_STATE/ESP_ERR_NO_MEM when rejected.
- *         Safe from the UI worker, unlike the synchronous setter.
+ * @return ESP_OK when queued (completion is observed via the getter); on a
+ *         product without standby, ESP_OK for -1 without queueing and
+ *         ESP_ERR_NOT_SUPPORTED for a non-negative delay;
+ *         ESP_ERR_INVALID_ARG or ESP_ERR_INVALID_STATE/ESP_ERR_NO_MEM when
+ *         rejected. Safe from the UI worker, unlike the synchronous setter.
  */
 esp_err_t app_manager_pm_set_standby_delay_ms_async(int32_t timeout_ms);
 

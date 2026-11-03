@@ -46,8 +46,8 @@ Public header `include/app_manager.h` (which also aggregates
   `app_manager_screen_get_brightness()`,
   `app_manager_factory_reset_persisted_state()`.
 - Input and PM: `app_manager_input_inject()`, plus the `app_manager_pm_*`
-  requests, notifications, state, timeout/standby delays and the standby
-  commit hook.
+  requests, notifications, state, timeout/standby delays, the standby
+  capability query and the standby commit hook.
 - Registry: `app_manager_builtin_discover()` /
   `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()`;
   export macros `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`.
