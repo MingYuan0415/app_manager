@@ -213,6 +213,11 @@ const app_manager_app_desc_t *app_manager_builtin_find_by_id(const char *app_id)
            NULL;
 }
 
+bool app_manager_builtin_has_app(const char *app_id)
+{
+    return app_manager_builtin_find_by_id(app_id) != NULL;
+}
+
 const app_manager_page_route_t *app_manager_builtin_find_page(
     const app_manager_app_desc_t *app, const char *page_id)
 {

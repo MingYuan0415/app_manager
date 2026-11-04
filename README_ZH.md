@@ -1,12 +1,12 @@
 [English](README.md) | **简体中文**
 
-# MicroTech App Manager 0.7.0
+# MicroTech App Manager 0.7.1
 
 `layers/app_manager` 提供 ESP32-S3 上的应用运行时、静态应用注册、App/Page
 导航、LVGL Screen 转换、显示休眠、输入路由和应用级 PM。业务应用位于
 `layers/apps/`，系统装配入口位于 `main/app_runtime.c`。
 
-0.7.0 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
+0.7.1 的核心约束是：导航模型和所有 LVGL 对象只由 UI worker 修改；应用和页面
 使用静态 App descriptor 和 App 私有路由；每个已挂载页面拥有独立 Screen；所有同步和异步导航都经过
 同一个固定容量 command gateway。边缘返回只在永久 Sys Layer 上呈现手势反馈，
 Page Screen 始终通过既有导航动画完成切换，不参与实时跟手。
@@ -347,7 +347,7 @@ alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本
 - 当前页面存在合法返回目标；
 - 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
 
-0.7.0 的几何参数按显示分辨率计算并限制上下界：
+0.7.1 的几何参数按显示分辨率计算并限制上下界：
 
 | 参数 | 计算规则 |
 | --- | --- |
@@ -846,7 +846,7 @@ STOP 失败重试。应用和跨层宿主测试覆盖真实 Page 的 Screen、ob
 
 ## 13. 初始化配置
 
-`app_manager_config_t` 中与 0.7.0 导航直接相关的字段：
+`app_manager_config_t` 中与 0.7.1 导航直接相关的字段：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -967,7 +967,7 @@ C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更�
 
 ## 15. 明确边界
 
-0.7.0 不包含：
+0.7.1 不包含：
 
 - 动态 App、provider 插件 ABI、运行时 Page 挂载、裸 handler 创建或脚本应用；
 - Page Screen 实时跟手返回或自定义 ZOOM；边缘拖动只更新 Sys Layer indicator，释放提交后

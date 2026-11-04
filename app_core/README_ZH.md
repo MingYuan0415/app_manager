@@ -18,7 +18,7 @@
 - 页面上下文访问器：`app_manager_this_page_memory()` / `app_manager_this_page_userdata()` / `app_manager_this_page_screen()` / `app_manager_this_page_arguments()` / `app_manager_this_page_report_cleanup_error()`。
 - Screen 控制：`app_manager_screen_suspend()` / `app_manager_screen_resume()` / `app_manager_screen_is_suspended()`、`app_manager_display_commit_initial()`、`app_manager_startup_commit()`、`app_manager_screen_set_brightness()` / `app_manager_screen_set_brightness_temp()` / `app_manager_screen_get_brightness()`、`app_manager_factory_reset_persisted_state()`。
 - 输入与 PM：`app_manager_input_inject()`，以及 `app_manager_pm_*` 请求、通知、状态、超时/待机延迟、待机能力查询与 standby commit 钩子。
-- Registry：`app_manager_builtin_discover()` / `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()`；导出宏 `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`。
+- Registry：`app_manager_builtin_discover()` / `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()` / `app_manager_builtin_has_app()`；导出宏 `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`。
 - UI 与资源：`app_manager_ui_post()` / `app_manager_ui_call()` / `app_manager_get_ui_dispatch_fn()`、`app_manager_get_font()`、`app_manager_get_image()`。
 
 `include/app_manager_types.h` 定义 App/Page descriptor、route、definition、Typed Blob、生命周期消息与转场类型；`include/app_manager_ids.h` 提供稳定 App ID；`include/app_manager_display_diagnostics.h` 为仅开发用的显示基准 API。

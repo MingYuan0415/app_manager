@@ -83,6 +83,9 @@ static void _test_valid_registry_and_shared_definition(void)
     assert(app_manager_builtin_enumerate(0U) == &s_valid_apps[0]);
     assert(app_manager_builtin_enumerate(2U) == NULL);
     assert(app_manager_builtin_find_by_id("settings") == &s_valid_apps[1]);
+    assert(app_manager_builtin_has_app("home"));
+    assert(app_manager_builtin_has_app("settings"));
+    assert(!app_manager_builtin_has_app("missing"));
     assert(app_manager_builtin_find_page(&s_valid_apps[1], "about") ==
            &s_settings_routes[1]);
     assert(app_manager_builtin_find_page(&s_valid_apps[0], "root")->definition ==

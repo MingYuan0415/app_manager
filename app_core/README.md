@@ -49,8 +49,9 @@ Public header `include/app_manager.h` (which also aggregates
   requests, notifications, state, timeout/standby delays, the standby
   capability query and the standby commit hook.
 - Registry: `app_manager_builtin_discover()` /
-  `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()`;
-  export macros `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`.
+  `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()` /
+  `app_manager_builtin_has_app()`; export macros
+  `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`.
 - UI and resources: `app_manager_ui_post()` / `app_manager_ui_call()` /
   `app_manager_get_ui_dispatch_fn()`, `app_manager_get_font()`,
   `app_manager_get_image()`.

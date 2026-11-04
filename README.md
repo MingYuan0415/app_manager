@@ -1,13 +1,13 @@
 **English** | [简体中文](README_ZH.md)
 
-# MicroTech App Manager 0.7.0
+# MicroTech App Manager 0.7.1
 
 `layers/app_manager` provides the application runtime on the ESP32-S3, static
 App registration, App/Page navigation, LVGL Screen transitions, display sleep,
 input routing and app-level PM. Business apps live in `layers/apps/`; the system
 assembly entry point is `main/app_runtime.c`.
 
-The core constraints of 0.7.0 are: the navigation model and all LVGL objects are
+The core constraints of 0.7.1 are: the navigation model and all LVGL objects are
 modified only by the UI worker; apps and Pages use static App descriptors and
 App-private routes; every mounted Page owns an independent Screen; all
 synchronous and asynchronous navigation goes through the same fixed-capacity
@@ -428,7 +428,7 @@ A valid gesture must satisfy all of:
 - the pointer starts on the left or right capture strip and moves into the
   screen to the commit threshold.
 
-The 0.7.0 geometry parameters are computed from the display resolution and
+The 0.7.1 geometry parameters are computed from the display resolution and
 clamped to lower and upper bounds:
 
 | Parameter | Rule |
@@ -1085,7 +1085,7 @@ observations.
 
 ## 13. Initialization Configuration
 
-The fields of `app_manager_config_t` directly relevant to 0.7.0 navigation:
+The fields of `app_manager_config_t` directly relevant to 0.7.1 navigation:
 
 | Field | Meaning |
 | --- | --- |
@@ -1233,7 +1233,7 @@ need on-device loop verification:
 
 ## 15. Explicit Boundaries
 
-0.7.0 does not include:
+0.7.1 does not include:
 
 - dynamic Apps, provider plugin ABI, runtime Page mounting, bare handler
   creation or scripted apps;

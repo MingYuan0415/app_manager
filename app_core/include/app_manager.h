@@ -420,6 +420,12 @@ esp_err_t app_manager_pm_set_standby_delay_ms_async(int32_t timeout_ms);
  */
 int      app_manager_builtin_discover(void);
 /**
+ * @brief Report whether an application is present in the validated registry.
+ * @param app_id is the stable application identifier.
+ * @return true when the App is linked and registered; false otherwise.
+ */
+bool     app_manager_builtin_has_app(const char *app_id);
+/**
  * @brief Open builtin descriptor iteration.
  * @return First descriptor, or NULL when none exists.
  */
