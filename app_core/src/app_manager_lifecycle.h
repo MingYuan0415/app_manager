@@ -123,6 +123,12 @@ bool app_manager_lifecycle_screen_running_snapshot(uint32_t *count);
  */
 bool app_manager_lifecycle_active_is_home_snapshot(bool *valid);
 
+/** @brief Read whether the last stable foreground is Home's root page.
+ * @param valid receives false until the first stable foreground commit.
+ * @return true only when Home is active and its current page is the root.
+ */
+bool app_manager_lifecycle_active_home_root_snapshot(bool *valid);
+
 #ifdef HOST_TEST
 /** @brief Observation points around a host-test lifecycle callback. */
 typedef enum app_manager_lifecycle_observer_phase

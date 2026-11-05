@@ -115,3 +115,12 @@ bool app_manager_lifecycle_active_is_home_snapshot(bool *valid)
     }
     return false;
 }
+
+bool app_manager_lifecycle_active_home_root_snapshot(bool *valid)
+{
+    if (valid != NULL)
+    {
+        *valid = true;
+    }
+    return false;
+}

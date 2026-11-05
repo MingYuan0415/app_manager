@@ -47,7 +47,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
-| `app_theme/` | 七档语义字体角色与 AMOLED 颜色常量 |
+| `app_theme/` | 七档语义字体角色、AMOLED 颜色常量与 Emissive 默认 LVGL 主题 |
 
 主要依赖关系如下：
 
@@ -115,8 +115,8 @@ context 访问同一 Page state。页面成功释放后不得继续保存该指�
 
 `APP_MANAGER_APP_FLAG_PINNED` 阻止自动淘汰和普通后台清理。HOME 应标为 pinned；
 双击 HOME 打开系统任务切换器；单击 HOME 在任务切换器或控制中心可见时先关闭该
-表面，否则按当前活跃 App 路由：活跃为 Home 时进入应用目录，否则回到 HOME 根页
-（见第 10.1 节）。需要释放
+表面，否则按当前活跃 App 路由：Home 处于根页时进入应用目录；Home 处于子页或
+其他 App 活跃时回到 HOME 根页（见第 10.1 节）。需要释放
 其他后台 App 时提交 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`。
 
 ## 4. 静态 Registry 与 App-owned Routes
@@ -374,9 +374,9 @@ Canvas 使用一块 9,220 bytes（64x144 A8 + 4 B 对齐余量）的固定外部
 时仍立即取消。向内位移达到提交距离后进入 armed；回撤到“提交距离减滞回值”以下才
 解除 armed，避免阈值附近抖动反复切换。
 
-Home 始终没有手势返回入口，即使全局开关已启用。其他 App 的子页返回上一 Page；
-非 Home 根页只有在 App 历史中存在前一个 App 时才能手势返回。没有目标时捕获条保持
-无效，边缘输入继续由正常 LVGL hit-test 处理。
+Home 根页始终没有手势返回入口，即使全局开关已启用；Home 子页返回上一 Page。
+其他 App 的子页返回上一 Page，非 Home 根页只有在 App 历史中存在前一个 App 时才能
+手势返回。没有目标时捕获条保持无效，边缘输入继续由正常 LVGL hit-test 处理。
 
 `PRESSING` 期间框架只按 `inward / trigger_distance` 更新 Canvas 的水平位置。左侧 X 从
 `-64` 移到 `0`，右侧 X 从屏宽移到“屏宽减 64”；Canvas 尺寸、轮廓、不透明度和 Y
@@ -599,8 +599,8 @@ HOME 单击与双击由 app-control 在 350 ms 窗口内消歧：窗口内的第
 解析单击动作：任务切换器可见时提交 `APP_MANAGER_NAV_SYSTEM_TASK_SWITCHER_SHOW`
 切换关闭（与被覆盖的控制中心同时可见时关闭位于上层的切换器），控制中心可见时提交
 `APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW` 切换关闭并播放退场动画，两者均不可见时按当前
-活跃 App 快照路由：活跃为 Home 时提交 `RUN` 进入应用目录，否则提交
-`OPEN_PAGE(home, root)`，快照不可用时不动作。这些动作都经统一 navigation gateway
+活跃 App 快照路由：Home 处于根页时提交 `RUN` 进入应用目录；Home 处于子页或其他
+App 活跃时提交 `OPEN_PAGE(home, root)`，快照不可用时不动作。这些动作都经统一 navigation gateway
 异步提交，且只有 worker 状态机决出唯一动作后才准入，因此导航 FIFO 中不会出现可被
 取消的先行命令。
 切换器已打开时再次双击会将其关闭并回到原前台任务。显示休眠或 standby 唤醒开始的
@@ -956,7 +956,7 @@ App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘�
 C/C++ 文件按 `doc/code-style.md` 运行 AStyle。显示和生命周期变更仍需上板循环验证：
 
 - App/Page 双向切换至少 100 次，无空白帧和触摸穿透；
-- 左右边缘分别执行至少 100 次提交和取消，Home、无目标、休眠和动画抢占均不误导航；
+- 左右边缘分别执行至少 100 次提交和取消，Home 根页、无目标、休眠和动画抢占均不误导航；
 - 拖动时 Sys Layer Canvas 仅从屏幕外水平平移，固定尺寸、轮廓、不透明度和 Y 锚点；
   箭头仅在 ARMED 时可见，Page Screen 在释放提交前保持不动；
 - 动画平均帧率不低于 25 FPS；

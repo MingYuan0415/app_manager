@@ -52,10 +52,12 @@ const lv_font_t *app_theme_get_font(app_theme_font_id_t id);
 /**
  * @brief Attach the project LVGL theme to a display.
  *
- * The theme is a widget-mask variant of the pinned LVGL 9.6 default theme.
- * It keeps the default-theme appearance for widgets used by MicroTech while
- * omitting references to widgets the application does not use, allowing
- * --gc-sections to drop their code.
+ * The theme is a widget-mask variant of the pinned LVGL 9.6 default theme,
+ * retuned to the project's emissive AMOLED language: VOID canvas, PLUME
+ * surfaces, INK text, AZURE primary and HAIRLINE borders without elevation
+ * shadows. It keeps the same widget coverage while omitting references to
+ * widgets the application does not use, allowing --gc-sections to drop their
+ * code.
  *
  * The theme owns one display at a time. Calling this function for a second
  * display while the first display is still attached returns

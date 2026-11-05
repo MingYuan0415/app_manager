@@ -253,9 +253,13 @@ static bool _back_gesture_available(void)
 
     app_manager_lifecycle_back_target_t target =
         app_manager_lifecycle_back_target(&source_app_id);
+    /* Home is the base App: it may leave a sub-page for its previous Page,
+     * but its root must not gesture back into the App history. */
+    const bool home = source_app_id != NULL &&
+                      strcmp(source_app_id, APP_MANAGER_ID_HOME) == 0;
     return target != APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE &&
            source_app_id != NULL &&
-           strcmp(source_app_id, APP_MANAGER_ID_HOME) != 0 &&
+           (!home || target == APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE) &&
            app_manager_navigation_gesture_token_is_current(&token);
 }
 
@@ -501,11 +505,19 @@ static void _back_gesture_pressed(lv_obj_t *target, lv_indev_t *indev)
     if (!s_gesture.effective || s_gesture.phase != APP_MANAGER_GESTURE_IDLE ||
             indev == NULL || indev != s_gesture.touch ||
             !app_manager_navigation_gesture_token_acquire(
-                &s_gesture.navigation_token) ||
-            app_manager_lifecycle_back_target(&source_app_id) ==
-            APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE ||
+                &s_gesture.navigation_token))
+    {
+        s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
+        _back_gesture_hide_indicator();
+        return;
+    }
+    const app_manager_lifecycle_back_target_t back_target =
+        app_manager_lifecycle_back_target(&source_app_id);
+    const bool home = source_app_id != NULL &&
+                      strcmp(source_app_id, APP_MANAGER_ID_HOME) == 0;
+    if (back_target == APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE ||
             source_app_id == NULL ||
-            strcmp(source_app_id, APP_MANAGER_ID_HOME) == 0)
+            (home && back_target != APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE))
     {
         s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
         _back_gesture_hide_indicator();

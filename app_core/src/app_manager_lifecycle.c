@@ -100,6 +100,7 @@ static atomic_uint s_screen_accesses;
 static atomic_uint s_paused_running_apps;
 static atomic_bool s_active_home_valid;
 static atomic_bool s_active_is_home;
+static atomic_bool s_active_home_root;
 
 #ifdef HOST_TEST
     static _Atomic(app_manager_lifecycle_observer_t) s_host_observer;
@@ -129,6 +130,15 @@ static void _lifecycle_publish_active_home(void)
     const bool is_home = active != NULL && active->descriptor != NULL &&
                          active->descriptor->id != NULL &&
                          strcmp(active->descriptor->id, APP_MANAGER_ID_HOME) == 0;
+    bool root = false;
+    if (is_home && active->current_page != NULL &&
+            active->current_page->route != NULL &&
+            active->descriptor->root_page_id != NULL)
+    {
+        root = strcmp(active->current_page->route->page_id,
+                      active->descriptor->root_page_id) == 0;
+    }
+    atomic_store_explicit(&s_active_home_root, root, memory_order_release);
     atomic_store_explicit(&s_active_is_home, is_home, memory_order_release);
     atomic_store_explicit(&s_active_home_valid, true, memory_order_release);
 }
@@ -2143,6 +2153,7 @@ esp_err_t app_manager_lifecycle_init(void)
     s_target_recovery_pending = false;
     atomic_store(&s_active_home_valid, false);
     atomic_store(&s_active_is_home, false);
+    atomic_store(&s_active_home_root, false);
     atomic_store(&s_paused_running_apps, 0U);
     atomic_store(&s_transitioning, false);
     s_initialized = true;
@@ -2193,6 +2204,7 @@ void app_manager_lifecycle_force_deinit(void)
     s_target_recovery_pending = false;
     atomic_store(&s_active_home_valid, false);
     atomic_store(&s_active_is_home, false);
+    atomic_store(&s_active_home_root, false);
     s_initialized = false;
     atomic_store(&s_transitioning, false);
     atomic_store(&s_paused_running_apps, 0U);
@@ -2254,6 +2266,7 @@ esp_err_t app_manager_lifecycle_deinit(void)
     s_target_recovery_pending = false;
     atomic_store(&s_active_home_valid, false);
     atomic_store(&s_active_is_home, false);
+    atomic_store(&s_active_home_root, false);
     atomic_store(&s_paused_running_apps, 0U);
     return ESP_OK;
 }
@@ -2274,6 +2287,19 @@ bool app_manager_lifecycle_active_is_home_snapshot(bool *valid)
     }
     return ready && atomic_load_explicit(&s_active_is_home,
                                          memory_order_acquire);
+}
+
+bool app_manager_lifecycle_active_home_root_snapshot(bool *valid)
+{
+    const bool ready = atomic_load_explicit(&s_active_home_valid,
+                                            memory_order_acquire);
+    if (valid != NULL)
+    {
+        *valid = ready;
+    }
+    return ready && atomic_load_explicit(&s_active_is_home,
+                                         memory_order_acquire) &&
+           atomic_load_explicit(&s_active_home_root, memory_order_acquire);
 }
 
 bool app_manager_lifecycle_screen_access_begin(void)

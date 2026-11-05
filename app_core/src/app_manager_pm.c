@@ -45,7 +45,22 @@ static app_manager_home_action_t _control_home_single_action(void)
         LOG_W("HOME single click ignored: active snapshot unavailable");
         return APP_MANAGER_HOME_ACTION_NONE;
     }
-    return is_home ? APP_MANAGER_HOME_ACTION_MENU : APP_MANAGER_HOME_ACTION_ROOT;
+    if (!is_home)
+    {
+        return APP_MANAGER_HOME_ACTION_ROOT;
+    }
+    /* On a Home sub-page HOME returns to the root Page; only Home's root
+     * enters the app directory. */
+    bool root_valid = false;
+    const bool home_root = app_manager_lifecycle_active_home_root_snapshot(
+                               &root_valid);
+    if (!root_valid)
+    {
+        LOG_W("HOME single click ignored: Home page snapshot unavailable");
+        return APP_MANAGER_HOME_ACTION_NONE;
+    }
+    return home_root ? APP_MANAGER_HOME_ACTION_MENU :
+           APP_MANAGER_HOME_ACTION_ROOT;
 }
 
 void app_manager_control_state_set(app_manager_pm_state_t state)

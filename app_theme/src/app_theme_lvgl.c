@@ -1,6 +1,6 @@
 /**
  * @file app_theme_lvgl.c
- * @brief Project LVGL theme: default-theme styling with a widget mask.
+ * @brief Project LVGL theme: emissive dark styling with a widget mask.
  *
  * LVGL's default theme references every enabled widget class from its apply
  * callback. That prevents --gc-sections from dropping widgets the application
@@ -8,9 +8,15 @@
  * theme with an explicit, theme-only widget mask: the application's widget
  * Kconfig options stay enabled, while this theme references only the widgets
  * MicroTech actually uses.
+ *
+ * The theme itself is the project's emissive AMOLED language: VOID canvas,
+ * PLUME surfaces, INK text, a single AZURE accent, HAIRLINE borders and no
+ * elevation shadows. It is the fallback appearance for widgets that do not
+ * carry a page-specific app_ui style.
  */
 
 #include "app_theme.h"
+#include "app_theme_colors.h"
 
 #if !defined(LVGL_VERSION_MAJOR) || (LVGL_VERSION_MAJOR != 9) || \
     !defined(LVGL_VERSION_MINOR) || (LVGL_VERSION_MINOR != 6)
@@ -82,7 +88,7 @@ void app_theme_lvgl_deinit(void);
 #undef LV_THEME_DEFAULT_TRANSITION_TIME
 #define LV_THEME_DEFAULT_TRANSITION_TIME 80
 #undef LV_THEME_DEFAULT_DARK
-#define LV_THEME_DEFAULT_DARK 0
+#define LV_THEME_DEFAULT_DARK 1
 
 #undef LV_USE_THEME_DEFAULT
 #define LV_USE_THEME_DEFAULT 1
@@ -107,9 +113,9 @@ esp_err_t app_theme_lvgl_attach(lv_display_t *display)
     }
 
     lv_theme_t *theme = app_theme_lvgl_init(display,
-                                            lv_palette_main(LV_PALETTE_BLUE),
-                                            lv_palette_main(LV_PALETTE_RED),
-                                            false,
+                                            lv_color_hex(APP_THEME_COLOR_AZURE),
+                                            lv_color_hex(APP_THEME_COLOR_CORAL),
+                                            true,
                                             LV_FONT_DEFAULT);
     if (theme == NULL)
     {

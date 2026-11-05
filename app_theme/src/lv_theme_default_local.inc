@@ -30,20 +30,20 @@ typedef struct _my_theme_t my_theme_t;
 #define theme_def (s_theme)
 
 #define MODE_DARK 1
-#define RADIUS_DEFAULT LV_DPX_CALC(theme->disp_dpi, theme->disp_size == DISP_LARGE ? 12 : 8)
+#define RADIUS_DEFAULT LV_DPX_CALC(theme->disp_dpi, theme->disp_size == DISP_LARGE ? 18 : theme->disp_size == DISP_MEDIUM ? 16 : 12)
 
 /*SCREEN*/
-#define LIGHT_COLOR_SCR        lv_palette_lighten(LV_PALETTE_GREY, 4)
-#define LIGHT_COLOR_CARD       lv_color_white()
-#define LIGHT_COLOR_TEXT       lv_palette_darken(LV_PALETTE_GREY, 4)
-#define LIGHT_COLOR_GREY       lv_palette_lighten(LV_PALETTE_GREY, 2)
-#define DARK_COLOR_SCR         lv_color_hex(0x15171A)
-#define DARK_COLOR_CARD        lv_color_hex(0x282b30)
-#define DARK_COLOR_TEXT        lv_palette_lighten(LV_PALETTE_GREY, 5)
-#define DARK_COLOR_GREY        lv_color_hex(0x2f3237)
+#define LIGHT_COLOR_SCR        lv_color_hex(APP_THEME_COLOR_VOID)
+#define LIGHT_COLOR_CARD       lv_color_hex(APP_THEME_COLOR_PLUME)
+#define LIGHT_COLOR_TEXT       lv_color_hex(APP_THEME_COLOR_INK)
+#define LIGHT_COLOR_GREY       lv_color_hex(APP_THEME_COLOR_TRACK)
+#define DARK_COLOR_SCR         lv_color_hex(APP_THEME_COLOR_VOID)
+#define DARK_COLOR_CARD        lv_color_hex(APP_THEME_COLOR_PLUME)
+#define DARK_COLOR_TEXT        lv_color_hex(APP_THEME_COLOR_INK)
+#define DARK_COLOR_GREY        lv_color_hex(APP_THEME_COLOR_TRACK)
 
 #define TRANSITION_TIME         LV_THEME_DEFAULT_TRANSITION_TIME
-#define BORDER_WIDTH            LV_DPX_CALC(theme->disp_dpi, 2)
+#define BORDER_WIDTH            LV_DPX_CALC(theme->disp_dpi, 1)
 #define OUTLINE_WIDTH           LV_DPX_CALC(theme->disp_dpi, 3)
 
 #define PAD_DEF     LV_DPX_CALC(theme->disp_dpi, theme->disp_size == DISP_LARGE ? 24 : theme->disp_size == DISP_MEDIUM ? 20 : 16)
@@ -236,8 +236,7 @@ static void style_init(my_theme_t * theme)
 #endif
 
     style_init_reset(&theme->styles.scrollbar);
-    lv_color_t sb_color = (theme->base.flags & MODE_DARK) ? lv_palette_darken(LV_PALETTE_GREY,
-                                                                              2) : lv_palette_main(LV_PALETTE_GREY);
+    lv_color_t sb_color = lv_color_hex(APP_THEME_COLOR_TRACK);
     lv_style_set_bg_color(&theme->styles.scrollbar, sb_color);
 
     lv_style_set_radius(&theme->styles.scrollbar, LV_RADIUS_CIRCLE);
@@ -264,15 +263,18 @@ static void style_init(my_theme_t * theme)
     lv_style_set_radius(&theme->styles.card, RADIUS_DEFAULT);
     lv_style_set_bg_opa(&theme->styles.card, LV_OPA_COVER);
     lv_style_set_bg_color(&theme->styles.card, theme->color_card);
-    lv_style_set_border_color(&theme->styles.card, theme->color_grey);
+    lv_style_set_border_color(&theme->styles.card,
+                              lv_color_hex(APP_THEME_COLOR_HAIRLINE));
     lv_style_set_border_width(&theme->styles.card, BORDER_WIDTH);
     lv_style_set_border_post(&theme->styles.card, true);
     lv_style_set_text_color(&theme->styles.card, theme->color_text);
     lv_style_set_pad_all(&theme->styles.card, PAD_DEF);
     lv_style_set_pad_row(&theme->styles.card, PAD_SMALL);
     lv_style_set_pad_column(&theme->styles.card, PAD_SMALL);
-    lv_style_set_line_color(&theme->styles.card, lv_palette_main(LV_PALETTE_GREY));
-    lv_style_set_line_width(&theme->styles.card, LV_DPX_CALC(theme->disp_dpi, 1));
+    lv_style_set_line_color(&theme->styles.card,
+                            lv_color_hex(APP_THEME_COLOR_HAIRLINE));
+    lv_style_set_line_width(&theme->styles.card,
+                            LV_DPX_CALC(theme->disp_dpi, 1));
 
     style_init_reset(&theme->styles.outline_primary);
     lv_style_set_outline_color(&theme->styles.outline_primary, theme->base.color_primary);
@@ -289,13 +291,10 @@ static void style_init(my_theme_t * theme)
     lv_style_set_radius(&theme->styles.btn,
                         LV_DPX_CALC(theme->disp_dpi, theme->disp_size == DISP_LARGE ? 16 : theme->disp_size == DISP_MEDIUM ? 12 : 8));
     lv_style_set_bg_opa(&theme->styles.btn, LV_OPA_COVER);
-    lv_style_set_bg_color(&theme->styles.btn, theme->color_grey);
-    if(!(theme->base.flags & MODE_DARK)) {
-        lv_style_set_shadow_color(&theme->styles.btn, lv_palette_main(LV_PALETTE_GREY));
-        lv_style_set_shadow_width(&theme->styles.btn, LV_DPX_CALC(theme->disp_dpi, 3));
-        lv_style_set_shadow_opa(&theme->styles.btn, LV_OPA_50);
-        lv_style_set_shadow_offset_y(&theme->styles.btn, LV_DPX_CALC(theme->disp_dpi, 3));
-    }
+    lv_style_set_bg_color(&theme->styles.btn,
+                          lv_color_hex(APP_THEME_COLOR_PLUME_HI));
+    lv_style_set_border_width(&theme->styles.btn, 0);
+    lv_style_set_shadow_width(&theme->styles.btn, 0);
     lv_style_set_text_color(&theme->styles.btn, theme->color_text);
     lv_style_set_pad_hor(&theme->styles.btn, PAD_DEF);
     lv_style_set_pad_ver(&theme->styles.btn, PAD_SMALL);
@@ -348,23 +347,29 @@ static void style_init(my_theme_t * theme)
 
     style_init_reset(&theme->styles.bg_color_primary);
     lv_style_set_bg_color(&theme->styles.bg_color_primary, theme->base.color_primary);
-    lv_style_set_text_color(&theme->styles.bg_color_primary, lv_color_white());
+    lv_style_set_text_color(&theme->styles.bg_color_primary,
+                            lv_color_hex(APP_THEME_COLOR_ON_ACCENT));
     lv_style_set_bg_opa(&theme->styles.bg_color_primary, LV_OPA_COVER);
 
     style_init_reset(&theme->styles.bg_color_primary_muted);
-    lv_style_set_bg_color(&theme->styles.bg_color_primary_muted, theme->base.color_primary);
-    lv_style_set_text_color(&theme->styles.bg_color_primary_muted, theme->base.color_primary);
-    lv_style_set_bg_opa(&theme->styles.bg_color_primary_muted, LV_OPA_20);
+    lv_style_set_bg_color(&theme->styles.bg_color_primary_muted,
+                          lv_color_hex(APP_THEME_COLOR_AZURE_TINT));
+    lv_style_set_text_color(&theme->styles.bg_color_primary_muted,
+                            lv_color_hex(APP_THEME_COLOR_AZURE));
+    lv_style_set_bg_opa(&theme->styles.bg_color_primary_muted, LV_OPA_COVER);
 
     style_init_reset(&theme->styles.bg_color_secondary);
     lv_style_set_bg_color(&theme->styles.bg_color_secondary, theme->base.color_secondary);
-    lv_style_set_text_color(&theme->styles.bg_color_secondary, lv_color_white());
+    lv_style_set_text_color(&theme->styles.bg_color_secondary,
+                            lv_color_hex(APP_THEME_COLOR_ON_ACCENT));
     lv_style_set_bg_opa(&theme->styles.bg_color_secondary, LV_OPA_COVER);
 
     style_init_reset(&theme->styles.bg_color_secondary_muted);
-    lv_style_set_bg_color(&theme->styles.bg_color_secondary_muted, theme->base.color_secondary);
-    lv_style_set_text_color(&theme->styles.bg_color_secondary_muted, theme->base.color_secondary);
-    lv_style_set_bg_opa(&theme->styles.bg_color_secondary_muted, LV_OPA_20);
+    lv_style_set_bg_color(&theme->styles.bg_color_secondary_muted,
+                          lv_color_hex(APP_THEME_COLOR_CORAL_TINT));
+    lv_style_set_text_color(&theme->styles.bg_color_secondary_muted,
+                            lv_color_hex(APP_THEME_COLOR_CORAL));
+    lv_style_set_bg_opa(&theme->styles.bg_color_secondary_muted, LV_OPA_COVER);
 
     style_init_reset(&theme->styles.bg_color_grey);
     lv_style_set_bg_color(&theme->styles.bg_color_grey, theme->color_grey);
@@ -405,7 +410,8 @@ static void style_init(my_theme_t * theme)
 
 #if LV_USE_ARC
     style_init_reset(&theme->styles.arc_indic);
-    lv_style_set_arc_color(&theme->styles.arc_indic, theme->color_grey);
+    lv_style_set_arc_color(&theme->styles.arc_indic,
+                           lv_color_hex(APP_THEME_COLOR_TRACK));
     lv_style_set_arc_width(&theme->styles.arc_indic, LV_DPX_CALC(theme->disp_dpi, 15));
     lv_style_set_arc_rounded(&theme->styles.arc_indic, true);
 
@@ -435,13 +441,15 @@ static void style_init(my_theme_t * theme)
 #if LV_USE_SWITCH
     style_init_reset(&theme->styles.switch_knob);
     lv_style_set_pad_all(&theme->styles.switch_knob, - LV_DPX_CALC(theme->disp_dpi, 4));
-    lv_style_set_bg_color(&theme->styles.switch_knob, lv_color_white());
+    lv_style_set_bg_color(&theme->styles.switch_knob,
+                          lv_color_hex(APP_THEME_COLOR_INK));
 #endif
 
 #if LV_USE_LINE
     style_init_reset(&theme->styles.line);
     lv_style_set_line_width(&theme->styles.line, 1);
-    lv_style_set_line_color(&theme->styles.line, theme->color_text);
+    lv_style_set_line_color(&theme->styles.line,
+                            lv_color_hex(APP_THEME_COLOR_HAIRLINE));
 #endif
 
 #if LV_USE_CHART

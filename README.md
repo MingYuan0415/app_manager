@@ -65,7 +65,7 @@ local refactor:
 | `app_core/src/app_manager_pm*.c` | app-control, input merging, display PM and system standby cooperation |
 | `app_core/linker.lf` | retains the single App descriptor link section |
 | `app_core/tests/host/` | model, registry, gateway, lifecycle, mailbox, PM and adapter tests |
-| `app_theme/` | seven semantic font roles and AMOLED color constants |
+| `app_theme/` | seven semantic font roles, AMOLED color constants and the emissive default LVGL theme |
 
 The main dependencies are:
 
@@ -146,8 +146,8 @@ used. The residence policies are:
 background cleanup. HOME should be marked pinned; double-clicking HOME opens the
 system task switcher; a single HOME click first closes the task switcher or
 control center when that surface is visible, otherwise it routes by the current
-active App: enter the app directory when Home is active, else return to the HOME
-root page (see section 10.1). To release other background Apps, submit
+active App: on Home's root page enter the app directory; on a Home sub-page, or
+in any other App, return to the HOME root page (see section 10.1). To release other background Apps, submit
 `APP_MANAGER_NAV_OP_CLEANUP_BACKGROUND`.
 
 ## 4. Static Registry and App-owned Routes
@@ -463,11 +463,11 @@ commit distance enters armed; only a retraction below "commit distance minus
 hysteresis" leaves armed, so jitter around the threshold does not flip the state
 repeatedly.
 
-Home never has a gesture back entry even when the global switch is enabled. A
-sub-page of another App returns to the previous Page; a non-Home root page can
-gesture back only when a previous App exists in the App history. With no target
-the capture strip stays inactive and edge input continues through the normal
-LVGL hit-test.
+Home's root page never has a gesture back entry even when the global switch is
+enabled; a Home sub-page returns to its previous Page. A sub-page of another App
+returns to the previous Page, and a non-Home root page can gesture back only
+when a previous App exists in the App history. With no target the capture strip
+stays inactive and edge input continues through the normal LVGL hit-test.
 
 During `PRESSING` the framework only updates the Canvas horizontal position by
 `inward / trigger_distance`. The left X moves from `-64` to `0`, the right X
@@ -758,8 +758,9 @@ toggle it closed (when it is visible together with an overlaid control center,
 the switcher on top is closed); when the control center is visible, submit
 `APP_MANAGER_NAV_SYSTEM_CONTROL_CENTER_SHOW` to toggle it closed and play the
 exit animation; when neither is visible, route by the current active App
-snapshot: submit `RUN` to enter the app directory when Home is active, otherwise
-submit `OPEN_PAGE(home, root)`, and do nothing when the snapshot is unavailable.
+snapshot: submit `RUN` to enter the app directory when Home's root page is
+active; when Home is on a sub-page, or another App is active, submit
+`OPEN_PAGE(home, root)`, and do nothing when the snapshot is unavailable.
 All these actions are submitted asynchronously through the unified navigation
 gateway and are admitted only after the worker state machine has decided on a
 single action, so the navigation FIFO never contains a preceding command that
@@ -1218,8 +1219,8 @@ need on-device loop verification:
 - App/Page bidirectional switching at least 100 times, with no blank frames and
   no touch pass-through;
 - at least 100 commits and cancellations on the left and right edges
-  respectively, with no false navigation on Home, no-target, sleep or animation
-  preemption;
+  respectively, with no false navigation on Home's root page, no-target, sleep
+  or animation preemption;
 - while dragging, the Sys Layer Canvas only translates horizontally from
   off-screen, with fixed size, contour, opacity and Y anchor; the arrow is
   visible only in ARMED and the Page Screen stays still until the release
