@@ -2721,6 +2721,50 @@ esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque)
     return ESP_OK;
 }
 
+esp_err_t app_manager_lifecycle_page_stack_call(void *opaque)
+{
+    app_manager_lifecycle_request_t *request = opaque;
+    if (request == NULL || request->page_stack == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    app_manager_page_stack_t *stack = request->page_stack;
+    memset(stack, 0, sizeof(*stack));
+    app_manager_app_node_t *app = app_manager_nav_model_find_app(
+                                      &s_model, request->app_id);
+    if (app == NULL || app->descriptor == NULL)
+    {
+        return ESP_ERR_NOT_FOUND;
+    }
+    stack->app_id = app->descriptor->id;
+    stack->active = app == s_model.active_app;
+    stack->transitioning =
+        atomic_load_explicit(&s_transitioning, memory_order_acquire) ||
+        atomic_load_explicit(&s_recovery_pending, memory_order_acquire) ||
+        atomic_load_explicit(&s_target_recovery_pending,
+                             memory_order_acquire) ||
+        app_manager_presentation_is_running();
+    size_t page_count = 0U;
+    for (app_manager_page_node_t *page = app->current_page;
+            page != NULL && page->route != NULL &&
+            page_count < APP_MANAGER_MAX_STACK_PAGES;
+            page = page->previous)
+    {
+        ++page_count;
+    }
+    size_t index = page_count;
+    for (app_manager_page_node_t *page = app->current_page;
+            page != NULL && page->route != NULL && index > 0U;
+            page = page->previous)
+    {
+        --index;
+        (void)snprintf(stack->page_ids[index], APP_MANAGER_ID_BYTES, "%s",
+                       page->route->page_id);
+    }
+    stack->page_count = page_count;
+    return ESP_OK;
+}
+
 esp_err_t app_manager_lifecycle_clear_background_tasks(void)
 {
     if (!s_initialized || s_tearing_down ||

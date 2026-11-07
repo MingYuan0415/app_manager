@@ -4,6 +4,7 @@
 #include "app_manager_lifecycle_internal.h"
 
 #include <stdint.h>
+#include <string.h>
 #ifdef HOST_TEST
     #include <stdatomic.h>
 #endif
@@ -167,6 +168,30 @@ uint32_t app_manager_get_running_apps(void)
     uint32_t count = request.count;
     app_manager_lifecycle_screen_access_end();
     return count;
+}
+
+esp_err_t app_manager_get_page_stack(const char *app_id,
+                                     app_manager_page_stack_t *stack)
+{
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (!app_manager_lifecycle_id_is_valid(app_id) || stack == NULL)
+    {
+        return result;
+    }
+    memset(stack, 0, sizeof(*stack));
+    if (!_app_manager_lifecycle_access_begin())
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    app_manager_lifecycle_request_t request =
+    {
+        .app_id = app_id,
+        .page_stack = stack,
+    };
+    result = _app_manager_lifecycle_call(app_manager_lifecycle_page_stack_call,
+                                         &request);
+    app_manager_lifecycle_screen_access_end();
+    return result;
 }
 
 esp_err_t app_manager_get_recent_tasks(app_manager_recent_task_t *tasks,

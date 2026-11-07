@@ -1678,11 +1678,43 @@ static void _test_empty_ops_are_noop(void)
     assert(_navigate(&call) == ESP_OK);
     _expect_trace(NULL, 0U);
     assert(app_manager_is_actived("d"));
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
 
     call = _request(APP_MANAGER_NAV_OP_EXIT, "d", NULL);
     assert(_navigate(&call) == ESP_OK);
     _expect_trace(NULL, 0U);
     assert(app_manager_is_all_closed());
+}
+
+static void _test_page_stack_snapshot(void)
+{
+    app_manager_page_stack_t stack;
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_RUN, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_page_stack("a", &stack) == ESP_OK);
+    assert(strcmp(stack.app_id, "a") == 0);
+    assert(stack.page_count == 1U);
+    assert(strcmp(stack.page_ids[0], "root") == 0);
+    assert(!stack.transitioning);
+
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "two");
+    assert(_navigate(&call) == ESP_OK);
+    assert(app_manager_get_page_stack("a", &stack) == ESP_OK);
+    assert(stack.active);
+    assert(stack.page_count == 3U);
+    assert(strcmp(stack.page_ids[0], "root") == 0);
+    assert(strcmp(stack.page_ids[1], "one") == 0);
+    assert(strcmp(stack.page_ids[2], "two") == 0);
+    assert(app_manager_get_page_stack("missing", &stack) == ESP_ERR_NOT_FOUND);
+    assert(app_manager_get_page_stack(NULL, &stack) == ESP_ERR_INVALID_ARG);
+    assert(app_manager_get_page_stack("a", NULL) == ESP_ERR_INVALID_ARG);
+    call = _request(APP_MANAGER_NAV_OP_EXIT, "a", NULL);
+    assert(_navigate(&call) == ESP_OK);
 }
 
 static void _test_recent_tasks_snapshot(void)
@@ -1980,6 +2012,7 @@ int main(void)
     _test_validation_and_final_exit();
     _test_ops_pause_cleanup_retry();
     _test_empty_ops_are_noop();
+    _test_page_stack_snapshot();
     _test_recent_tasks_snapshot();
     _test_product_eviction_recents();
     _test_task_switcher_helpers();

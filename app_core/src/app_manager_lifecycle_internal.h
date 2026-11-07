@@ -21,6 +21,7 @@ typedef struct app_manager_lifecycle_request
     app_manager_recent_task_t *tasks; /**< Recent-tasks output storage. */
     size_t task_capacity;       /**< Capacity of the tasks array. */
     size_t tasks_filled;        /**< Tasks copied by the recent-tasks call. */
+    app_manager_page_stack_t *page_stack; /**< Page-stack output storage. */
 } app_manager_lifecycle_request_t;
 
 /**
@@ -73,6 +74,12 @@ esp_err_t app_manager_lifecycle_running_count_call(void *opaque);
  * @return ESP_OK after the tasks array is filled.
  */
 esp_err_t app_manager_lifecycle_recent_tasks_call(void *opaque);
+/**
+ * @brief Copy one App's retained page stack on the lifecycle worker.
+ * @param opaque points to an app_manager_lifecycle_request_t.
+ * @return ESP_OK when the stack was copied, ESP_ERR_NOT_FOUND when absent.
+ */
+esp_err_t app_manager_lifecycle_page_stack_call(void *opaque);
 
 /**
  * @brief Stop every eligible background task on the lifecycle worker.

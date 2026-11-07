@@ -133,6 +133,20 @@ uint32_t    app_manager_get_running_apps(void);
 esp_err_t   app_manager_get_recent_tasks(app_manager_recent_task_t *tasks,
         size_t capacity, size_t *count);
 /**
+ * @brief Copy the retained Page stack of one running application.
+ *
+ * Page IDs are ordered from root to current and include retained background
+ * Pages, not only the current route. The call is intended for diagnostics and
+ * acceptance; it must not be used to infer that a committed navigation failed.
+ *
+ * @param app_id identifies the application.
+ * @param stack receives the copied IDs and flags.
+ * @return ESP_OK when the stack is available, ESP_ERR_NOT_FOUND when the App is
+ *         absent, or an argument/admission error.
+ */
+esp_err_t app_manager_get_page_stack(const char *app_id,
+                                     app_manager_page_stack_t *stack);
+/**
  * @brief Report whether a screen transition is currently in progress.
  * @return true while topology queries intentionally expose conservative state.
  */

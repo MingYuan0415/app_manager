@@ -47,6 +47,8 @@ extern "C" {
  * switchable app; pinned/hidden launchers are filtered out at snapshot time.
  */
 #define APP_MANAGER_MAX_RECENT_TASKS  APP_MANAGER_MAX_RESIDENT_APPS
+/** Maximum page identifiers copied by one page-stack snapshot. */
+#define APP_MANAGER_MAX_STACK_PAGES   APP_MANAGER_MAX_PAGE_INSTANCES
 
 #ifdef __cplusplus
 static_assert(APP_MANAGER_PAGE_STATE_BYTES % 8U == 0U,
@@ -278,6 +280,16 @@ typedef struct app_manager_recent_task
     bool active;                  /**< This task is the current foreground task. */
     bool cleanup_pending;         /**< Cleanup failed; the instance retains resources. */
 } app_manager_recent_task_t;
+
+/** @brief One stable page-stack snapshot for a running application. */
+typedef struct app_manager_page_stack
+{
+    const char *app_id; /**< Stable application identifier. */
+    char page_ids[APP_MANAGER_MAX_STACK_PAGES][APP_MANAGER_ID_BYTES];
+    size_t page_count;  /**< Number of copied IDs, root first/current last. */
+    bool active;        /**< This is the foreground application. */
+    bool transitioning; /**< A navigation transition is in progress. */
+} app_manager_page_stack_t;
 
 /** @brief Logical keys accepted by the application manager. */
 typedef enum
