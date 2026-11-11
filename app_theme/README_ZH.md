@@ -19,7 +19,7 @@
 
 ## 配置与依赖
 
-- `idf_component.yml`：`idf: ">=5.0"`、`espressif/esp_lvgl_adapter: "0.7.3"`；`lvgl/lvgl` 9.6 由根工程 `dependencies.lock` 固定，本地主题副本在编译期检查版本。
+- `idf_component.yml`：`idf: ">=5.0"`、`espressif/esp_lvgl_adapter: "0.7.3"`；`lvgl/lvgl` 9.6 由根工程按目标生成的 `dependencies.lock.<target>` 固定，本地主题副本在编译期检查版本。
 - CMake：`REQUIRES lvgl__lvgl`。
 - `resource_manifest.cmake` 将 `assets/font.ttf` 注册为构建资源记录，由装配层加载并绑定到字体角色。
 - `sdkconfig.defaults` 关闭 LVGL 内建主题；`src/app_theme_lvgl.c` 通过仅主题可见的控件掩码编译项目自有的固定版本 `src/lv_theme_default_local.inc` 默认主题副本，控件 Kconfig 保持开启，未使用控件由 `--gc-sections` 回收；本地副本固定为 LVGL 9.6，并在编译期检查版本。

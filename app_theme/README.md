@@ -38,8 +38,9 @@ blending.
 ## Configuration and Dependencies
 
 - `idf_component.yml`: `idf: ">=5.0"`, `espressif/esp_lvgl_adapter: "0.7.3"`;
-  the root project pins `lvgl/lvgl` 9.6 in `dependencies.lock`, and the local
-  theme copy checks the version at compile time.
+  the root project pins `lvgl/lvgl` 9.6 in the per-target
+  `dependencies.lock.<target>`, and the local theme copy checks the version at
+  compile time.
 - CMake: `REQUIRES lvgl__lvgl`.
 - `resource_manifest.cmake` registers `assets/font.ttf` as a build resource
   record, which the assembly layer loads and binds to the font roles.
