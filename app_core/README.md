@@ -60,7 +60,7 @@ Public header `include/app_manager.h` (which also aggregates
 definition, Typed Blob, lifecycle messages and transition types;
 `include/app_manager_ids.h` provides the stable App IDs;
 `include/app_manager_display_diagnostics.h` is a development-only display
-benchmark API.
+diagnostics API.
 
 ## Configuration and Dependencies
 

@@ -935,19 +935,11 @@ flush-wait, and the panel proxy records commit count, pixels, failures and
 synchronous call duration. presentation records animation boundaries only after
 `lv_anim_get()` confirms the animation really started, and aggregates per effect
 the active duration, the P50/P95/P99/max of the final-flush interval, the count
-meeting 33,333 us and the longest run above 41,667 us. adapter FPS is
-observation only; benchmark `passed` means only that sampling, DMA, panel commit
-and animation statistics are complete, and the actual frame-rate threshold is
-judged by the on-device acceptance logic. Stopping diagnostics unregisters the
-display event first, then confirms the task has exited and releases the PSRAM
-stack, and only after that may the LVGL adapter be destroyed. The first
-characterization stage is fixed to display-only; the second stage, full,
-audio-only or tcp-only, is chosen by the root benchmark runtime profile; STRESS
-uses the load from the profile. The campaign mode, duration, IPv4 host, port and
-rate are not part of App Manager Kconfig but are passed to
-`display_benchmark_start()` as typed configuration generated from
-`tests/display/profiles/*.json`. App Manager Kconfig keeps only diagnostics and
-the display static resource/feature gates.
+meeting 33,333 us and the longest run above 41,667 us. Stopping diagnostics
+unregisters the display event first, then confirms the task has exited and
+releases the PSRAM stack, and only after that may the LVGL adapter be destroyed.
+App Manager Kconfig keeps only diagnostics and the display static
+resource/feature gates.
 
 `CONFIG_APP_MANAGER_LIFECYCLE_DEBUG_LOG` is off by default. Enable it only when
 debugging lifecycle ordering; it uniformly emits INFO traces for

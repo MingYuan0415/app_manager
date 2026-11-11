@@ -21,7 +21,7 @@
 - Registry：`app_manager_builtin_discover()` / `app_manager_builtin_list_open()` / `app_manager_builtin_list_get_next()` / `app_manager_builtin_has_app()`；导出宏 `APP_MANAGER_APP_EXPORT` / `APP_MANAGER_APP_EXPORT_META`。
 - UI 与资源：`app_manager_ui_post()` / `app_manager_ui_call()` / `app_manager_get_ui_dispatch_fn()`、`app_manager_get_font()`、`app_manager_get_image()`。
 
-`include/app_manager_types.h` 定义 App/Page descriptor、route、definition、Typed Blob、生命周期消息与转场类型；`include/app_manager_ids.h` 提供稳定 App ID；`include/app_manager_display_diagnostics.h` 为仅开发用的显示基准 API。
+`include/app_manager_types.h` 定义 App/Page descriptor、route、definition、Typed Blob、生命周期消息与转场类型；`include/app_manager_ids.h` 提供稳定 App ID；`include/app_manager_display_diagnostics.h` 为仅开发用的显示诊断 API。
 
 ## 配置与依赖
 
