@@ -797,12 +797,14 @@ header shows the task count and a `"清除"` button that arms a `"确认清除"`
 confirmation for three seconds; any other tap, HOME, or the timeout cancels
 it. The bottom of the surface shows internal RAM and PSRAM used/total text and
 usage bars (turning to the warning role at ≥85%), refreshed on open/rebuild and
-every 1 s. The internal RAM total and free figures both exclude the configured
-DMA/internal reserve pool, so the bar measures the same physical pool. The
-surface fades in for 140 ms on open. Tapping a background row
-restores it through ordinary RUN (the navigation gateway hides the switcher
-automatically before execution); tapping the current row, the empty backdrop or
-HOME closes the switcher. "Close" is submitted through the row's 52 px button
+every 1 s. The internal RAM total excludes the configured DMA/internal reserve
+pool because `heap_caps_get_total_size()` counts that region twice; the free
+figure is the actual value from `heap_caps_get_free_size()`, where the carve-out
+is already accounted for. The surface fades in for 140 ms on open. Tapping a
+background row restores it through ordinary RUN (the navigation gateway
+hides the switcher automatically before execution); tapping the current row, the
+empty backdrop or HOME closes the switcher. "Close" is submitted through the
+row's 52 px button
 or a leftward swipe of 64 px or more on any row as `EXIT`, and the
 list is rebuilt in place. CLICKED suppression: a drag that did not become a
 scroll swallows the click on release once it exceeds 10 px, and rows and close

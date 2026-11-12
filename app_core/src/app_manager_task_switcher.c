@@ -635,22 +635,22 @@ static void _switcher_update_memory(void)
     const size_t psram_total = heap_caps_get_total_size(
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     size_t internal_total = reported_internal_total;
-    size_t internal_free = heap_caps_get_free_size(
-                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t internal_free = heap_caps_get_free_size(
+                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 #if CONFIG_SPIRAM
     if (psram_total != 0U)
     {
         /* The DMA/internal reserve pool is carved out of the general heap and
-         * re-registered, so heap_caps reports it in both total and free size.
-         * Remove it from both figures to keep the displayed used/total pair on
-         * the same physical pool. */
+         * re-registered as a separate region. heap_caps_get_total_size() sums
+         * region sizes, so the reserve is counted twice; subtract it from the
+         * total only. heap_caps_get_free_size() sums actual free bytes, where
+         * the carve-out is already accounted for, so the free figure is used
+         * as-is. */
         const size_t reserve =
             (size_t)CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL;
         internal_total = reported_internal_total > reserve ?
                          reported_internal_total - reserve :
                          reported_internal_total;
-        internal_free = internal_free > reserve ?
-                        internal_free - reserve : 0U;
     }
 #endif
     const size_t psram_free = heap_caps_get_free_size(

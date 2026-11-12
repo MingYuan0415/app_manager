@@ -620,8 +620,10 @@ PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE
 行使用 2 px accent 描边和 accent 色调图标底衬。头部显示任务数量与
 “清除”按钮；首次点按进入“确认清除”状态并保持 3 s，期间点按其他位置、HOME 或超时
 都会取消。表面底部显示内部 RAM 与 PSRAM 的 used/total 文本与使用条（≥85% 使用
-warning 角色），打开/重建时刷新并每 1 s 刷新一次；内部 RAM 的 total 与 free 均扣除
-配置的 DMA/internal reserve pool，使使用条对应同一物理内存池。打开时表面 140 ms 淡入。点击
+warning 角色），打开/重建时刷新并每 1 s 刷新一次；内部 RAM 的 total 扣除配置的
+DMA/internal reserve pool（该 region 在 `heap_caps_get_total_size()` 中会被重复
+计入），free 直接使用 `heap_caps_get_free_size()` 的实际空闲值。打开时表面
+140 ms 淡入。点击
 后台行经普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；点击当前行、空白
 背景或 HOME 关闭切换器。“关闭”经行右侧 52 px 按钮或在该行上向左滑动达到
 64 px 提交 `EXIT`，并原地刷新列表。CLICKED 抑制：未形成滚动的拖拽在位移超过
