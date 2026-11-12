@@ -26,7 +26,7 @@ esp_err_t app_manager_task_switcher_deinit(void);
 /**
  * @brief Open the task switcher, or close it when already visible.
  *
- * Copies the MRU task list and builds the cards before the surface becomes
+ * Copies the MRU task list and builds the rows before the surface becomes
  * interactive. A repeated open
  * while visible closes the surface back to the previous application.
  *

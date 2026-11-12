@@ -43,7 +43,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
-| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：横向卡片轮播、逐卡关闭（按钮或上滑）、全部清除、设备内存概览与生命周期协作 |
+| `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：纵向任务栈、逐行关闭（按钮或左滑）、二次确认全部清除、设备内存概览与生命周期协作 |
 | `app_core/src/app_manager_pm*.c` | app-control、输入合并、显示 PM 和 system standby 协作 |
 | `app_core/linker.lf` | 保留唯一的 App descriptor 链接段 |
 | `app_core/tests/host/` | model、registry、gateway、lifecycle、mailbox、PM 和 adapter 测试 |
@@ -86,7 +86,7 @@ UI pause/resume，不直接修改 nav model 或页面对象。
 构建生成的只读图片由 Apps/App Theme manifest 聚合，装配层使用
 `app_manager_image_resource_config_t` 将产品语义 ID 映射
 到 mmap asset index。App descriptor 使用 `uint32_t icon_id` 绑定应用图标，最近任务快照
-复制该 ID，任务切换器以 64 px 圆形图标底衬内嵌 56 px 图像显示，资源缺失或 ID 为零时
+复制该 ID，任务切换器以 56 px 圆形图标底衬内嵌 52 px 图像显示，资源缺失或 ID 为零时
 回退 LVGL symbol。初始化时 App Manager 在 PSRAM 创建小型描述符表，并校验 LVGL 9
 BIN magic、`RGB565A8`、尺寸、偶数 stride、独立 A8 平面长度及重复语义 ID；像素 payload
 始终直接指向 `res` 分区的 mmap Flash 地址。`app_manager_get_image()` 返回的描述符持续到
@@ -423,8 +423,8 @@ App 或 Page。它在 LVGL Sys Layer 创建一条顶部捕获带（高度 40 px�
 edge-back、普通导航或单击 HOME 都会关闭。
 
 过渡：打开时卡片从屏幕上方滑入到最终位置、scrim 同步由全透明淡到 `CC_SCRIM_OPA`；点击
-scrim 关闭时反向播放。两者都是 180 ms（与任务切换器的淡入时长一致），由同一条进度动画
-同时驱动卡片位移与遮罩不透明度，因此不会脱节。退场一开始表面即视为不可见
+scrim 关闭时反向播放。两者都是 180 ms，由同一条进度动画同时驱动卡片位移与遮罩不透明度，
+因此不会脱节。退场一开始表面即视为不可见
 （`is_visible()` 返回 false、捕获带保持禁用），动画结束后才隐藏对象并恢复捕获带，避免退回
 途中被再次拉起。熄屏、待机、navigation begin、策略禁用、`hide()` 与 deinit 走瞬时隐藏并
 取消进行中的动画，不阻塞转场。过渡期间磁贴、两条滑条与熄屏/待机按钮不接受输入。
@@ -609,27 +609,30 @@ HOME 序列只负责唤醒，不参与消歧；长按、POWER 关屏、standby �
 
 最近任务是 App Manager 的系统级界面（`app_manager_task_switcher.c`），不属于任何
 App 或 Page：它在 LVGL Sys Layer 创建全屏表面，打开时原前台 App 保持运行且不收到
-PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，标题栏与内存页脚
-同样吞掉点击，被覆盖页面收不到任何触摸；点击表面自身（非卡片区域）或单击 HOME
-关闭切换器并回原任务。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
-当前任务与 `cleanup_pending` 状态），构建横向可滚动卡片轮播：每张 240 px 宽、
-约 187 px 高的内容自适应卡片，顶部 64 px 圆形图标底衬内嵌 56 px 图像，名称与状态行
-（当前 / 点按切换 / 关闭失败）在图标下方居中，非当前卡右上角附 44 px 独立关闭按钮，
-不保留屏幕像素缓存；表面底部显示内部 RAM 与 PSRAM 的 used/total 文本与使用条
-（≥85% 变红），打开/重建时刷新并每 1 s 刷新一次；打开时表面 180 ms 淡入。点击后台任务
-卡片经普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；"关闭"经卡片右上角按钮或在该卡片上向上滑动超过 64 px（横向位移不超过
-64 px）提交 `EXIT` 并原地刷新列表。CLICKED 抑制：跟随轮播的横向滚动由 LVGL 原生
-scroll 抑制；未形成滚动的拖拽在位移超过 10 px 时于松手吞掉点击，卡片与关闭按钮
-同样抑制。点击动作在事件时刻捕获 `app_id` 与列表 generation 再经 `lv_async_call`
-执行，覆盖激活、关闭按钮和上滑关闭，同帧内的列表重建不会让延迟动作命中错误任务。
-切换失败时切换器重新打开并在对应卡片显示“切换失败”。列表重建（关闭完成、淘汰、
-清除失败重试、重新打开）回到轮播起始位置。
-"全部清除"经复合系统命令 `CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁
-全部非 pinned/hidden 任务（含打开前的前台任务），完成后关闭切换器。普通导航在执行
-前同步隐藏切换器；切换器自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记
-保持可见并显示 busy 外壳，完成或失败后原地重建。screen suspend 先取消指针序列、
-清空卡片与 busy 外壳并隐藏表面（root 骨架保留），再进入页面 PAUSE；resume 后保持
-关闭。deinit 删除切换器和 presentation Sys Layer 对象。
+PAUSE/UNMOUNT，触摸由切换器完全接管——全屏 root 保持 CLICKABLE，被覆盖页面收不到
+任何触摸。打开经 `app_manager_lifecycle_recent_tasks_call()` 复制 MRU 任务列表（含
+当前任务与 `cleanup_pending` 状态），构建纵向滚动任务栈：每行按内容自适应（最小
+74 px），56 px 圆形图标底衬内嵌 52 px 图像，应用名使用 HEAD 角色，状态行使用 SMALL
+角色（前台运行 / 后台运行 / 清理待重试），每行右侧附 52 px 独立关闭按钮；当前
+行使用 2 px accent 描边和 accent 色调图标底衬。头部显示任务数量与
+“清除”按钮；首次点按进入“确认清除”状态并保持 3 s，期间点按其他位置、HOME 或超时
+都会取消。表面底部显示内部 RAM 与 PSRAM 的 used/total 文本与使用条（≥85% 使用
+warning 角色），打开/重建时刷新并每 1 s 刷新一次；内部 RAM 的 total 与 free 均扣除
+配置的 DMA/internal reserve pool，使使用条对应同一物理内存池。打开时表面 140 ms 淡入。点击
+后台行经普通 RUN 恢复（导航 gateway 在执行前自动隐藏切换器）；点击当前行、空白
+背景或 HOME 关闭切换器。“关闭”经行右侧 52 px 按钮或在该行上向左滑动达到
+64 px 提交 `EXIT`，并原地刷新列表。CLICKED 抑制：未形成滚动的拖拽在位移超过
+10 px 时于松手吞掉点击，行与关闭按钮同样抑制；纵向列表是唯一滚动所有者，所有行
+能放下时禁用滚动。点击动作在事件时刻捕获 `app_id` 与列表 generation 再经
+`lv_async_call` 执行，覆盖激活、关闭按钮和左滑关闭，同帧内的列表重建不会让延迟
+动作命中错误任务。切换失败时切换器重新打开并在对应行显示“切换失败”。列表重建
+（关闭完成、淘汰、清除失败重试、重新打开）回到列表顶部。“全部清除”经复合系统命令
+`CLEAR_ALL` 先切换 Home，再在同一个 gateway 命令内销毁全部非 pinned/hidden 任务
+（含打开前的前台任务），完成后关闭切换器。普通导航在执行前同步隐藏切换器；切换器
+自己发起的 `EXIT` 通过命令级 `keep_switcher_alive` 标记保持可见并显示 busy 外壳，
+完成或失败后原地重建。screen suspend 先取消指针序列、清空任务行与 busy 外壳并隐藏
+表面（root 骨架保留），再进入页面 PAUSE；resume 后保持关闭。
+deinit 删除切换器和 presentation Sys Layer 对象。
 
 最近任务数据由 `app_manager_get_recent_tasks()` 提供：按 MRU 顺序返回最多
 `APP_MANAGER_MAX_RECENT_TASKS` 个非 pinned、非 hidden 的驻留 App，每项包含静态

@@ -74,8 +74,8 @@
 #define CC_SCRIM_OPA         225
 
 /* The surface transition follows the pull direction: the card slides down from
- * above while the scrim fades in. Duration matches the task switcher so the two
- * overlays feel alike. */
+ * above while the scrim fades in. Keep the duration in the same short motion
+ * class as the task switcher while leaving each surface's budget independent. */
 #define CC_ANIM_MS           180
 #define CC_ANIM_PROGRESS_MAX 100
 
