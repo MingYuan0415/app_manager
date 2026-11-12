@@ -47,22 +47,33 @@
 #define CC_BAND_CONTROL_RESERVE_PX 76
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
-/* Card geometry. The card is sized from its rows at build time (see
- * _cc_build()): 70 px header block (the clock and date are aligned inside it),
- * then a 60 px slider row per slider, the 80 px tile row and the 56 px action
- * row, separated by 12 px gaps; the gap after the last row is the bottom
- * padding. Rows without an ops bridge are not built and the card shrinks with
- * them. */
-#define CC_HEADER_HEIGHT     70
+/* The sheet leaves a 32 px strip of page visible at the bottom: it is the
+ * outside-card dismiss target, so the surface never becomes a full-screen
+ * dead end. */
+#define CC_CARD_BOTTOM_RESERVE 32
+/* Panel geometry. Rows are laid out by the panel's column flex instead of by
+ * absolute cursor math: a 56 px header (clock/date), one 68 px level capsule
+ * per available control, an 84 px radio tile row, and a 52 px action row,
+ * separated by 12 px minimum gaps. The panel is layout-size driven and only
+ * grows by CC_PANEL_EXTRA_FILL up to the bottom reserve, so missing bridges
+ * still shorten it instead of leaving a hole. */
+#define CC_PANEL_PAD         16
+#define CC_PANEL_EXTRA_FILL  32
+#define CC_HEADER_HEIGHT     56
 #define CC_ROW_GAP           12
-#define CC_SLIDER_ROW_HEIGHT 60
-#define CC_TILE_HEIGHT       80
-#define CC_ACTION_HEIGHT     56
-#define CC_WELL_SIZE         40
-/* Widest reading is "100%": measured ink is 49 px at the SMALL role, so 52 px
- * keeps the track length stable without clipping. */
-#define CC_VALUE_LABEL_W     52
+#define CC_LEVEL_ROW_HEIGHT  68
+#define CC_LEVEL_TRACK_H     44
+#define CC_TILE_HEIGHT       84
+#define CC_ACTION_HEIGHT     52
+#define CC_WELL_SIZE         36
+/* Widest reading is "100%": measured ink is 77 px at the HEAD role, so 80 px
+ * keeps the capsule length stable without clipping. Both level rows reserve
+ * the same width, so their tracks stay aligned. */
+#define CC_VALUE_LABEL_W     80
 #define CC_POLL_MS           1000U
+/* The panel never goes fully dark: 16 is the safe brightness floor the old
+ * raw 16..255 slider encoded. The UI now exposes 0..100 % like the speaker. */
+#define CC_BRIGHTNESS_FLOOR  16
 /* Applying the speaker level is a synchronous codec control transfer (one I2C
  * register write, ~0.3 ms at the 100 kHz bus the codec opens with) taken under
  * the audio service lock, so a drag that crosses 100 steps would otherwise hold
@@ -117,6 +128,8 @@ typedef struct app_manager_control_center
     lv_obj_t *clock_label;
     lv_obj_t *date_label;
     lv_obj_t *brightness_slider;
+    lv_obj_t *brightness_label;
+    bool brightness_dragging;
     lv_obj_t *volume_slider;
     lv_obj_t *volume_label;
     bool volume_dragging;
@@ -323,6 +336,7 @@ static void _cc_anim_park(void)
 static void _cc_close_now(void)
 {
     _cc_anim_park();
+    s_cc.brightness_dragging = false;
     s_cc.volume_dragging = false;
     if (s_cc.root != NULL)
     {
@@ -349,6 +363,7 @@ static void _cc_close_completed(lv_anim_t *animation)
     }
     _cc_anim_apply(CC_ANIM_PROGRESS_MAX);
     _cc_set_state(CC_STATE_HIDDEN);
+    s_cc.brightness_dragging = false;
     s_cc.volume_dragging = false;
     if (s_cc.poll_timer != NULL)
     {
@@ -426,6 +441,46 @@ static void _cc_standby_event(lv_event_t *event)
     }
 }
 
+/* The usable panel range is CC_BRIGHTNESS_FLOOR..255, so 0 % is the safe
+ * floor and 100 % is full output; mapping over the usable span keeps a
+ * release-and-reopen round trip stable instead of showing 6 % at the floor. */
+static uint8_t _cc_brightness_percent(uint8_t raw)
+{
+    if (raw <= CC_BRIGHTNESS_FLOOR)
+    {
+        return 0U;
+    }
+    const uint32_t span = 255U - CC_BRIGHTNESS_FLOOR;
+    return (uint8_t)(((uint32_t)(raw - CC_BRIGHTNESS_FLOOR) * 100U +
+                      span / 2U) / span);
+}
+
+static uint8_t _cc_brightness_raw(int32_t percent)
+{
+    if (percent < 0)
+    {
+        percent = 0;
+    }
+    else if (percent > 100)
+    {
+        percent = 100;
+    }
+    const int32_t span = 255 - CC_BRIGHTNESS_FLOOR;
+    return (uint8_t)(CC_BRIGHTNESS_FLOOR + (percent * span + 50) / 100);
+}
+
+static void _cc_brightness_text(int32_t percent)
+{
+    if (s_cc.brightness_label != NULL)
+    {
+        lv_label_set_text_fmt(s_cc.brightness_label, "%d%%", (int)percent);
+    }
+}
+
+/* Brightness previews through the temporary setter while the finger moves and
+ * commits once on release, mirroring the speaker row. Both rows now share the
+ * same 0..100 % scale and the same value-label position; the raw hardware
+ * floor is applied only in _cc_brightness_raw(). */
 static void _cc_brightness_event(lv_event_t *event)
 {
     if (s_cc.brightness_slider == NULL || s_cc.state != CC_STATE_VISIBLE)
@@ -433,15 +488,34 @@ static void _cc_brightness_event(lv_event_t *event)
         return;
     }
     const lv_event_code_t code = lv_event_get_code(event);
-    const uint8_t value =
-        (uint8_t)(int32_t)lv_slider_get_value(s_cc.brightness_slider);
-    if (code == LV_EVENT_VALUE_CHANGED)
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
     {
-        (void)app_manager_screen_set_brightness_temp(value);
+        if (!s_cc.brightness_dragging)
+        {
+            return;
+        }
+        s_cc.brightness_dragging = false;
+        const int32_t percent =
+            lv_slider_get_value(s_cc.brightness_slider);
+        _cc_brightness_text(percent);
+        if (app_manager_screen_set_brightness(
+                    _cc_brightness_raw(percent)) != ESP_OK)
+        {
+            LOG_W("brightness commit rejected");
+        }
+        return;
     }
-    else if (code == LV_EVENT_RELEASED)
+    if (code != LV_EVENT_VALUE_CHANGED)
     {
-        (void)app_manager_screen_set_brightness(value);
+        return;
+    }
+    s_cc.brightness_dragging = true;
+    const int32_t percent = lv_slider_get_value(s_cc.brightness_slider);
+    _cc_brightness_text(percent);
+    if (app_manager_screen_set_brightness_temp(
+                _cc_brightness_raw(percent)) != ESP_OK)
+    {
+        LOG_W("brightness preview rejected");
     }
 }
 
@@ -449,6 +523,8 @@ static void _cc_volume_text(uint8_t percent)
 {
     if (s_cc.volume_label != NULL)
     {
+        lv_obj_set_style_text_color(s_cc.volume_label,
+                                    lv_color_hex(APP_THEME_COLOR_INK), 0);
         lv_label_set_text_fmt(s_cc.volume_label, "%u%%", (unsigned)percent);
     }
 }
@@ -670,6 +746,24 @@ static void _cc_bt_event(lv_event_t *event)
     _cc_refresh_values();
 }
 
+/* The brightness row is normally owned by the drag. Reading it back on the
+ * poll keeps it honest after another owner changes the panel level, and gives
+ * the open path a single conversion from raw hardware units to percent. */
+static void _cc_refresh_brightness(void)
+{
+    if (s_cc.brightness_slider == NULL || s_cc.brightness_dragging)
+    {
+        return;
+    }
+    const uint8_t raw = app_manager_screen_get_brightness();
+    const int32_t percent = (int32_t)_cc_brightness_percent(raw);
+    if (lv_slider_get_value(s_cc.brightness_slider) != percent)
+    {
+        lv_slider_set_value(s_cc.brightness_slider, percent, LV_ANIM_OFF);
+    }
+    _cc_brightness_text(percent);
+}
+
 /* The speaker row mirrors the service: a rejected or externally changed level
  * (another owner, an error path) is picked up on the next poll. A drag in
  * progress owns the knob, so the poll must not fight it. */
@@ -692,10 +786,17 @@ static void _cc_refresh_volume(void)
         if (s_cc.volume_label != NULL)
         {
             lv_label_set_text(s_cc.volume_label, "--");
+            lv_obj_set_style_text_color(s_cc.volume_label,
+                                        lv_color_hex(APP_THEME_COLOR_INK_FAINT), 0);
         }
         return;
     }
     lv_obj_remove_state(s_cc.volume_slider, LV_STATE_DISABLED);
+    if (s_cc.volume_label != NULL)
+    {
+        lv_obj_set_style_text_color(s_cc.volume_label,
+                                    lv_color_hex(APP_THEME_COLOR_INK), 0);
+    }
     if (percent > 100U)
     {
         percent = 100U;
@@ -715,6 +816,8 @@ static void _cc_refresh_volume(void)
 
 static void _cc_refresh_values(void)
 {
+    _cc_refresh_brightness();
+
     if (s_cc.clock_label != NULL)
     {
         const char *time_text = NULL;
@@ -808,9 +911,9 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     lv_obj_set_style_border_width(tile, 0, 0);
     lv_obj_set_style_shadow_width(tile, 0, 0);
     lv_obj_set_style_pad_all(tile, 12, 0);
-    lv_obj_set_style_pad_column(tile, 10, 0);
-    /* Icon on the left, name over state on the right; a stacked column cannot
-     * fit both text lines plus the icon inside CC_TILE_HEIGHT. */
+    lv_obj_set_style_pad_column(tile, 8, 0);
+    /* Icon on the left, name over state on the right; the text column is
+     * sized by the row so both lines clear the 36 px icon well. */
     lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -833,7 +936,7 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
     lv_obj_set_style_bg_opa(well, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(well, lv_color_hex(APP_THEME_COLOR_TRACK), 0);
     lv_obj_set_clickable(well, false);
-    lv_obj_t *icon = _cc_icon(well, image_id, 28, icon_fallback);
+    lv_obj_t *icon = _cc_icon(well, image_id, 24, icon_fallback);
     if (icon != NULL)
     {
         lv_obj_center(icon);
@@ -854,38 +957,54 @@ static lv_obj_t *_cc_tile(lv_obj_t *parent, lv_obj_t **tile_out,
         lv_obj_set_flex_grow(text, 1);
         lv_obj_set_height(text, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(text, 1, 0);
+        lv_obj_set_style_pad_row(text, 0, 0);
+        const lv_font_t *name_font =
+            app_manager_get_font(APP_THEME_FONT_BODY);
+        const lv_font_t *state_font =
+            app_manager_get_font(APP_THEME_FONT_SMALL);
         lv_obj_t *name = lv_label_create(text);
         lv_obj_set_width(name, LV_PCT(100));
+        /* DOTS keeps the row to one line even for a 32-byte SSID; a fixed
+         * line box stops the label from growing vertically and pushing the
+         * state line out of the tile. */
+        if (name_font != NULL)
+        {
+            lv_obj_set_height(name, lv_font_get_line_height(name_font));
+        }
         lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(name, lv_color_hex(APP_THEME_COLOR_INK), 0);
-        lv_obj_set_style_text_font(name,
-                                   app_manager_get_font(APP_THEME_FONT_BODY), 0);
+        lv_obj_set_style_text_font(name, name_font, 0);
         lv_label_set_text(name, title);
         lv_obj_t *state = lv_label_create(text);
         lv_obj_set_width(state, LV_PCT(100));
+        if (state_font != NULL)
+        {
+            lv_obj_set_height(state, lv_font_get_line_height(state_font));
+        }
         lv_label_set_long_mode(state, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(state,
                                     lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
-        lv_obj_set_style_text_font(state,
-                                   app_manager_get_font(APP_THEME_FONT_SMALL), 0);
+        lv_obj_set_style_text_font(state, state_font, 0);
         lv_label_set_text(state, "--");
         *label_out = state;
     }
     return tile;
 }
 
-/* Shared slider row: a 60 px rounded block holding the glyph, a growing
- * slider and an optional right-aligned value label. Both the brightness and
- * the speaker row use it so the two stay visually identical. */
-static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
-                                uint32_t image_id, const char *icon_fallback,
-                                uint32_t icon_color, const char *settings_page,
-                                int32_t minimum, int32_t maximum, int32_t value,
-                                lv_event_cb_t callback, lv_obj_t **slider_out,
-                                lv_obj_t **value_label_out)
+/* One level capsule row. Both brightness and speaker use this exact builder:
+ * a 68 px pill with the glyph at the leading edge, a full-height capsule
+ * track in the middle and a fixed-width HEAD value at the trailing edge. The
+ * shared geometry is what removes the old "one row shows a percentage, the
+ * other is silent" mismatch. The row background, not the slider, owns the
+ * long-press target so a drag never turns into a settings jump. */
+static lv_obj_t *_cc_level_row(lv_obj_t *parent, uint32_t image_id,
+                               const char *icon_fallback, uint32_t accent,
+                               const char *settings_page, int32_t minimum,
+                               int32_t maximum, int32_t value,
+                               lv_event_cb_t callback, lv_obj_t **slider_out,
+                               lv_obj_t **value_label_out)
 {
-    lv_obj_t *row = lv_obj_create(panel);
+    lv_obj_t *row = lv_obj_create(parent);
     if (row == NULL)
     {
         return NULL;
@@ -896,54 +1015,58 @@ static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
         *value_label_out = NULL;
     }
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, width, CC_SLIDER_ROW_HEIGHT);
-    lv_obj_align(row, LV_ALIGN_TOP_LEFT, 12, y);
+    lv_obj_set_width(row, LV_PCT(100));
+    lv_obj_set_height(row, CC_LEVEL_ROW_HEIGHT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(row, 12, 0);
     lv_obj_set_style_pad_column(row, 12, 0);
-    lv_obj_set_style_pad_hor(row, 16, 0);
     lv_obj_set_style_bg_color(row, lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(row, 30, 0);
+    lv_obj_set_style_radius(row, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_set_scrollable(row, false);
-    /* The glyph and the row background are the long-press target; the slider
-     * itself keeps its own press so a drag never turns into a settings jump.
-     * Click-only, so sliding off the row cancels it. */
     if (settings_page != NULL)
     {
         lv_obj_add_event_cb(row, _cc_row_long_press, LV_EVENT_LONG_PRESSED,
                             (void *)settings_page);
         lv_obj_set_press_lock(row, false);
     }
-    lv_obj_t *icon = _cc_icon(row, image_id, 24, icon_fallback);
+
+    lv_obj_t *icon = _cc_icon(row, image_id, 26, icon_fallback);
     if (icon != NULL)
     {
-        _cc_icon_color(icon, icon_color);
+        _cc_icon_color(icon, accent);
     }
 
     lv_obj_t *slider = lv_slider_create(row);
     if (slider != NULL)
     {
+        lv_obj_set_width(slider, 0);
+        lv_obj_set_height(slider, CC_LEVEL_TRACK_H);
         lv_obj_set_flex_grow(slider, 1);
-        lv_obj_set_height(slider, 20);
         lv_slider_set_range(slider, minimum, maximum);
         lv_slider_set_value(slider, value, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_TRACK),
                                   LV_PART_MAIN);
-        /* The 20 px knob overhangs the track by 2 px of knob padding on each
-         * side; inset the track by the knob radius so the handle stays inside
-         * the slider box at both ends instead of reaching into the value
-         * label. */
-        lv_obj_set_style_pad_left(slider, 12, LV_PART_MAIN);
-        lv_obj_set_style_pad_right(slider, 12, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_AZURE),
+        lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(slider, 0, LV_PART_MAIN);
+        lv_obj_set_style_border_width(slider, 0, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(accent),
                                   LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(slider, lv_color_hex(APP_THEME_COLOR_INK),
-                                  LV_PART_KNOB);
-        lv_obj_set_style_pad_all(slider, 2, LV_PART_KNOB);
+        lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_INDICATOR);
+        lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+        lv_obj_set_style_pad_all(slider, 0, LV_PART_INDICATOR);
+        /* The illuminated fill edge is the handle: the knob stays as LVGL's
+         * hit geometry but is not painted, so the capsule reads as one
+         * continuous phone-style level control instead of a track plus puck. */
+        lv_obj_set_style_bg_opa(slider, LV_OPA_TRANSP, LV_PART_KNOB);
+        lv_obj_set_style_border_width(slider, 0, LV_PART_KNOB);
         lv_obj_set_style_shadow_width(slider, 0, LV_PART_KNOB);
-        lv_obj_set_ext_click_area(slider, 16);
+        lv_obj_set_ext_click_area(slider, 20);
         lv_obj_add_event_cb(slider, callback, LV_EVENT_VALUE_CHANGED, NULL);
         lv_obj_add_event_cb(slider, callback, LV_EVENT_RELEASED, NULL);
         /* A finger that leaves the track mid-drag ends the gesture here; the
@@ -954,48 +1077,62 @@ static lv_obj_t *_cc_slider_row(lv_obj_t *panel, int32_t width, int32_t y,
 
     if (value_label_out != NULL)
     {
-        /* Fixed width built from the widest reading ("100%"), so the track
-         * never changes length while the level moves. */
         lv_obj_t *value_label = lv_label_create(row);
         lv_obj_set_width(value_label, CC_VALUE_LABEL_W);
+        lv_obj_set_height(value_label, LV_SIZE_CONTENT);
         lv_label_set_long_mode(value_label, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_set_style_text_color(value_label,
-                                    lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
+                                    lv_color_hex(APP_THEME_COLOR_INK), 0);
         lv_obj_set_style_text_font(value_label,
-                                   app_manager_get_font(APP_THEME_FONT_SMALL), 0);
-        lv_label_set_text(value_label, "--");
+                                   app_manager_get_font(APP_THEME_FONT_HEAD), 0);
+        lv_label_set_text(value_label, "0%");
         *value_label_out = value_label;
     }
     return row;
 }
 
+/* A row-sized panel: header, the level capsules that are actually wired, the
+ * radio tiles that are actually wired, and the action row. CC_PANEL_EXTRA_FILL
+ * gives a complete surface a little more air on taller panels; the cap keeps a
+ * 32 px strip of scrim available at the bottom for dismissal. Missing bridges
+ * reduce the natural height instead of leaving a hole, matching the old
+ * "card shrinks with its rows" contract. */
+static int32_t _cc_panel_height(bool has_volume, bool has_radios)
+{
+    int32_t rows = 3;
+    int32_t height = 2 * CC_PANEL_PAD + CC_HEADER_HEIGHT +
+                     CC_LEVEL_ROW_HEIGHT + CC_ACTION_HEIGHT;
+    if (has_volume)
+    {
+        height += CC_LEVEL_ROW_HEIGHT;
+        rows++;
+    }
+    if (has_radios)
+    {
+        height += CC_TILE_HEIGHT;
+        rows++;
+    }
+    height += (rows - 1) * CC_ROW_GAP + CC_PANEL_EXTRA_FILL;
+    const int32_t max_height = s_cc.height - CC_CARD_MARGIN -
+                               CC_CARD_BOTTOM_RESERVE;
+    return height < max_height ? height : max_height;
+}
+
 static void _cc_build(void)
 {
     const int32_t panel_w = s_cc.width - 2 * CC_CARD_MARGIN;
-    const int32_t inner_w = panel_w - 24;
+    const int32_t inner_w = panel_w - 2 * CC_PANEL_PAD;
     const bool has_wifi = s_cc.ops.get_wifi != NULL;
     const bool has_bt = s_cc.ops.get_bluetooth != NULL;
+    const bool has_radios = has_wifi || has_bt;
     /* Both halves of the speaker bridge are required: a write-only row could
      * not show the level it applied, and a read-only row could not apply
      * anything. */
     const bool has_volume = s_cc.ops.get_volume != NULL &&
                             s_cc.ops.set_volume != NULL;
 
-    /* Rows stack on one cursor; the trailing gap doubles as the bottom
-     * padding, so the card ends exactly with its last row. */
-    int32_t cursor = CC_HEADER_HEIGHT;
-    cursor += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
-    if (has_volume)
-    {
-        cursor += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
-    }
-    if (has_wifi || has_bt)
-    {
-        cursor += CC_TILE_HEIGHT + CC_ROW_GAP;
-    }
-    cursor += CC_ACTION_HEIGHT + CC_ROW_GAP;
-    s_cc.card_height = cursor;
+    s_cc.card_height = _cc_panel_height(has_volume, has_radios);
 
     lv_obj_t *panel = lv_obj_create(s_cc.root);
     s_cc.panel = panel;
@@ -1005,43 +1142,52 @@ static void _cc_build(void)
     lv_obj_set_style_bg_color(panel, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(panel, 28, 0);
+    lv_obj_set_style_pad_all(panel, CC_PANEL_PAD, 0);
+    lv_obj_set_style_pad_row(panel, CC_ROW_GAP, 0);
+    lv_obj_set_style_border_width(panel, 0, 0);
+    lv_obj_set_style_shadow_width(panel, 0, 0);
     lv_obj_set_scrollable(panel, false);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    s_cc.clock_label = lv_label_create(panel);
+    lv_obj_t *header = lv_obj_create(panel);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_width(header, LV_PCT(100));
+    lv_obj_set_height(header, CC_HEADER_HEIGHT);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_scrollable(header, false);
+    lv_obj_set_clickable(header, false);
+
+    s_cc.clock_label = lv_label_create(header);
     lv_obj_set_style_text_color(s_cc.clock_label,
                                 lv_color_hex(APP_THEME_COLOR_INK), 0);
     lv_obj_set_style_text_font(s_cc.clock_label,
                                app_manager_get_font(APP_THEME_FONT_BIGL), 0);
-    lv_obj_align(s_cc.clock_label, LV_ALIGN_TOP_LEFT, 20, 14);
     lv_label_set_text(s_cc.clock_label, "--:--");
 
-    s_cc.date_label = lv_label_create(panel);
+    s_cc.date_label = lv_label_create(header);
     lv_obj_set_style_text_color(s_cc.date_label,
                                 lv_color_hex(APP_THEME_COLOR_INK_SOFT), 0);
     lv_obj_set_style_text_font(s_cc.date_label,
                                app_manager_get_font(APP_THEME_FONT_SMALL), 0);
-    lv_obj_align(s_cc.date_label, LV_ALIGN_TOP_RIGHT, -20, 26);
     lv_label_set_text(s_cc.date_label, "时间未同步");
 
-    int32_t y = CC_HEADER_HEIGHT;
-
-    /* Brightness row. */
-    (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_BRIGHTNESS,
-                         LV_SYMBOL_IMAGE, APP_THEME_COLOR_AMBER,
-                         APP_MANAGER_ID_SETTINGS_DISPLAY,
-                         16, 255, 128, _cc_brightness_event,
-                         &s_cc.brightness_slider, NULL);
-    y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
-
-    /* Speaker volume row. */
+    /* Brightness and speaker share one capsule row; both start on the same
+     * 0..100 % scale, and both read the same fixed-width HEAD value. */
+    (void)_cc_level_row(panel, CC_IMAGE_BRIGHTNESS, LV_SYMBOL_IMAGE,
+                        APP_THEME_COLOR_AMBER, APP_MANAGER_ID_SETTINGS_DISPLAY,
+                        0, 100, 50, _cc_brightness_event,
+                        &s_cc.brightness_slider, &s_cc.brightness_label);
     if (has_volume)
     {
-        (void)_cc_slider_row(panel, inner_w, y, CC_IMAGE_VOLUME,
-                             LV_SYMBOL_VOLUME_MAX, APP_THEME_COLOR_AZURE,
-                             APP_MANAGER_ID_SETTINGS_SOUND,
-                             0, 100, 0, _cc_volume_event,
-                             &s_cc.volume_slider, &s_cc.volume_label);
-        y += CC_SLIDER_ROW_HEIGHT + CC_ROW_GAP;
+        (void)_cc_level_row(panel, CC_IMAGE_VOLUME, LV_SYMBOL_VOLUME_MAX,
+                            APP_THEME_COLOR_AZURE, APP_MANAGER_ID_SETTINGS_SOUND,
+                            0, 100, 0, _cc_volume_event,
+                            &s_cc.volume_slider, &s_cc.volume_label);
     }
     else
     {
@@ -1049,19 +1195,18 @@ static void _cc_build(void)
         s_cc.volume_label = NULL;
     }
 
-    /* Wi-Fi / Bluetooth tiles. */
-    if (has_wifi || has_bt)
+    if (has_radios)
     {
         lv_obj_t *tiles = lv_obj_create(panel);
         lv_obj_remove_style_all(tiles);
-        lv_obj_set_size(tiles, inner_w, CC_TILE_HEIGHT);
-        lv_obj_align(tiles, LV_ALIGN_TOP_LEFT, 12, y);
-        y += CC_TILE_HEIGHT + CC_ROW_GAP;
+        lv_obj_set_width(tiles, LV_PCT(100));
+        lv_obj_set_height(tiles, CC_TILE_HEIGHT);
         lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_SPACE_BETWEEN,
+        lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_style_pad_column(tiles, 12, 0);
+        lv_obj_set_style_pad_column(tiles, CC_ROW_GAP, 0);
         lv_obj_set_scrollable(tiles, false);
+        lv_obj_set_clickable(tiles, false);
 
         if (has_wifi)
         {
@@ -1080,16 +1225,16 @@ static void _cc_build(void)
         }
     }
 
-    /* Power actions. */
     lv_obj_t *actions = lv_obj_create(panel);
     lv_obj_remove_style_all(actions);
-    lv_obj_set_size(actions, inner_w, CC_ACTION_HEIGHT);
-    lv_obj_align(actions, LV_ALIGN_TOP_LEFT, 12, y);
+    lv_obj_set_width(actions, LV_PCT(100));
+    lv_obj_set_height(actions, CC_ACTION_HEIGHT);
     lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_SPACE_BETWEEN,
+    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(actions, 12, 0);
+    lv_obj_set_style_pad_column(actions, CC_ROW_GAP, 0);
     lv_obj_set_scrollable(actions, false);
+    lv_obj_set_clickable(actions, false);
 
     const bool has_standby = app_manager_pm_is_standby_supported();
     lv_obj_t *off = lv_button_create(actions);
@@ -1099,14 +1244,16 @@ static void _cc_build(void)
     const char *titles[2] = { "熄屏", "待机" };
     const char *icon_fallbacks[2] = { LV_SYMBOL_POWER, LV_SYMBOL_PAUSE };
     lv_event_cb_t cbs[2] = { _cc_screen_off_event, _cc_standby_event };
+    const int32_t action_w = has_standby ?
+                             (inner_w - CC_ROW_GAP) / 2 : inner_w / 2;
     for (size_t i = 0; i < 2U; i++)
     {
         if (buttons[i] == NULL)
         {
             continue;
         }
+        lv_obj_set_width(buttons[i], action_w);
         lv_obj_set_height(buttons[i], CC_ACTION_HEIGHT);
-        lv_obj_set_flex_grow(buttons[i], 1);
         lv_obj_set_style_radius(buttons[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(buttons[i],
                                   lv_color_hex(APP_THEME_COLOR_PLUME_HI), 0);
@@ -1118,6 +1265,7 @@ static void _cc_build(void)
         lv_obj_set_flex_flow(buttons[i], LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(buttons[i], LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(buttons[i], 0, 0);
         lv_obj_set_style_pad_column(buttons[i], 8, 0);
         lv_obj_add_event_cb(buttons[i], cbs[i], LV_EVENT_CLICKED, NULL);
         /* Click-only: a press that slides off must not trigger the action. */
@@ -1154,17 +1302,11 @@ static void _cc_open(void)
         _cc_build();
         s_cc.built = true;
     }
-    const uint8_t brightness = app_manager_screen_get_brightness();
-    if (s_cc.brightness_slider != NULL && brightness != UINT8_MAX)
-    {
-        lv_slider_set_value(s_cc.brightness_slider,
-                            brightness < 16 ? 16 : (int32_t)brightness,
-                            LV_ANIM_OFF);
-    }
     if (s_cc.poll_timer != NULL)
     {
         lv_timer_resume(s_cc.poll_timer);
     }
+    s_cc.brightness_dragging = false;
     s_cc.volume_dragging = false;
     s_cc.volume_attempt_failed = false;
     /* The stored level is unknown after a fresh open, so the first settle must

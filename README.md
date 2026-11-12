@@ -540,33 +540,42 @@ capture band stays disabled), and the objects are hidden and the capture band
 restored only after the animation ends, so a retracting swipe cannot pull it up
 again. Screen off, standby, navigation begin, policy disable, `hide()` and
 deinit use an instant hide and cancel the running animation without blocking the
-transition. During the transition the tiles, both sliders and the
+transition. During the transition the tiles, both level capsules and the
 screen-off/standby buttons accept no input.
 
-Surface content: time/date, a brightness slider (a temporary brightness preview
-while dragging, persisted on release), a speaker volume slider in 0–100 %
-(applied as the knob moves, with the level rendered right-aligned in the row
-and re-read from the service on every 1 s poll, which also greys the row while
-the bridge reports no audio path), Wi-Fi and Bluetooth tiles (the circular
-icon base and the icon share a tri-state color — off `INK_SOFT` / enabled but
-not connected `AMBER` / connected `MINT` — and the base uses the corresponding
-tint), screen off now and standby now. The value label tracks every knob step
-while the codec write is rate-limited to `CC_VOLUME_APPLY_MS` (60 ms) and always
-forced on release, so a drag costs one serialized codec transfer per window
-instead of one per pixel; a level the service refuses is not retried on release,
-and the 1 s poll restores the row from the service. Nothing in that throttled
-path persists: the settle commits once per drag through
-`set_volume_persisted`, which applies the level and queues the one-byte NVS
-write on the chore worker, so the LVGL worker never executes a flash write;
-brightness likewise keeps its NVS write on release.
-A settle that lands on the already-stored level sends nothing, and a refused
-level is never stored. The surface is built lazily:
+Surface content: a time/date header, two identical 68 px level capsules for
+brightness and speaker volume, a radio-tile row, and a screen-off/standby action
+row. Both level capsules use the same builder, glyph size, 44 px capsule track
+and fixed-width HEAD value label, and both expose a 0–100 % scale; the
+brightness bridge maps that scale onto the panel's 16..255 hardware range in
+one place, so neither row is the odd one out. The fill edge is the handle: the
+LVGL knob stays as hit geometry but is transparent, which keeps the capsule one
+continuous phone-style control. Brightness previews through the temporary
+setter while dragging and persists once on release. Speaker volume applies as
+the knob moves, the level is re-read from the service on every 1 s poll (which
+also greys the row while the bridge reports no audio path), and the value label
+tracks every step while the codec write is rate-limited to
+`CC_VOLUME_APPLY_MS` (60 ms) and always forced on release, so a drag costs one
+serialized codec transfer per window instead of one per pixel; a level the
+service refuses is not retried on release, and the poll restores the row from
+the service. Nothing in that throttled path persists: the settle commits once
+per drag through `set_volume_persisted`, which applies the level and queues the
+one-byte NVS write on the chore worker, so the LVGL worker never executes a
+flash write; brightness likewise keeps its NVS write on release. A settle that
+lands on the already-stored level sends nothing, and a refused level is never
+stored.
+Wi-Fi and Bluetooth tiles keep the circular icon base and the shared tri-state
+color — off `INK_SOFT` / enabled but not connected `AMBER` / connected `MINT` —
+and the base uses the corresponding tint. Rows are placed by the panel's column
+flex with 12 px minimum gaps; the panel takes one 32 px fill step and is capped
+so a 32 px scrim strip stays available at the bottom for the outside-card
+dismiss tap. Missing bridges shorten the panel instead of leaving a hole. The
+surface is built lazily:
 `app_manager_get_image()` is usable only after `app_manager_init()` reaches
 READY, so the icon nodes are created on the first `show`; the first open has to
 build the objects and decode the icons and its entrance animation may start a
-frame or two late, while later opens have no such cost. The card height is
-derived from the rows it actually builds, so a missing bridge shortens it
-instead of leaving a gap. Long-pressing a control opens its Settings page: the
+frame or two late, while later opens have no such cost.
+Long-pressing a control opens its Settings page: the
 brightness row opens "显示与电源" (display & power), the speaker row "声音"
 (sound), the Wi-Fi tile Wi-Fi and the Bluetooth tile "蓝牙" (Bluetooth). The
 jump is an `APP_MANAGER_NAV_OP_OPEN_PAGE` request through the ordinary
