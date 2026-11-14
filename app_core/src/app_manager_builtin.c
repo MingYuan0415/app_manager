@@ -116,11 +116,24 @@ static esp_err_t _builtin_validate_routes(const app_manager_app_desc_t *app)
            ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
+static esp_err_t _builtin_validate_control_card(const app_manager_app_desc_t *app)
+{
+    const app_manager_control_center_card_ops_t *card = app->control_center_card;
+    if (card == NULL)
+    {
+        return ESP_OK;
+    }
+    return card->is_active != NULL && card->mount != NULL &&
+           card->refresh != NULL && card->unmount != NULL ?
+           ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
 static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
                                         size_t app_count)
 {
     const uint32_t known_flags = APP_MANAGER_APP_FLAG_PINNED |
                                  APP_MANAGER_APP_FLAG_HIDDEN;
+    size_t control_card_count = 0U;
     for (size_t i = 0; i < app_count; ++i)
     {
         const app_manager_app_desc_t *app = &apps[i];
@@ -138,10 +151,29 @@ static esp_err_t _builtin_validate_apps(const app_manager_app_desc_t *apps,
                 return ESP_ERR_INVALID_ARG;
             }
         }
-        const esp_err_t result = _builtin_validate_routes(app);
+        esp_err_t result = _builtin_validate_routes(app);
         if (result != ESP_OK)
         {
             return result;
+        }
+        result = _builtin_validate_control_card(app);
+        if (result != ESP_OK)
+        {
+            return result;
+        }
+        if (app->control_center_card != NULL)
+        {
+            for (size_t j = 0U; j < i; ++j)
+            {
+                if (apps[j].control_center_card == app->control_center_card)
+                {
+                    return ESP_ERR_INVALID_ARG;
+                }
+            }
+            if (++control_card_count > APP_MANAGER_CONTROL_CENTER_CARD_MAX)
+            {
+                return ESP_ERR_INVALID_ARG;
+            }
         }
     }
     return ESP_OK;

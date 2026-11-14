@@ -64,6 +64,15 @@ void app_manager_control_center_navigation_begin(void);
 bool app_manager_control_center_is_visible(void);
 
 /**
+ * @brief Resolve the stable App ID attached to a controller-created card host.
+ * @param host is a card host created by the control center, or any other object.
+ * @return the host's backing App ID, or NULL for objects the controller does not
+ *         own as a mounted card.
+ * @note Internal test-observability API; call only from the LVGL worker.
+ */
+const char *app_manager_control_center_card_identity(const lv_obj_t *host);
+
+/**
  * @brief Stop the pull band and hide the surface for display sleep.
  * @note The hide is immediate and cancels any running transition.
  */

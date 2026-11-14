@@ -47,19 +47,15 @@
 #define CC_BAND_CONTROL_RESERVE_PX 76
 #define CC_BAND_TRIGGER_PX   48
 #define CC_CARD_MARGIN       8
-/* The sheet leaves a 32 px strip of page visible at the bottom: it is the
- * outside-card dismiss target, so the surface never becomes a full-screen
- * dead end. */
-#define CC_CARD_BOTTOM_RESERVE 32
-/* Panel geometry. Rows are laid out by the panel's column flex instead of by
- * absolute cursor math: a 56 px header (clock/date), one 68 px level capsule
- * per available control, an 84 px radio tile row, and a 52 px action row,
- * separated by 12 px minimum gaps. The panel is layout-size driven and only
- * grows by CC_PANEL_EXTRA_FILL up to the bottom reserve, so missing bridges
- * still shorten it instead of leaving a hole. */
+/* The transparent strip below the sheet is both the direct drag-to-dismiss
+ * handle and the visible page context around the modal surface. */
+#define CC_CARD_BOTTOM_RESERVE 48
+/* One vertical page holds every section. The header and action buttons scroll
+ * with the controls and App cards instead of forming a fixed inner viewport. */
 #define CC_PANEL_PAD         16
-#define CC_PANEL_EXTRA_FILL  32
 #define CC_HEADER_HEIGHT     56
+#define CC_CARD_GAP          8
+#define CC_DIVIDER_H         1
 #define CC_ROW_GAP           12
 #define CC_LEVEL_ROW_HEIGHT  68
 #define CC_LEVEL_TRACK_H     44
@@ -71,6 +67,7 @@
  * the same width, so their tracks stay aligned. */
 #define CC_VALUE_LABEL_W     80
 #define CC_POLL_MS           1000U
+#define CC_CARD_MOUNT_RETRY_LIMIT 3U
 /* The panel never goes fully dark: 16 is the safe brightness floor the old
  * raw 16..255 slider encoded. The UI now exposes 0..100 % like the speaker. */
 #define CC_BRIGHTNESS_FLOOR  16
@@ -83,6 +80,9 @@
  * set_volume_persisted, matching how brightness keeps its NVS write on release. */
 #define CC_VOLUME_APPLY_MS   60U
 #define CC_SCRIM_OPA         225
+#define CC_CARD_SLOT_MAX     APP_MANAGER_CONTROL_CENTER_CARD_MAX
+#define CC_DISMISS_DRAG_PX   48
+#define CC_BOTTOM_SWIPE_PX   48
 
 /* The surface transition follows the pull direction: the card slides down from
  * above while the scrim fades in. Keep the duration in the same short motion
@@ -109,6 +109,24 @@ typedef struct cc_tile_gesture
     bool long_press_fired;
 } cc_tile_gesture_t;
 
+typedef struct cc_card_slot
+{
+    const app_manager_control_center_card_ops_t *ops;
+    const char *app_id;
+    lv_obj_t *host;
+    void *state;
+    bool mounted;
+    uint8_t mount_failures;
+    uint32_t retry_at;
+} cc_card_slot_t;
+
+typedef struct cc_card_candidate
+{
+    const app_manager_control_center_card_ops_t *ops;
+    const char *app_id;
+    uint16_t order;
+} cc_card_candidate_t;
+
 typedef struct app_manager_control_center
 {
     bool initialized;
@@ -125,6 +143,23 @@ typedef struct app_manager_control_center
     lv_obj_t *band;
     lv_obj_t *root;
     lv_obj_t *panel;
+    lv_obj_t *page;
+    lv_obj_t *dismiss_strip;
+    lv_obj_t *card_section;
+    lv_obj_t *cards;
+    lv_obj_t *actions;
+    /* Full-screen transition barrier. It lives above the panel so child
+     * buttons cannot receive a press while the surface is moving. */
+    lv_obj_t *input_shield;
+    int32_t page_scroll_start_y;
+    bool page_started_at_bottom;
+    bool page_scroll_tracking;
+    int32_t strip_press_y;
+    int32_t strip_base_y;
+    bool strip_dragging;
+    cc_card_slot_t card_slots[CC_CARD_SLOT_MAX];
+    size_t active_card_count;
+    size_t mounted_card_count;
     lv_obj_t *clock_label;
     lv_obj_t *date_label;
     lv_obj_t *brightness_slider;
@@ -146,6 +181,7 @@ typedef struct app_manager_control_center
     uint8_t volume_persisted;
     bool volume_persisted_valid;
     int32_t card_height;
+    bool dismiss_latched;
     lv_obj_t *wifi_button;
     lv_obj_t *wifi_icon;
     lv_obj_t *wifi_label;
@@ -166,8 +202,20 @@ static atomic_bool s_cc_published;
 static atomic_bool s_preinit_policy_configured;
 static atomic_bool s_preinit_policy_enabled;
 
+#ifdef HOST_TEST
+    /* Test observability belongs to the integration LVGL fake. Firmware and the
+    * simulator resolve the same controller-owned host metadata below. */
+    extern void host_lv_set_object_identity(lv_obj_t *object, const char *identity);
+#endif
+
 static void _cc_refresh_band(void);
 static void _cc_refresh_values(void);
+static void _cc_sync_cards(void);
+static void _cc_clear_cards(void);
+static void _cc_touch_event(lv_event_t *event);
+static void _cc_dismiss_strip_event(lv_event_t *event);
+static void _cc_open_completed(lv_anim_t *animation);
+static void _cc_reset_gesture(void);
 
 static void _cc_set_state(cc_state_t state)
 {
@@ -176,6 +224,17 @@ static void _cc_set_state(cc_state_t state)
                           state == CC_STATE_ENTERING ||
                           state == CC_STATE_VISIBLE,
                           memory_order_release);
+    /* A sibling above the panel is required: LVGL still searches clickable
+     * card descendants when their container is press-locked. The shield owns
+     * no action and only exists while the surface is moving. */
+    if (s_cc.input_shield != NULL)
+    {
+        const bool blocking = state == CC_STATE_ENTERING ||
+                              state == CC_STATE_LEAVING;
+        lv_obj_set_hidden(s_cc.input_shield, !blocking);
+        lv_obj_set_clickable(s_cc.input_shield, blocking);
+        lv_obj_set_press_lock(s_cc.input_shield, blocking);
+    }
 }
 
 /* Public visibility: the surface counts as visible while it slides in and while
@@ -336,8 +395,14 @@ static void _cc_anim_park(void)
 static void _cc_close_now(void)
 {
     _cc_anim_park();
+    _cc_reset_gesture();
     s_cc.brightness_dragging = false;
     s_cc.volume_dragging = false;
+    _cc_clear_cards();
+    if (s_cc.panel != NULL)
+    {
+        lv_obj_set_hidden(s_cc.panel, true);
+    }
     if (s_cc.root != NULL)
     {
         lv_obj_set_hidden(s_cc.root, true);
@@ -350,12 +415,29 @@ static void _cc_close_now(void)
     _cc_refresh_band();
 }
 
+static void _cc_reset_gesture(void)
+{
+    s_cc.page_scroll_start_y = 0;
+    s_cc.page_started_at_bottom = false;
+    s_cc.page_scroll_tracking = false;
+    s_cc.strip_press_y = 0;
+    s_cc.strip_base_y = CC_CARD_MARGIN;
+    s_cc.strip_dragging = false;
+    s_cc.dismiss_latched = false;
+}
+
 static void _cc_close_completed(lv_anim_t *animation)
 {
     (void)animation;
     if (s_cc.state != CC_STATE_LEAVING)
     {
         return;
+    }
+    _cc_reset_gesture();
+    _cc_clear_cards();
+    if (s_cc.panel != NULL)
+    {
+        lv_obj_set_hidden(s_cc.panel, true);
     }
     if (s_cc.root != NULL)
     {
@@ -400,6 +482,183 @@ static void _cc_close_animated(void)
     _cc_refresh_band();
     _cc_anim_start(CC_ANIM_PROGRESS_MAX, 0, lv_anim_path_ease_in,
                    _cc_close_completed);
+}
+
+static int32_t _cc_progress_from_y(int32_t y)
+{
+    const int32_t hidden_y = _cc_panel_offscreen_y();
+    const int32_t span = CC_CARD_MARGIN - hidden_y;
+    if (span <= 0)
+    {
+        return CC_ANIM_PROGRESS_MAX;
+    }
+    int32_t progress = (y - hidden_y) * CC_ANIM_PROGRESS_MAX / span;
+    if (progress < 0)
+    {
+        progress = 0;
+    }
+    else if (progress > CC_ANIM_PROGRESS_MAX)
+    {
+        progress = CC_ANIM_PROGRESS_MAX;
+    }
+    return progress;
+}
+
+static bool _cc_panel_contains(lv_obj_t *object)
+{
+    while (object != NULL)
+    {
+        if (object == s_cc.panel)
+        {
+            return true;
+        }
+        object = lv_obj_get_parent(object);
+    }
+    return false;
+}
+
+/* Input-device callbacks are needed because provider cards can contain
+ * arbitrary descendants and event bubbling is not enabled across third-party
+ * trees. At the hard bottom LVGL has no scroll object to report, so PRESSED
+ * and RELEASED are the only reliable signal for one more upward swipe. */
+static void _cc_touch_event(lv_event_t *event)
+{
+    lv_indev_t *indev = s_cc.touch;
+    if (indev == NULL)
+    {
+        return;
+    }
+    const lv_event_code_t code = lv_event_get_code(event);
+    if ((code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED) &&
+            s_cc.dismiss_latched)
+    {
+        /* The dismissal was recognized on RELEASED. Consume the synthetic
+         * click produced by the same gesture so no card action can fire. */
+        lv_indev_stop_processing(indev);
+        return;
+    }
+    if (code == LV_EVENT_INDEV_RESET)
+    {
+        _cc_reset_gesture();
+        return;
+    }
+    if (s_cc.state != CC_STATE_VISIBLE || s_cc.panel == NULL)
+    {
+        return;
+    }
+    if (code == LV_EVENT_PRESSED)
+    {
+        lv_obj_t *active = lv_indev_get_active_obj();
+        s_cc.page_scroll_tracking = false;
+        s_cc.page_started_at_bottom = false;
+        s_cc.dismiss_latched = false;
+        if (!_cc_panel_contains(active) ||
+                lv_obj_get_scroll_bottom(s_cc.panel) > 0)
+        {
+            return;
+        }
+        lv_point_t point;
+        lv_indev_get_point(indev, &point);
+        s_cc.page_scroll_start_y = point.y;
+        s_cc.page_started_at_bottom = true;
+        s_cc.page_scroll_tracking = true;
+        return;
+    }
+    if (code != LV_EVENT_RELEASED || !s_cc.page_scroll_tracking ||
+            !s_cc.page_started_at_bottom || s_cc.dismiss_latched)
+    {
+        return;
+    }
+
+    s_cc.page_scroll_tracking = false;
+    lv_point_t point;
+    lv_indev_get_point(indev, &point);
+    const int32_t upward = s_cc.page_scroll_start_y - point.y;
+    /* A page that starts at its end has no normal scroll left. A second
+     * deliberate upward gesture is the dismissal signal; ordinary scrolling
+     * and a gesture that merely reaches the end started above it. */
+    if (lv_indev_get_scroll_obj(indev) != NULL ||
+            upward < CC_BOTTOM_SWIPE_PX)
+    {
+        return;
+    }
+    s_cc.dismiss_latched = true;
+    /* Let the widget receive RELEASED so LVGL clears LV_STATE_PRESSED. The
+     * following CLICKED event is consumed above while dismiss_latched is set. */
+    _cc_close_animated();
+}
+
+/* The bottom strip is the dedicated transparent grab surface. Dragging
+ * dismisses the whole panel directly; it never participates in page scroll. */
+static void _cc_dismiss_strip_event(lv_event_t *event)
+{
+    const lv_event_code_t code = lv_event_get_code(event);
+    if (s_cc.state != CC_STATE_VISIBLE ||
+            (code != LV_EVENT_PRESSED && code != LV_EVENT_PRESSING &&
+             code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST))
+    {
+        return;
+    }
+    lv_point_t point;
+    const lv_indev_t *indev = lv_event_get_indev(event);
+    if (indev == NULL)
+    {
+        indev = s_cc.touch;
+    }
+    if (indev == NULL)
+    {
+        return;
+    }
+    lv_indev_get_point(indev, &point);
+    if (code == LV_EVENT_PRESSED)
+    {
+        s_cc.strip_press_y = point.y;
+        s_cc.strip_base_y = lv_obj_get_y(s_cc.panel);
+        s_cc.strip_dragging = true;
+        return;
+    }
+    if (!s_cc.strip_dragging)
+    {
+        return;
+    }
+    if (code == LV_EVENT_PRESSING)
+    {
+        const int32_t moved = s_cc.strip_press_y - point.y;
+        const int32_t hidden_y = _cc_panel_offscreen_y();
+        int32_t y = s_cc.strip_base_y - moved;
+        if (y > CC_CARD_MARGIN)
+        {
+            y = CC_CARD_MARGIN;
+        }
+        else if (y < hidden_y)
+        {
+            y = hidden_y;
+        }
+        _cc_anim_apply(_cc_progress_from_y(y));
+        return;
+    }
+    if (code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST)
+    {
+        return;
+    }
+
+    s_cc.strip_dragging = false;
+    const int32_t progress = _cc_progress_from_y(lv_obj_get_y(s_cc.panel));
+    const bool dismiss = code == LV_EVENT_RELEASED &&
+                         s_cc.strip_press_y - point.y >= CC_DISMISS_DRAG_PX;
+    if (dismiss)
+    {
+        _cc_set_state(CC_STATE_LEAVING);
+        _cc_refresh_band();
+        _cc_anim_start(progress, 0, lv_anim_path_ease_in,
+                       _cc_close_completed);
+    }
+    else
+    {
+        _cc_set_state(CC_STATE_ENTERING);
+        _cc_anim_start(progress, CC_ANIM_PROGRESS_MAX, lv_anim_path_ease_out,
+                       _cc_open_completed);
+    }
 }
 
 static void _cc_root_event(lv_event_t *event)
@@ -883,6 +1142,7 @@ static void _cc_poll_cb(lv_timer_t *timer)
     if (_cc_surface_visible())
     {
         _cc_refresh_values();
+        _cc_sync_cards();
     }
 }
 
@@ -1092,31 +1352,258 @@ static lv_obj_t *_cc_level_row(lv_obj_t *parent, uint32_t image_id,
     return row;
 }
 
-/* A row-sized panel: header, the level capsules that are actually wired, the
- * radio tiles that are actually wired, and the action row. CC_PANEL_EXTRA_FILL
- * gives a complete surface a little more air on taller panels; the cap keeps a
- * 32 px strip of scrim available at the bottom for dismissal. Missing bridges
- * reduce the natural height instead of leaving a hole, matching the old
- * "card shrinks with its rows" contract. */
-static int32_t _cc_panel_height(bool has_volume, bool has_radios)
+/* The whole surface is one long page. Keeping the viewport at the maximum
+ * usable height gives every section the same scroll owner; short pages simply
+ * have no scroll travel. */
+static int32_t _cc_panel_height(void)
 {
-    int32_t rows = 3;
-    int32_t height = 2 * CC_PANEL_PAD + CC_HEADER_HEIGHT +
-                     CC_LEVEL_ROW_HEIGHT + CC_ACTION_HEIGHT;
-    if (has_volume)
+    return s_cc.height - CC_CARD_MARGIN - CC_CARD_BOTTOM_RESERVE;
+}
+
+static size_t _cc_collect_active_cards(cc_card_candidate_t *active)
+{
+    cc_card_candidate_t candidates[CC_CARD_SLOT_MAX];
+    size_t count = 0U;
+    for (const app_manager_app_desc_t *app = app_manager_builtin_list_open();
+            app != NULL;
+            app = app_manager_builtin_list_get_next(app))
     {
-        height += CC_LEVEL_ROW_HEIGHT;
-        rows++;
+        const app_manager_control_center_card_ops_t *card =
+            app->control_center_card;
+        if (card == NULL || !card->is_active())
+        {
+            continue;
+        }
+        if (count >= CC_CARD_SLOT_MAX)
+        {
+            /* Registry validation normally makes this unreachable; keep the
+             * local array bounded if an unvalidated descriptor set reaches us. */
+            LOG_W("control center card slot limit reached");
+            break;
+        }
+        size_t insert = count;
+        while (insert > 0U && candidates[insert - 1U].order > app->launcher_order)
+        {
+            candidates[insert] = candidates[insert - 1U];
+            --insert;
+        }
+        candidates[insert].ops = card;
+        candidates[insert].app_id = app->id;
+        candidates[insert].order = app->launcher_order;
+        ++count;
     }
-    if (has_radios)
+    for (size_t index = 0U; index < count; ++index)
     {
-        height += CC_TILE_HEIGHT;
-        rows++;
+        active[index] = candidates[index];
     }
-    height += (rows - 1) * CC_ROW_GAP + CC_PANEL_EXTRA_FILL;
-    const int32_t max_height = s_cc.height - CC_CARD_MARGIN -
-                               CC_CARD_BOTTOM_RESERVE;
-    return height < max_height ? height : max_height;
+    return count;
+}
+
+static bool _cc_cards_match(const cc_card_candidate_t *active, size_t count)
+{
+    if (count != s_cc.active_card_count)
+    {
+        return false;
+    }
+    for (size_t index = 0U; index < count; ++index)
+    {
+        if (s_cc.card_slots[index].ops != active[index].ops ||
+                s_cc.card_slots[index].app_id != active[index].app_id)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void _cc_apply_panel_height(void)
+{
+    if (s_cc.panel == NULL)
+    {
+        return;
+    }
+    s_cc.card_height = _cc_panel_height();
+    lv_obj_set_height(s_cc.panel, s_cc.card_height);
+}
+
+static void _cc_update_card_section(void)
+{
+    if (s_cc.card_section != NULL && lv_obj_is_valid(s_cc.card_section))
+    {
+        lv_obj_set_hidden(s_cc.card_section, s_cc.mounted_card_count == 0U);
+    }
+    if (s_cc.cards != NULL && lv_obj_is_valid(s_cc.cards))
+    {
+        lv_obj_set_hidden(s_cc.cards, s_cc.mounted_card_count == 0U);
+    }
+}
+
+/* Delete the card trees before asking providers to release their state. */
+static void _cc_clear_cards(void)
+{
+    if (s_cc.cards != NULL && lv_obj_is_valid(s_cc.cards))
+    {
+        lv_obj_clean(s_cc.cards);
+    }
+    for (size_t index = 0U; index < s_cc.active_card_count; ++index)
+    {
+        cc_card_slot_t *slot = &s_cc.card_slots[index];
+        if (slot->mounted && slot->ops != NULL && slot->ops->unmount != NULL)
+        {
+            slot->ops->unmount(slot->state);
+        }
+    }
+    memset(s_cc.card_slots, 0, sizeof(s_cc.card_slots));
+    s_cc.active_card_count = 0U;
+    s_cc.mounted_card_count = 0U;
+    _cc_update_card_section();
+    _cc_apply_panel_height();
+}
+
+static void _cc_refresh_cards(void)
+{
+    for (size_t index = 0U; index < s_cc.active_card_count; ++index)
+    {
+        cc_card_slot_t *slot = &s_cc.card_slots[index];
+        if (slot->mounted && slot->ops != NULL)
+        {
+            slot->ops->refresh(slot->state);
+        }
+    }
+}
+
+static void _cc_schedule_card_retry(cc_card_slot_t *slot)
+{
+    if (slot->mount_failures < UINT8_MAX)
+    {
+        ++slot->mount_failures;
+    }
+    slot->retry_at = slot->mount_failures <= CC_CARD_MOUNT_RETRY_LIMIT ?
+                     lv_tick_get() + CC_POLL_MS : 0U;
+}
+
+/* Mount one slot without disturbing cards that are already healthy. The host
+ * is inserted at the slot's launcher-order position so a successful retry does
+ * not jump behind later providers. */
+static bool _cc_mount_card_slot(cc_card_slot_t *slot, size_t slot_index)
+{
+    if (slot->ops == NULL || slot->mounted)
+    {
+        return false;
+    }
+    lv_obj_t *host = lv_obj_create(s_cc.cards);
+    if (host == NULL)
+    {
+        _cc_schedule_card_retry(slot);
+        return false;
+    }
+    lv_obj_remove_style_all(host);
+    lv_obj_set_width(host, LV_PCT(100));
+    lv_obj_set_height(host, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(host, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(host, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(host, 0, 0);
+    lv_obj_set_scrollable(host, false);
+    lv_obj_set_scroll_chain(host, true);
+    /* The full-screen transition shield, not this host, owns temporary input
+     * rejection. Keeping the host interactive makes a card mounted during the
+     * first open usable as soon as the entry animation settles. */
+    lv_obj_set_clickable(host, true);
+    /* Controller-owned host metadata. Provider children may use user_data for
+     * their own semantics; only this host is interpreted as a card identity. */
+    lv_obj_set_user_data(host, (void *)slot->app_id);
+#ifdef HOST_TEST
+    host_lv_set_object_identity(host, slot->app_id);
+#endif
+
+    void *state = NULL;
+    const esp_err_t result = slot->ops->mount(host, &state);
+    if (result != ESP_OK)
+    {
+        /* The contract requires the host tree to be gone before unmount(). */
+        lv_obj_delete(host);
+        if (state != NULL)
+        {
+            slot->ops->unmount(state);
+        }
+        _cc_schedule_card_retry(slot);
+        return false;
+    }
+
+    size_t child_index = 0U;
+    for (size_t index = 0U; index < slot_index; ++index)
+    {
+        if (s_cc.card_slots[index].mounted)
+        {
+            ++child_index;
+        }
+    }
+    lv_obj_move_to_index(host, (int32_t)child_index);
+    slot->host = host;
+    slot->state = state;
+    slot->mounted = true;
+    slot->mount_failures = 0U;
+    slot->retry_at = 0U;
+    ++s_cc.mounted_card_count;
+    return true;
+}
+
+static void _cc_retry_cards(void)
+{
+    bool changed = false;
+    const uint32_t now = lv_tick_get();
+    for (size_t index = 0U; index < s_cc.active_card_count; ++index)
+    {
+        cc_card_slot_t *slot = &s_cc.card_slots[index];
+        if (slot->mounted || slot->retry_at == 0U ||
+                (int32_t)(now - slot->retry_at) < 0)
+        {
+            continue;
+        }
+        changed = _cc_mount_card_slot(slot, index) || changed;
+    }
+    if (changed)
+    {
+        _cc_update_card_section();
+        _cc_apply_panel_height();
+        _cc_refresh_cards();
+    }
+}
+
+/* Rebuild only when the set of active providers changes. A provider that is
+ * already mounted keeps its objects and receives refresh() in place. Failed
+ * providers remain in the slot table and get a bounded delayed retry. */
+static void _cc_sync_cards(void)
+{
+    if (!s_cc.built || s_cc.cards == NULL ||
+            !lv_obj_is_valid(s_cc.cards))
+    {
+        return;
+    }
+    cc_card_candidate_t active[CC_CARD_SLOT_MAX];
+    const size_t active_count = _cc_collect_active_cards(active);
+    if (_cc_cards_match(active, active_count))
+    {
+        _cc_refresh_cards();
+        _cc_retry_cards();
+        return;
+    }
+
+    _cc_clear_cards();
+    for (size_t index = 0U; index < active_count; ++index)
+    {
+        /* Keep failed providers in the slot table. Their host is gone, but the
+         * active provider set remains stable and healthy cards are not rebuilt
+         * around them. */
+        cc_card_slot_t *slot = &s_cc.card_slots[s_cc.active_card_count++];
+        slot->ops = active[index].ops;
+        slot->app_id = active[index].app_id;
+        (void)_cc_mount_card_slot(slot, index);
+    }
+    _cc_update_card_section();
+    _cc_apply_panel_height();
+    _cc_refresh_cards();
 }
 
 static void _cc_build(void)
@@ -1132,26 +1619,44 @@ static void _cc_build(void)
     const bool has_volume = s_cc.ops.get_volume != NULL &&
                             s_cc.ops.set_volume != NULL;
 
-    s_cc.card_height = _cc_panel_height(has_volume, has_radios);
-
     lv_obj_t *panel = lv_obj_create(s_cc.root);
     s_cc.panel = panel;
     lv_obj_remove_style_all(panel);
     lv_obj_set_pos(panel, CC_CARD_MARGIN, CC_CARD_MARGIN);
-    lv_obj_set_size(panel, panel_w, s_cc.card_height);
+    lv_obj_set_width(panel, panel_w);
+    _cc_apply_panel_height();
     lv_obj_set_style_bg_color(panel, lv_color_hex(APP_THEME_COLOR_SHEET), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(panel, 28, 0);
-    lv_obj_set_style_pad_all(panel, CC_PANEL_PAD, 0);
-    lv_obj_set_style_pad_row(panel, CC_ROW_GAP, 0);
+    lv_obj_set_style_pad_all(panel, 0, 0);
     lv_obj_set_style_border_width(panel, 0, 0);
     lv_obj_set_style_shadow_width(panel, 0, 0);
-    lv_obj_set_scrollable(panel, false);
+    lv_obj_set_scrollable(panel, true);
+    lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+    lv_obj_set_scroll_elastic(panel, false);
+    lv_obj_set_scroll_chain(panel, false);
     lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_SPACE_BETWEEN,
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    lv_obj_t *header = lv_obj_create(panel);
+    /* The page is content-sized so every section shares the panel's single
+     * vertical scroll axis. It remains passive but keeps its vertical scroll
+     * chain, allowing drags over labels, sliders and provider cards to climb
+     * to the panel naturally. */
+    lv_obj_t *page = lv_obj_create(panel);
+    s_cc.page = page;
+    lv_obj_remove_style_all(page);
+    lv_obj_set_width(page, LV_PCT(100));
+    lv_obj_set_height(page, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(page, CC_PANEL_PAD, 0);
+    lv_obj_set_style_pad_row(page, CC_ROW_GAP, 0);
+    lv_obj_set_scrollable(page, false);
+    lv_obj_set_clickable(page, false);
+
+    lv_obj_t *header = lv_obj_create(page);
     lv_obj_remove_style_all(header);
     lv_obj_set_width(header, LV_PCT(100));
     lv_obj_set_height(header, CC_HEADER_HEIGHT);
@@ -1178,13 +1683,13 @@ static void _cc_build(void)
 
     /* Brightness and speaker share one capsule row; both start on the same
      * 0..100 % scale, and both read the same fixed-width HEAD value. */
-    (void)_cc_level_row(panel, CC_IMAGE_BRIGHTNESS, LV_SYMBOL_IMAGE,
+    (void)_cc_level_row(page, CC_IMAGE_BRIGHTNESS, LV_SYMBOL_IMAGE,
                         APP_THEME_COLOR_AMBER, APP_MANAGER_ID_SETTINGS_DISPLAY,
                         0, 100, 50, _cc_brightness_event,
                         &s_cc.brightness_slider, &s_cc.brightness_label);
     if (has_volume)
     {
-        (void)_cc_level_row(panel, CC_IMAGE_VOLUME, LV_SYMBOL_VOLUME_MAX,
+        (void)_cc_level_row(page, CC_IMAGE_VOLUME, LV_SYMBOL_VOLUME_MAX,
                             APP_THEME_COLOR_AZURE, APP_MANAGER_ID_SETTINGS_SOUND,
                             0, 100, 0, _cc_volume_event,
                             &s_cc.volume_slider, &s_cc.volume_label);
@@ -1197,7 +1702,7 @@ static void _cc_build(void)
 
     if (has_radios)
     {
-        lv_obj_t *tiles = lv_obj_create(panel);
+        lv_obj_t *tiles = lv_obj_create(page);
         lv_obj_remove_style_all(tiles);
         lv_obj_set_width(tiles, LV_PCT(100));
         lv_obj_set_height(tiles, CC_TILE_HEIGHT);
@@ -1225,7 +1730,11 @@ static void _cc_build(void)
         }
     }
 
-    lv_obj_t *actions = lv_obj_create(panel);
+    /* Power actions belong to the system-control group, not to the App-card
+     * section. Keep every control in the top flow and leave service-owned
+     * cards last. */
+    lv_obj_t *actions = lv_obj_create(page);
+    s_cc.actions = actions;
     lv_obj_remove_style_all(actions);
     lv_obj_set_width(actions, LV_PCT(100));
     lv_obj_set_height(actions, CC_ACTION_HEIGHT);
@@ -1281,6 +1790,74 @@ static void _cc_build(void)
                                    app_manager_get_font(APP_THEME_FONT_BODY), 0);
         lv_label_set_text(text, titles[i]);
     }
+
+    /* A real section boundary keeps system controls separate from service-owned
+     * cards. The whole section collapses when no provider is active. */
+    lv_obj_t *card_section = lv_obj_create(page);
+    s_cc.card_section = card_section;
+    lv_obj_remove_style_all(card_section);
+    lv_obj_set_width(card_section, LV_PCT(100));
+    lv_obj_set_height(card_section, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(card_section, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card_section, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_top(card_section, 0, 0);
+    lv_obj_set_style_pad_row(card_section, CC_CARD_GAP, 0);
+    lv_obj_set_scrollable(card_section, false);
+    lv_obj_set_clickable(card_section, false);
+    lv_obj_set_hidden(card_section, true);
+
+    lv_obj_t *divider = lv_obj_create(card_section);
+    lv_obj_remove_style_all(divider);
+    lv_obj_set_width(divider, LV_PCT(100));
+    lv_obj_set_height(divider, CC_DIVIDER_H);
+    lv_obj_set_style_bg_color(divider, lv_color_hex(APP_THEME_COLOR_TRACK), 0);
+    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
+    lv_obj_set_clickable(divider, false);
+    lv_obj_set_scrollable(divider, false);
+
+    s_cc.cards = lv_obj_create(card_section);
+    lv_obj_remove_style_all(s_cc.cards);
+    lv_obj_set_width(s_cc.cards, LV_PCT(100));
+    lv_obj_set_height(s_cc.cards, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_cc.cards, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_cc.cards, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(s_cc.cards, 0, 0);
+    lv_obj_set_style_pad_row(s_cc.cards, CC_ROW_GAP, 0);
+    lv_obj_set_scrollable(s_cc.cards, false);
+    lv_obj_set_clickable(s_cc.cards, false);
+    lv_obj_set_hidden(s_cc.cards, true);
+
+    /* The bottom reserve is a transparent, independently interactive grab
+     * surface. It owns deliberate drag-to-dismiss without stealing gestures
+     * from the panel's page scroll. */
+    s_cc.dismiss_strip = lv_obj_create(s_cc.root);
+    lv_obj_remove_style_all(s_cc.dismiss_strip);
+    lv_obj_set_pos(s_cc.dismiss_strip, 0, s_cc.height - CC_CARD_BOTTOM_RESERVE);
+    lv_obj_set_size(s_cc.dismiss_strip, s_cc.width, CC_CARD_BOTTOM_RESERVE);
+    lv_obj_set_style_bg_opa(s_cc.dismiss_strip, LV_OPA_TRANSP, 0);
+    lv_obj_set_clickable(s_cc.dismiss_strip, true);
+    lv_obj_set_press_lock(s_cc.dismiss_strip, true);
+    lv_obj_set_scrollable(s_cc.dismiss_strip, false);
+    lv_obj_set_scroll_chain(s_cc.dismiss_strip, false);
+    lv_obj_add_event_cb(s_cc.dismiss_strip, _cc_dismiss_strip_event,
+                        LV_EVENT_ALL, NULL);
+
+    /* This has to be a sibling above the panel: LVGL recursively resolves
+     * clickable children, so press-locking the card container cannot stop a
+     * child button while the panel is sliding. It only receives input during
+     * transition states. */
+    s_cc.input_shield = lv_obj_create(s_cc.root);
+    lv_obj_remove_style_all(s_cc.input_shield);
+    lv_obj_set_pos(s_cc.input_shield, 0, 0);
+    lv_obj_set_size(s_cc.input_shield, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(s_cc.input_shield, LV_OPA_TRANSP, 0);
+    lv_obj_set_clickable(s_cc.input_shield, false);
+    lv_obj_set_press_lock(s_cc.input_shield, false);
+    lv_obj_set_hidden(s_cc.input_shield, true);
+    lv_obj_move_to_index(s_cc.input_shield,
+                         (int32_t)lv_obj_get_child_count(s_cc.root) - 1);
 }
 
 static void _cc_open_completed(lv_anim_t *animation)
@@ -1306,6 +1883,7 @@ static void _cc_open(void)
     {
         lv_timer_resume(s_cc.poll_timer);
     }
+    _cc_reset_gesture();
     s_cc.brightness_dragging = false;
     s_cc.volume_dragging = false;
     s_cc.volume_attempt_failed = false;
@@ -1316,8 +1894,14 @@ static void _cc_open(void)
      * step of the first drag after reopening. */
     s_cc.volume_apply_at = lv_tick_get() - CC_VOLUME_APPLY_MS;
     _cc_refresh_values();
+    _cc_sync_cards();
     _cc_anim_stop();
     _cc_anim_apply(0);
+    if (s_cc.panel != NULL)
+    {
+        lv_obj_set_hidden(s_cc.panel, false);
+        lv_obj_scroll_to_y(s_cc.panel, 0, LV_ANIM_OFF);
+    }
     lv_obj_set_hidden(s_cc.root, false);
     _cc_set_state(CC_STATE_ENTERING);
     _cc_refresh_band();
@@ -1471,10 +2055,17 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
     {
         return ESP_ERR_INVALID_STATE;
     }
+    if (lv_indev_add_event_cb((lv_indev_t *)touch, _cc_touch_event,
+                              LV_EVENT_ALL, NULL) == NULL)
+    {
+        return ESP_ERR_NO_MEM;
+    }
 
     s_cc.band = _cc_create_band(system_layer);
     if (s_cc.band == NULL)
     {
+        lv_indev_remove_event_cb_with_user_data((lv_indev_t *)touch,
+                                                _cc_touch_event, NULL);
         return ESP_ERR_NO_MEM;
     }
 
@@ -1483,6 +2074,8 @@ esp_err_t app_manager_control_center_init(void *display, void *touch)
     {
         lv_obj_delete(s_cc.band);
         s_cc.band = NULL;
+        lv_indev_remove_event_cb_with_user_data((lv_indev_t *)touch,
+                                                _cc_touch_event, NULL);
         return ESP_ERR_NO_MEM;
     }
     lv_obj_remove_style_all(s_cc.root);
@@ -1514,12 +2107,18 @@ esp_err_t app_manager_control_center_deinit(void)
     {
         return ESP_OK;
     }
+    if (s_cc.touch != NULL)
+    {
+        lv_indev_remove_event_cb_with_user_data((lv_indev_t *)s_cc.touch,
+                                                _cc_touch_event, NULL);
+    }
     if (s_cc.poll_timer != NULL)
     {
         lv_timer_delete(s_cc.poll_timer);
         s_cc.poll_timer = NULL;
     }
     _cc_anim_stop();
+    _cc_clear_cards();
     if (s_cc.root != NULL && lv_obj_is_valid(s_cc.root))
     {
         lv_obj_delete(s_cc.root);
@@ -1580,6 +2179,23 @@ bool app_manager_control_center_is_visible(void)
 {
     return atomic_load_explicit(&s_cc_published, memory_order_acquire) &&
            atomic_load_explicit(&s_visible_published, memory_order_acquire);
+}
+
+const char *app_manager_control_center_card_identity(const lv_obj_t *host)
+{
+    if (host == NULL)
+    {
+        return NULL;
+    }
+    for (size_t index = 0U; index < s_cc.active_card_count; ++index)
+    {
+        const cc_card_slot_t *slot = &s_cc.card_slots[index];
+        if (slot->mounted && slot->host == host)
+        {
+            return slot->app_id;
+        }
+    }
+    return NULL;
 }
 
 void app_manager_control_center_screen_suspend(void)

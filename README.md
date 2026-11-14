@@ -540,12 +540,18 @@ capture band stays disabled), and the objects are hidden and the capture band
 restored only after the animation ends, so a retracting swipe cannot pull it up
 again. Screen off, standby, navigation begin, policy disable, `hide()` and
 deinit use an instant hide and cancel the running animation without blocking the
-transition. During the transition the tiles, both level capsules and the
-screen-off/standby buttons accept no input.
+transition. During the transition a full-screen shield above the panel rejects
+input; the tiles, level capsules, App card hosts and action buttons themselves
+remain interactive.
 
-Surface content: a time/date header, two identical 68 px level capsules for
-brightness and speaker volume, a radio-tile row, and a screen-off/standby action
-row. Both level capsules use the same builder, glyph size, 44 px capsule track
+Surface content: the panel is the single vertical scroll owner. A passive,
+content-sized page keeps the time/date header, two identical 68 px level
+capsules for brightness and speaker volume, the radio-tile row, the
+screen-off/standby action row, and finally the App-card section in one flow.
+The action row is no longer pinned; it stays with the system controls and
+scrolls ahead of App-owned content. The App-card section starts with a divider
+and is hidden when no card is active, while the cards remain the final section
+in the page. Both level capsules use the same builder, glyph size, 44 px capsule track
 and fixed-width HEAD value label, and both expose a 0–100 % scale; the
 brightness bridge maps that scale onto the panel's 16..255 hardware range in
 one place, so neither row is the odd one out. The fill edge is the handle: the
@@ -566,15 +572,56 @@ lands on the already-stored level sends nothing, and a refused level is never
 stored.
 Wi-Fi and Bluetooth tiles keep the circular icon base and the shared tri-state
 color — off `INK_SOFT` / enabled but not connected `AMBER` / connected `MINT` —
-and the base uses the corresponding tint. Rows are placed by the panel's column
-flex with 12 px minimum gaps; the panel takes one 32 px fill step and is capped
-so a 32 px scrim strip stays available at the bottom for the outside-card
-dismiss tap. Missing bridges shorten the panel instead of leaving a hole. The
-surface is built lazily:
+and the base uses the corresponding tint. The panel keeps a fixed viewport
+height of `display_height - CC_CARD_MARGIN - CC_CARD_BOTTOM_RESERVE`; on a
+448 px display this is 392 px and leaves a transparent 48 px strip between the
+panel and the screen edge. Missing bridges only remove their rows from the page.
+Gestures over the header, controls, actions and cards propagate through the
+passive page to the panel's one vertical scroller. The system shortcuts and
+power actions remain first, and active App cards follow them in
+`launcher_order` as the final section.
+The transparent strip outside the panel is a direct drag-to-dismiss surface:
+dragging it upward moves the whole surface with the finger, releasing before 48 px
+rebounds, and releasing after 48 px closes with the normal exit animation. When
+the page has reached its hard bottom, a new upward swipe of at least 48 px also
+closes the surface; the gesture that merely scrolls the page to the bottom does
+not close it. The surface is built lazily:
 `app_manager_get_image()` is usable only after `app_manager_init()` reaches
 READY, so the icon nodes are created on the first `show`; the first open has to
 build the objects and decode the icons and its entrance animation may start a
 frame or two late, while later opens have no such cost.
+
+App cards: an App may optionally bind a static
+`app_manager_control_center_card_ops_t` through
+`APP_MANAGER_APP_EXPORT_META_CARD`. A provider is a serialized singleton view:
+its pointer must be unique across all registered App descriptors and at most
+one card may have it mounted at a time. The provider exposes `is_active`,
+`mount`, `refresh` and `unmount`; all four callbacks are mandatory and execute
+on the LVGL worker. `mount` receives a full-width, interactive App-owned host
+and returns opaque state, `refresh` runs while the surface is open, and
+`unmount` runs after the host tree has been deleted when the card ceases to be
+active, the surface closes, navigation begins, the screen sleeps or the manager
+deinitializes. A failed mount is retried after the initial attempt at most
+three times while already mounted cards keep their hosts and state. Providers
+are ordered by the App's `launcher_order`. The number of card providers is
+independently capped by `CONFIG_APP_MANAGER_CONTROL_CENTER_CARD_MAX`; registry
+validation rejects a product with more providers instead of silently dropping
+cards at runtime. Music, Clock and Recorder use this contract for playback,
+timer and recording cards respectively. The Clock provider keeps the countdown,
+stopwatch and focus timers as independent rows, so concurrently active timers
+remain visible and each row's pause and open actions address only that timer;
+stopwatch elapsed time is shown cumulatively, including hours. A provider reads
+only thread-safe service snapshots and submits non-blocking service or
+navigation requests; it does not retain Page state, a Page Screen, an active
+subscription or an LVGL object after `unmount`. `is_active` means an ongoing operation
+currently warrants a card; a cold service availability or snapshot-read failure does not
+activate one. Once mounted, the provider renders unavailable, error and busy states if
+the backing service subsequently fails, and disables actions that are not valid in
+those states rather than leaving stale actions visible. The full-screen transition shield,
+not the card host, exclusively blocks input during the control center's
+entrance and exit animations. A product that omits the App also omits its card
+provider.
+
 Long-pressing a control opens its Settings page: the
 brightness row opens "显示与电源" (display & power), the speaker row "声音"
 (sound), the Wi-Fi tile Wi-Fi and the Bluetooth tile "蓝牙" (Bluetooth). The

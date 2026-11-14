@@ -37,6 +37,9 @@ extern "C" {
 #define APP_MANAGER_TRANSITION_DEFAULT_DURATION_MS    220U
 /** Physical running-application capacity. */
 #define APP_MANAGER_MAX_RESIDENT_APPS CONFIG_APP_MANAGER_MAX_RESIDENT_APPS
+/** Maximum static control-center card providers accepted at registry validation. */
+#define APP_MANAGER_CONTROL_CENTER_CARD_MAX \
+    CONFIG_APP_MANAGER_CONTROL_CENTER_CARD_MAX
 /** Physical retained-page capacity. */
 #define APP_MANAGER_MAX_PAGE_INSTANCES CONFIG_APP_MANAGER_MAX_PAGE_INSTANCES
 /** Maximum private-state bytes owned by one retained Page instance. */
@@ -182,6 +185,41 @@ typedef struct app_manager_page_route
     void *user_data; /**< Stable route-specific handler user data, or NULL. */
 } app_manager_page_route_t;
 
+/**
+ * @brief Application-owned control-center card lifecycle.
+ *
+ * All callbacks run on the LVGL worker. The control center provides a
+ * full-width card parent and owns when the card is mounted; the provider owns
+ * every object below that parent and the opaque state returned by mount().
+ *
+ * A provider instance is a serialized singleton view: at most one control
+ * center card may mount it at a time, and unmount() runs after the host tree is
+ * gone. A provider pointer must be unique across registered App descriptors so
+ * multiple Apps cannot alias the same mutable card state.
+ */
+typedef struct app_manager_control_center_card_ops
+{
+    /**
+     * Return true while an ongoing operation warrants a card.
+     *
+     * A cold service availability or snapshot-read failure does not activate a
+     * card. Once mounted, refresh() still renders unavailable and error states
+     * if the backing service subsequently fails.
+     */
+    bool (*is_active)(void);
+    /**
+     * Create the card's content below parent.
+     *
+     * The provider may write its private state to *state. The control center
+     * passes that value back to refresh() and unmount() unchanged.
+     */
+    esp_err_t (*mount)(lv_obj_t *parent, void **state);
+    /** Refresh one mounted card from non-blocking service state. */
+    void (*refresh)(void *state);
+    /** Release card-owned resources after the host has removed the card. */
+    void (*unmount)(void *state);
+} app_manager_control_center_card_ops_t;
+
 /** @brief Linker-discoverable builtin application descriptor. */
 typedef struct app_manager_app_desc
 {
@@ -195,6 +233,8 @@ typedef struct app_manager_app_desc
     const char *display_name;     /**< Localized display name, or NULL to use name. */
     uint16_t launcher_order;      /**< Stable order in the Applications page. */
     const char *launcher_subtitle; /**< Optional launcher summary text. */
+    /** Optional App-owned control-center card provider, or NULL. */
+    const app_manager_control_center_card_ops_t *control_center_card;
 } app_manager_app_desc_t;
 
 /** @brief Native screen-transition effects. */

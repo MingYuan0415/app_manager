@@ -13,6 +13,14 @@ config APP_MANAGER_MAX_RESIDENT_APPS
     range 1 16
     default 8
 
+config APP_MANAGER_CONTROL_CENTER_CARD_MAX
+    int "Control-center card provider capacity"
+    range 1 16
+    default 8
+    help
+        Maximum number of static App-owned card providers accepted by the
+        registry. This capacity is independent of resident App slots.
+
 config APP_MANAGER_MAX_PAGE_INSTANCES
     int "Page instance capacity"
     range 1 32

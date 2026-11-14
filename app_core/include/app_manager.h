@@ -549,6 +549,27 @@ esp_err_t app_manager_get_image(uint32_t semantic_id,
         .launcher_subtitle = (subtitle), \
     }
 
+/**
+ * @brief Export an application with launcher metadata and a control card.
+ * @param control_card is the static app_manager_control_center_card_ops_t.
+ */
+#define APP_MANAGER_APP_EXPORT_META_CARD(n, icon_value, nm, aid, root_id, app_flags, routes, order, subtitle, control_card) \
+    __attribute__((section(".app_manager_apps"), used, aligned(sizeof(void *)))) \
+    static const app_manager_app_desc_t _app_manager_app_##n = \
+    { \
+        .name = #n, \
+        .icon_id = (icon_value), \
+        .id = (aid), \
+        .root_page_id = (root_id), \
+        .page_routes = (routes), \
+        .page_route_count = sizeof(routes) / sizeof((routes)[0]), \
+        .flags = (app_flags), \
+        .display_name = (nm), \
+        .launcher_order = (order), \
+        .launcher_subtitle = (subtitle), \
+        .control_center_card = (control_card), \
+    }
+
 #ifdef __cplusplus
 }
 #endif
