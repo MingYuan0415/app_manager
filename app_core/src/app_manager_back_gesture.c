@@ -16,9 +16,11 @@
 #include "app_manager.h"
 #include "app_theme_colors.h"
 #include "app_manager_back_gesture.h"
+#include "app_manager_control_center.h"
 #include "app_manager_lifecycle.h"
 #include "app_manager_mailbox.h"
 #include "app_manager_navigation.h"
+#include "app_manager_task_switcher.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -57,6 +59,10 @@
 typedef enum app_manager_back_gesture_phase
 {
     APP_MANAGER_GESTURE_IDLE = 0,
+    /* A touch is down in the edge but has not yet travelled far enough to be
+     * classified as a back gesture. The covered widget still owns the press
+     * and may complete an ordinary click. */
+    APP_MANAGER_GESTURE_PENDING,
     APP_MANAGER_GESTURE_TRACKING,
     APP_MANAGER_GESTURE_ARMED,
     APP_MANAGER_GESTURE_SUPPRESSED,
@@ -69,20 +75,32 @@ typedef enum app_manager_back_gesture_side
     APP_MANAGER_GESTURE_SIDE_RIGHT,
 } app_manager_back_gesture_side_t;
 
+typedef enum app_manager_back_gesture_overlay
+{
+    APP_MANAGER_GESTURE_OVERLAY_NONE = 0,
+    APP_MANAGER_GESTURE_OVERLAY_CONTROL_CENTER,
+    APP_MANAGER_GESTURE_OVERLAY_TASK_SWITCHER,
+} app_manager_back_gesture_overlay_t;
+
 typedef struct app_manager_back_gesture_state
 {
     bool effective;
     bool direction_locked;
     bool cancelling;
     bool indicator_shape_valid;
+    bool read_cb_installed;
+    bool touch_pressed;
+    bool ignore_until_release;
     app_manager_back_gesture_phase_t phase;
     app_manager_back_gesture_side_t side;
+    app_manager_back_gesture_overlay_t overlay_target;
     app_manager_back_gesture_side_t indicator_shape_side;
     uint32_t generation;
     uint32_t pending_generation;
     int32_t width;
     int32_t height;
     int32_t edge_width;
+    int32_t start_distance;
     int32_t trigger_distance;
     int32_t direction_slop;
     int32_t hysteresis;
@@ -90,8 +108,9 @@ typedef struct app_manager_back_gesture_state
     lv_point_t start_point;
     lv_display_t *display;
     lv_indev_t *touch;
-    lv_obj_t *left_strip;
-    lv_obj_t *right_strip;
+    lv_indev_read_cb_t original_read_cb;
+    lv_obj_t *left_marker;
+    lv_obj_t *right_marker;
     lv_obj_t *indicator;
     lv_obj_t *arrow;
     app_manager_navigation_gesture_token_t navigation_token;
@@ -180,37 +199,23 @@ static void _back_gesture_hide_indicator(void)
     }
 }
 
-static void _back_gesture_set_capture(bool enabled)
+static void _back_gesture_set_effective(bool enabled)
 {
-    lv_obj_t *strips[] =
-    {
-        s_gesture.left_strip,
-        s_gesture.right_strip,
-    };
-
     s_gesture.effective = enabled;
-    for (size_t index = 0; index < sizeof(strips) / sizeof(strips[0]); index++)
+    if (s_gesture.left_marker != NULL)
     {
-        if (strips[index] == NULL)
-        {
-            continue;
-        }
-        if (enabled)
-        {
-            lv_obj_set_clickable(strips[index], true);
-            lv_obj_set_hidden(strips[index], false);
-        }
-        else
-        {
-            lv_obj_set_clickable(strips[index], false);
-            lv_obj_set_hidden(strips[index], true);
-        }
+        lv_obj_set_hidden(s_gesture.left_marker, !enabled);
+    }
+    if (s_gesture.right_marker != NULL)
+    {
+        lv_obj_set_hidden(s_gesture.right_marker, !enabled);
     }
 }
 
 static bool _back_gesture_pointer_active(void)
 {
-    return s_gesture.phase == APP_MANAGER_GESTURE_TRACKING ||
+    return s_gesture.phase == APP_MANAGER_GESTURE_PENDING ||
+           s_gesture.phase == APP_MANAGER_GESTURE_TRACKING ||
            s_gesture.phase == APP_MANAGER_GESTURE_ARMED ||
            s_gesture.phase == APP_MANAGER_GESTURE_SUPPRESSED;
 }
@@ -220,8 +225,14 @@ static void _back_gesture_cancel_pointer(bool wait_release)
     const bool pointer_active = _back_gesture_pointer_active();
 
     _back_gesture_hide_indicator();
-    _back_gesture_set_capture(false);
+    _back_gesture_set_effective(false);
     s_gesture.direction_locked = false;
+    s_gesture.overlay_target = APP_MANAGER_GESTURE_OVERLAY_NONE;
+    s_gesture.touch_pressed = false;
+    if (pointer_active)
+    {
+        s_gesture.ignore_until_release = true;
+    }
     if (s_gesture.phase != APP_MANAGER_GESTURE_NAV_PENDING)
     {
         s_gesture.phase = APP_MANAGER_GESTURE_IDLE;
@@ -237,20 +248,98 @@ static void _back_gesture_cancel_pointer(bool wait_release)
     }
 }
 
-static bool _back_gesture_available(void)
+static bool _back_gesture_environment_available(void)
 {
-    const char *source_app_id = NULL;
-    app_manager_navigation_gesture_token_t token;
+    return atomic_load_explicit(&s_accepting, memory_order_acquire) &&
+           atomic_load_explicit(&s_policy_enabled, memory_order_acquire) &&
+           app_manager_lifecycle_screen_mutation_allowed() &&
+           !app_manager_is_transitioning();
+}
 
-    if (!atomic_load_explicit(&s_accepting, memory_order_acquire) ||
-            !atomic_load_explicit(&s_policy_enabled, memory_order_acquire) ||
-            !app_manager_lifecycle_screen_mutation_allowed() ||
-            app_manager_is_transitioning() ||
-            !app_manager_navigation_gesture_token_acquire(&token))
+/**
+ * @brief Check whether a modal sheet owns the point below the edge gesture.
+ *
+ * A sheet scrim swallows every pointer event in the normal LVGL hit-test, but
+ * the pass-through read callback runs before that hit-test. Sheets therefore
+ * mark their scrim with user flag 1 and the read gate must decline before it
+ * claims the press, leaving the sheet and its buttons untouched.
+ */
+static bool _back_gesture_modal_sheet_in_layer(lv_obj_t *layer,
+        const lv_point_t *point)
+{
+    if (layer == NULL || point == NULL)
     {
         return false;
     }
+    lv_point_t hit = *point;
+    lv_obj_t *target = lv_indev_search_obj(layer, &hit);
+    while (target != NULL)
+    {
+        if (lv_obj_get_user_flag(target, 1U))
+        {
+            return true;
+        }
+        target = lv_obj_get_parent(target);
+    }
+    return false;
+}
 
+static bool _back_gesture_modal_sheet_at(const lv_point_t *point)
+{
+    if (s_gesture.display == NULL || point == NULL)
+    {
+        return false;
+    }
+    /* An app-owned sheet lives under the active Screen. System surfaces such
+     * as the task switcher live on the top or Sys layer; scan all three so a
+     * scrim there also blocks edge gesture capture. */
+    lv_obj_t *screen = lv_display_get_screen_active(s_gesture.display);
+    if (_back_gesture_modal_sheet_in_layer(screen, point))
+    {
+        return true;
+    }
+    lv_obj_t *top = lv_display_get_layer_top(s_gesture.display);
+    if (top != screen && _back_gesture_modal_sheet_in_layer(top, point))
+    {
+        return true;
+    }
+    lv_obj_t *sys = lv_display_get_layer_sys(s_gesture.display);
+    return sys != screen && sys != top &&
+           _back_gesture_modal_sheet_in_layer(sys, point);
+}
+
+static bool _back_gesture_overlay_visible(
+    app_manager_back_gesture_overlay_t *target)
+{
+    if (app_manager_control_center_is_visible())
+    {
+        if (target != NULL)
+        {
+            *target = APP_MANAGER_GESTURE_OVERLAY_CONTROL_CENTER;
+        }
+        return true;
+    }
+    if (app_manager_task_switcher_is_visible())
+    {
+        if (target != NULL)
+        {
+            *target = APP_MANAGER_GESTURE_OVERLAY_TASK_SWITCHER;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool _back_gesture_target_allowed(
+    const app_manager_navigation_gesture_token_t *token)
+{
+    const char *source_app_id = NULL;
+
+    if (token == NULL ||
+            !app_manager_navigation_gesture_token_is_current(token))
+    {
+        return false;
+    }
     app_manager_lifecycle_back_target_t target =
         app_manager_lifecycle_back_target(&source_app_id);
     /* Home is the base App: it may leave a sub-page for its previous Page,
@@ -259,8 +348,26 @@ static bool _back_gesture_available(void)
                       strcmp(source_app_id, APP_MANAGER_ID_HOME) == 0;
     return target != APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE &&
            source_app_id != NULL &&
-           (!home || target == APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE) &&
-           app_manager_navigation_gesture_token_is_current(&token);
+           (!home || target == APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE);
+}
+
+static bool _back_gesture_available(void)
+{
+    app_manager_navigation_gesture_token_t token;
+
+    if (!_back_gesture_environment_available())
+    {
+        return false;
+    }
+    if (_back_gesture_overlay_visible(NULL))
+    {
+        return true;
+    }
+    if (!app_manager_navigation_gesture_token_acquire(&token))
+    {
+        return false;
+    }
+    return _back_gesture_target_allowed(&token);
 }
 
 static void _back_gesture_refresh(void)
@@ -272,7 +379,7 @@ static void _back_gesture_refresh(void)
     }
     if (s_gesture.phase == APP_MANAGER_GESTURE_NAV_PENDING)
     {
-        _back_gesture_set_capture(false);
+        _back_gesture_set_effective(false);
         return;
     }
     if (_back_gesture_pointer_active())
@@ -282,7 +389,7 @@ static void _back_gesture_refresh(void)
 
     s_gesture.phase = APP_MANAGER_GESTURE_IDLE;
     _back_gesture_hide_indicator();
-    _back_gesture_set_capture(_back_gesture_available());
+    _back_gesture_set_effective(_back_gesture_available());
 }
 
 static int32_t _back_gesture_inward(const lv_point_t *point)
@@ -388,7 +495,8 @@ static void _back_gesture_update(const lv_point_t *point)
     const int32_t vertical = abs(point->y - s_gesture.start_point.y);
     const int32_t positive_inward = inward > 0 ? inward : 0;
 
-    if (!app_manager_navigation_gesture_token_is_current(
+    if (s_gesture.overlay_target == APP_MANAGER_GESTURE_OVERLAY_NONE &&
+            !app_manager_navigation_gesture_token_is_current(
                 &s_gesture.navigation_token))
     {
         s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
@@ -462,6 +570,8 @@ static void _back_gesture_complete(esp_err_t result, void *context)
 static void _back_gesture_release(void)
 {
     const bool armed = s_gesture.phase == APP_MANAGER_GESTURE_ARMED;
+    const app_manager_back_gesture_overlay_t overlay =
+        s_gesture.overlay_target;
     app_manager_navigation_gesture_token_t token =
         s_gesture.navigation_token;
 
@@ -469,7 +579,28 @@ static void _back_gesture_release(void)
     s_gesture.direction_locked = false;
     if (!armed)
     {
+        s_gesture.overlay_target = APP_MANAGER_GESTURE_OVERLAY_NONE;
         s_gesture.phase = APP_MANAGER_GESTURE_IDLE;
+        _back_gesture_refresh();
+        return;
+    }
+
+    if (overlay != APP_MANAGER_GESTURE_OVERLAY_NONE)
+    {
+        s_gesture.overlay_target = APP_MANAGER_GESTURE_OVERLAY_NONE;
+        s_gesture.phase = APP_MANAGER_GESTURE_IDLE;
+        if (overlay == APP_MANAGER_GESTURE_OVERLAY_CONTROL_CENTER)
+        {
+            const esp_err_t result = app_manager_control_center_hide();
+            if (result != ESP_OK)
+            {
+                LOG_W("control center dismiss failed: %d", (int)result);
+            }
+        }
+        else
+        {
+            app_manager_task_switcher_navigation_begin();
+        }
         _back_gesture_refresh();
         return;
     }
@@ -482,7 +613,7 @@ static void _back_gesture_release(void)
     s_gesture.generation = generation;
     s_gesture.pending_generation = generation;
     s_gesture.phase = APP_MANAGER_GESTURE_NAV_PENDING;
-    _back_gesture_set_capture(false);
+    _back_gesture_set_effective(false);
 
     esp_err_t result = app_manager_navigation_submit_gesture_back(
                            &token, _back_gesture_complete,
@@ -499,134 +630,216 @@ static void _back_gesture_release(void)
     }
 }
 
-static void _back_gesture_pressed(lv_obj_t *target, lv_indev_t *indev)
+static bool _back_gesture_begin(const lv_point_t *point)
 {
-    const char *source_app_id = NULL;
-    if (!s_gesture.effective || s_gesture.phase != APP_MANAGER_GESTURE_IDLE ||
-            indev == NULL || indev != s_gesture.touch ||
-            !app_manager_navigation_gesture_token_acquire(
-                &s_gesture.navigation_token))
+    if (point == NULL || s_gesture.phase != APP_MANAGER_GESTURE_IDLE ||
+            point->x < 0 || point->x >= s_gesture.width ||
+            point->y < 0 || point->y >= s_gesture.height)
     {
-        s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
-        _back_gesture_hide_indicator();
-        return;
-    }
-    const app_manager_lifecycle_back_target_t back_target =
-        app_manager_lifecycle_back_target(&source_app_id);
-    const bool home = source_app_id != NULL &&
-                      strcmp(source_app_id, APP_MANAGER_ID_HOME) == 0;
-    if (back_target == APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE ||
-            source_app_id == NULL ||
-            (home && back_target != APP_MANAGER_LIFECYCLE_BACK_TARGET_PAGE))
-    {
-        s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
-        _back_gesture_hide_indicator();
-        return;
+        return false;
     }
 
-    s_gesture.side = target == s_gesture.left_strip ?
-                     APP_MANAGER_GESTURE_SIDE_LEFT :
+    const bool left_edge = point->x < s_gesture.edge_width;
+    const bool right_edge = point->x >= s_gesture.width - s_gesture.edge_width;
+    if (!left_edge && !right_edge)
+    {
+        return false;
+    }
+    if (!_back_gesture_environment_available())
+    {
+        return false;
+    }
+
+    app_manager_back_gesture_overlay_t overlay =
+        APP_MANAGER_GESTURE_OVERLAY_NONE;
+    if (_back_gesture_overlay_visible(&overlay))
+    {
+        /* System surfaces own the next release even when the page below has
+         * no back target (for example Home root with Control Center open). */
+    }
+    else if (!s_gesture.effective || _back_gesture_modal_sheet_at(point) ||
+             !app_manager_navigation_gesture_token_acquire(
+                 &s_gesture.navigation_token) ||
+             !_back_gesture_target_allowed(&s_gesture.navigation_token))
+    {
+        return false;
+    }
+
+    s_gesture.overlay_target = overlay;
+    s_gesture.side = left_edge ? APP_MANAGER_GESTURE_SIDE_LEFT :
                      APP_MANAGER_GESTURE_SIDE_RIGHT;
-    lv_indev_get_point(indev, &s_gesture.start_point);
+    s_gesture.start_point = *point;
     s_gesture.indicator_y = _back_gesture_clamp(
-                                s_gesture.start_point.y -
+                                point->y -
                                 APP_MANAGER_GESTURE_INDICATOR_HEIGHT / 2,
                                 APP_MANAGER_GESTURE_INDICATOR_MARGIN,
                                 s_gesture.height -
                                 APP_MANAGER_GESTURE_INDICATOR_HEIGHT -
                                 APP_MANAGER_GESTURE_INDICATOR_MARGIN);
     s_gesture.direction_locked = false;
-    s_gesture.phase = APP_MANAGER_GESTURE_TRACKING;
+    s_gesture.phase = APP_MANAGER_GESTURE_PENDING;
     lv_obj_set_hidden(s_gesture.arrow, true);
     _back_gesture_generate_indicator(s_gesture.side);
     _back_gesture_render(0);
+    _back_gesture_hide_indicator();
+    return true;
 }
 
-static void _back_gesture_event(lv_event_t *event)
+static void _back_gesture_move(const lv_point_t *point)
 {
-    lv_event_code_t code = lv_event_get_code(event);
-    lv_indev_t *indev = lv_event_get_indev(event);
+    if (point == NULL)
+    {
+        return;
+    }
 
-    if (code == LV_EVENT_PRESSED)
+    if (s_gesture.phase == APP_MANAGER_GESTURE_PENDING)
     {
-        _back_gesture_pressed(lv_event_get_target_obj(event), indev);
-    }
-    else if (code == LV_EVENT_PRESSING &&
-             (s_gesture.phase == APP_MANAGER_GESTURE_TRACKING ||
-              s_gesture.phase == APP_MANAGER_GESTURE_ARMED))
-    {
-        lv_point_t point;
-        lv_indev_get_point(indev, &point);
-        _back_gesture_update(&point);
-    }
-    else if (code == LV_EVENT_RELEASED)
-    {
-        _back_gesture_release();
-    }
-    else if (code == LV_EVENT_PRESS_LOST)
-    {
-        if (indev != NULL)
+        const int32_t inward = _back_gesture_inward(point);
+        const int32_t vertical = abs(point->y - s_gesture.start_point.y);
+        const int32_t positive_inward = inward > 0 ? inward : 0;
+
+        /* Until the finger has travelled a deliberate distance, a tap or a
+         * vertical scroll must keep the original widget's input intact. */
+        if (inward <= -s_gesture.direction_slop ||
+                (vertical >= 2 * s_gesture.direction_slop &&
+                 vertical > 2 * positive_inward))
         {
-            lv_indev_wait_release(indev);
+            s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
+            return;
         }
-        _back_gesture_cancel_pointer(false);
-        _back_gesture_refresh();
-    }
-    else if (code == LV_EVENT_INDEV_RESET)
-    {
-        _back_gesture_cancel_pointer(false);
-        if (!s_gesture.cancelling)
+        if (inward < s_gesture.start_distance)
         {
-            _back_gesture_refresh();
+            return;
         }
+        if (vertical > 2 * inward)
+        {
+            s_gesture.phase = APP_MANAGER_GESTURE_SUPPRESSED;
+            return;
+        }
+
+        s_gesture.phase = APP_MANAGER_GESTURE_TRACKING;
+        if (s_gesture.touch != NULL)
+        {
+            /* The gesture is real: cancel the widget press without letting
+             * the eventual release turn into a click. */
+            lv_indev_wait_release(s_gesture.touch);
+        }
+    }
+
+    if (s_gesture.phase == APP_MANAGER_GESTURE_TRACKING ||
+            s_gesture.phase == APP_MANAGER_GESTURE_ARMED)
+    {
+        _back_gesture_update(point);
     }
 }
 
-static lv_obj_t *_back_gesture_create_strip(lv_obj_t *system_layer,
+static void _back_gesture_touch_sample(bool pressed, const lv_point_t *point)
+{
+    if (!pressed)
+    {
+        /* Repeated RELEASED samples are normal while the read timer is idle.
+         * Never let a later one clear a BACK that is waiting for its
+         * completion callback. */
+        if (s_gesture.touch_pressed &&
+                s_gesture.phase != APP_MANAGER_GESTURE_IDLE &&
+                s_gesture.phase != APP_MANAGER_GESTURE_NAV_PENDING)
+        {
+            _back_gesture_release();
+        }
+        s_gesture.touch_pressed = false;
+        s_gesture.ignore_until_release = false;
+        return;
+    }
+
+    if (!s_gesture.touch_pressed)
+    {
+        s_gesture.touch_pressed = true;
+        if (s_gesture.ignore_until_release)
+        {
+            return;
+        }
+        (void)_back_gesture_begin(point);
+        return;
+    }
+
+    if (!s_gesture.ignore_until_release)
+    {
+        _back_gesture_move(point);
+    }
+}
+
+static void _back_gesture_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    if (s_gesture.original_read_cb != NULL)
+    {
+        s_gesture.original_read_cb(indev, data);
+    }
+    if (indev == s_gesture.touch && data != NULL)
+    {
+        _back_gesture_touch_sample(
+            data->state == LV_INDEV_STATE_PRESSED, &data->point);
+    }
+}
+
+static void _back_gesture_indev_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_INDEV_RESET ||
+            s_gesture.cancelling)
+    {
+        return;
+    }
+
+    const bool was_pressed = s_gesture.touch_pressed;
+    _back_gesture_cancel_pointer(false);
+    s_gesture.touch_pressed = false;
+    if (was_pressed)
+    {
+        s_gesture.ignore_until_release = true;
+    }
+    _back_gesture_refresh();
+}
+
+static lv_obj_t *_back_gesture_create_edge_marker(lv_obj_t *system_layer,
         int32_t x)
 {
-    lv_obj_t *strip = lv_obj_create(system_layer);
-    if (strip == NULL)
+    lv_obj_t *marker = lv_obj_create(system_layer);
+    if (marker == NULL)
     {
         return NULL;
     }
-    lv_obj_remove_style_all(strip);
-    lv_obj_set_pos(strip, x, 0);
-    lv_obj_set_size(strip, s_gesture.edge_width, s_gesture.height);
-    lv_obj_set_press_lock(strip, true);
-    lv_obj_set_ignore_layout(strip, true);
-    lv_obj_set_floating(strip, true);
-    lv_obj_set_hidden(strip, true);
-    lv_obj_set_clickable(strip, false);
-    lv_obj_set_click_focusable(strip, false);
-    lv_obj_set_scrollable(strip, false);
-    lv_obj_set_scroll_elastic(strip, false);
-    lv_obj_set_scroll_momentum(strip, false);
-    lv_obj_set_scroll_chain(strip, false);
-    lv_obj_set_scroll_with_arrow(strip, false);
-    lv_obj_set_snappable(strip, false);
-    lv_obj_set_event_bubble(strip, false);
-    lv_obj_set_gesture_bubble(strip, false);
-    if (lv_obj_add_event_cb(strip, _back_gesture_event,
-                            LV_EVENT_ALL, NULL) == NULL)
-    {
-        lv_obj_delete(strip);
-        strip = NULL;
-    }
-    return strip;
+    lv_obj_remove_style_all(marker);
+    lv_obj_set_pos(marker, x, 0);
+    lv_obj_set_size(marker, s_gesture.edge_width, s_gesture.height);
+    lv_obj_set_ignore_layout(marker, true);
+    lv_obj_set_floating(marker, true);
+    lv_obj_set_hidden(marker, true);
+    /* Diagnostic availability marker only. It must never own pointer input:
+     * the read callback classifies real gestures and ordinary taps continue
+     * to reach the widget beneath the edge. */
+    lv_obj_set_clickable(marker, false);
+    lv_obj_set_click_focusable(marker, false);
+    lv_obj_set_scrollable(marker, false);
+    lv_obj_set_scroll_elastic(marker, false);
+    lv_obj_set_scroll_momentum(marker, false);
+    lv_obj_set_scroll_chain(marker, false);
+    lv_obj_set_scroll_with_arrow(marker, false);
+    lv_obj_set_snappable(marker, false);
+    lv_obj_set_event_bubble(marker, false);
+    lv_obj_set_gesture_bubble(marker, false);
+    return marker;
 }
 
 static esp_err_t _back_gesture_create_objects(lv_obj_t *system_layer)
 {
-    s_gesture.left_strip = _back_gesture_create_strip(system_layer, 0);
-    if (s_gesture.left_strip == NULL)
+    s_gesture.left_marker = _back_gesture_create_edge_marker(system_layer, 0);
+    if (s_gesture.left_marker == NULL)
     {
         return ESP_ERR_NO_MEM;
     }
-    s_gesture.right_strip = _back_gesture_create_strip(
-                                system_layer,
-                                s_gesture.width - s_gesture.edge_width);
-    if (s_gesture.right_strip == NULL)
+    s_gesture.right_marker = _back_gesture_create_edge_marker(
+                                 system_layer,
+                                 s_gesture.width - s_gesture.edge_width);
+    if (s_gesture.right_marker == NULL)
     {
         return ESP_ERR_NO_MEM;
     }
@@ -696,20 +909,20 @@ static void _back_gesture_delete_objects(void)
     {
         lv_obj_delete(s_gesture.indicator);
     }
-    if (s_gesture.right_strip != NULL &&
-            lv_obj_is_valid(s_gesture.right_strip))
+    if (s_gesture.right_marker != NULL &&
+            lv_obj_is_valid(s_gesture.right_marker))
     {
-        lv_obj_delete(s_gesture.right_strip);
+        lv_obj_delete(s_gesture.right_marker);
     }
-    if (s_gesture.left_strip != NULL &&
-            lv_obj_is_valid(s_gesture.left_strip))
+    if (s_gesture.left_marker != NULL &&
+            lv_obj_is_valid(s_gesture.left_marker))
     {
-        lv_obj_delete(s_gesture.left_strip);
+        lv_obj_delete(s_gesture.left_marker);
     }
     s_gesture.arrow = NULL;
     s_gesture.indicator = NULL;
-    s_gesture.right_strip = NULL;
-    s_gesture.left_strip = NULL;
+    s_gesture.right_marker = NULL;
+    s_gesture.left_marker = NULL;
 }
 
 esp_err_t app_manager_back_gesture_init(lv_display_t *display,
@@ -741,6 +954,10 @@ esp_err_t app_manager_back_gesture_init(lv_display_t *display,
                                    APP_MANAGER_GESTURE_EDGE_PERCENT),
                                APP_MANAGER_GESTURE_EDGE_MIN_PX,
                                APP_MANAGER_GESTURE_EDGE_MAX_PX);
+    /* A gesture is not classified until the finger has travelled the same
+     * distance as the edge region. A tap, a vertical scroll or a tiny jitter
+     * therefore stays with the widget that received the press. */
+    s_gesture.start_distance = s_gesture.edge_width;
     s_gesture.trigger_distance = _back_gesture_clamp(
                                      _back_gesture_percent(s_gesture.width,
                                          APP_MANAGER_GESTURE_TRIGGER_PERCENT),
@@ -768,6 +985,16 @@ esp_err_t app_manager_back_gesture_init(lv_display_t *display,
         goto fail;
     }
 
+    s_gesture.original_read_cb = lv_indev_get_read_cb(touch);
+    lv_indev_set_read_cb(touch, _back_gesture_read_cb);
+    s_gesture.read_cb_installed = true;
+    if (lv_indev_add_event_cb(touch, _back_gesture_indev_event,
+                              LV_EVENT_INDEV_RESET, NULL) == NULL)
+    {
+        result = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+
     s_gesture.phase = APP_MANAGER_GESTURE_IDLE;
     atomic_store_explicit(&s_api_users, 0U, memory_order_release);
     atomic_store_explicit(&s_policy_enabled, true, memory_order_release);
@@ -777,6 +1004,12 @@ esp_err_t app_manager_back_gesture_init(lv_display_t *display,
     return ESP_OK;
 
 fail:
+    if (s_gesture.touch != NULL && s_gesture.read_cb_installed)
+    {
+        lv_indev_remove_event_cb_with_user_data(
+            s_gesture.touch, _back_gesture_indev_event, NULL);
+        lv_indev_set_read_cb(s_gesture.touch, s_gesture.original_read_cb);
+    }
     _back_gesture_delete_objects();
     memset(&s_gesture, 0, sizeof(s_gesture));
     return result;
@@ -823,6 +1056,16 @@ esp_err_t app_manager_back_gesture_deinit(void)
     }
 
     _back_gesture_cancel_pointer(true);
+    if (s_gesture.touch != NULL)
+    {
+        lv_indev_remove_event_cb_with_user_data(
+            s_gesture.touch, _back_gesture_indev_event, NULL);
+        if (s_gesture.read_cb_installed)
+        {
+            lv_indev_set_read_cb(s_gesture.touch, s_gesture.original_read_cb);
+            s_gesture.read_cb_installed = false;
+        }
+    }
     _back_gesture_delete_objects();
     memset(&s_gesture, 0, sizeof(s_gesture));
     atomic_store_explicit(&s_policy_enabled, false, memory_order_release);
@@ -857,6 +1100,12 @@ void app_manager_back_gesture_screen_suspend(void)
 
 void app_manager_back_gesture_screen_resume(void)
 {
+    /* Touch disable may happen before a release sample is delivered. Drop the
+     * synthetic held state so the first press after resume is evaluated as a
+     * fresh gesture instead of being treated as the old one. */
+    s_gesture.touch_pressed = false;
+    s_gesture.ignore_until_release = false;
+    s_gesture.overlay_target = APP_MANAGER_GESTURE_OVERLAY_NONE;
     _back_gesture_refresh();
 }
 

@@ -11,11 +11,13 @@ extern "C" {
 #endif
 
 /**
- * @brief Initialize the fixed System Layer back-gesture objects.
+ * @brief Initialize the pass-through back-gesture gate and its indicators.
  * @param display owns the System Layer used by the gesture.
  * @param touch is the pointer input device associated with display.
  * @return ESP_OK when initialized, otherwise an ESP-IDF error.
- * @note Call only from the UI worker after navigation is initialized.
+ * @note Call only from the UI worker after navigation is initialized. The
+ *       controller wraps the input device read callback and restores it on
+ *       deinit; it never installs a clickable edge overlay.
  */
 esp_err_t app_manager_back_gesture_init(lv_display_t *display,
                                         lv_indev_t *touch);
@@ -46,17 +48,19 @@ void app_manager_back_gesture_navigation_begin(void);
 void app_manager_back_gesture_navigation_settled(void);
 
 /**
- * @brief Cancel tracking and hide capture before pointer input is disabled.
+ * @brief Cancel tracking and hide the pass-through gate before touch input is
+ * disabled.
  */
 void app_manager_back_gesture_screen_suspend(void);
 
 /**
- * @brief Refresh effective capture before pointer input is enabled.
+ * @brief Drop stale touch state and refresh the gate before touch input is
+ * enabled again.
  */
 void app_manager_back_gesture_screen_resume(void);
 
 /**
- * @brief Return the computed horizontal edge capture width.
+ * @brief Return the computed horizontal edge gesture-start width.
  * @return Edge width in pixels, or 0 before gesture initialization.
  * @note Call only from the UI worker.
  */

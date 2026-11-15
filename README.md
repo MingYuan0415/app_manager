@@ -41,9 +41,9 @@ local refactor:
 10. During cold start, physical keys and inactivity PM stay closed; they open
     only after the first frame, the panel and the dependent services have
     committed.
-11. The edge back capture strips and indicator belong only to the Sys Layer and
-    never enter the Page Screen lifecycle.
-12. Gesture PRESSING only updates the indicator; the Page Screen position,
+11. The edge back indicator and availability markers belong only to the Sys
+    Layer; its pass-through read gate never enters the Page Screen lifecycle.
+12. Gesture tracking only updates the indicator; the Page Screen position,
     opacity and style never track the finger in real time.
 
 ## 2. Module Responsibilities
@@ -58,7 +58,7 @@ local refactor:
 | `app_core/src/app_manager_navigation.c` | fixed-capacity sync/async command gateway and timeout semantics (product baseline 8 slots) |
 | `app_core/src/app_manager_lifecycle.c` | lifecycle execution, residence policy, failure rollback and cleanup ownership |
 | `app_core/src/app_manager_presentation.c` | neutral Screen, Page Screen, full-resolution snapshot/Image transition, native fallback and touch barrier |
-| `app_core/src/app_manager_back_gesture.c` | Sys Layer dual-side capture, programmatic A8 Canvas indicator, back-target gating and runtime switch |
+| `app_core/src/app_manager_back_gesture.c` | Pass-through read-callback edge gate, programmatic A8 Canvas indicator, back-target gating and runtime switch |
 | `app_core/src/app_manager_mailbox.c` | fixed-capacity dispatcher from any task to the UI worker |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL, display, touch, font, resource and suspend/resume transactions |
 | `app_core/src/app_manager_task_switcher.c` | Sys Layer system task switcher: vertical task stack, per-row close (button or swipe left), confirmed clear all, device memory overview and lifecycle cooperation |
@@ -407,13 +407,22 @@ be read as the instance having been destroyed.
 ### 7.2 Sys Layer Edge Back
 
 Edge back is a system-level input of the app-manager and belongs to no App or
-Page. The framework permanently creates a transparent capture strip on each of
-the left and right sides of the LVGL Sys Layer; the strips use
-`LV_OBJ_FLAG_CLICKABLE` and `LV_OBJ_FLAG_PRESS_LOCK` so that a press that moves
-out of the narrow edge region still receives the whole pointer sequence. The
-gesture feedback is an independent `64x144` A8 Canvas indicator that accepts no
-clicks and never enters the Page MOUNT/UNMOUNT lifecycle. The framework carries
-no static images and depends on neither LVGL Vector nor ThorVG; the arc-shaped
+Page. The framework installs a pass-through read-callback gate on the touch
+input device and keeps two non-clickable Sys Layer availability markers at the
+left and right edges. The read callback observes the raw touch sample and
+classifies a back gesture only after the press starts inside an edge region and
+travels inward by the gesture-start distance. Until that point the press is not
+captured: a tap, a small wobble, or a vertical scroll remains an ordinary LVGL
+press/click on the widget beneath the edge. Once a real gesture is classified,
+the controller calls `lv_indev_wait_release()` so the original press cannot
+turn into a click and takes over the remaining pointer sequence. The gate
+gives system surfaces their own ownership: an edge gesture over the control
+center or task switcher closes that surface on release instead of submitting a
+page BACK, while a page modal sheet marked as an input barrier declines the
+gesture so the sheet keeps the press. The gesture feedback is an independent
+`64x144` A8 Canvas indicator that accepts no clicks
+and never enters the Page MOUNT/UNMOUNT lifecycle. The framework carries no
+static images and depends on neither LVGL Vector nor ThorVG; the arc-shaped
 alpha mask is generated programmatically with Q15 integer arithmetic at init.
 The indicator slides in horizontally from outside the screen edge that owns the
 gesture; both side labels use `LV_SYMBOL_LEFT` and never switch to
@@ -425,15 +434,17 @@ A valid gesture must satisfy all of:
 - the Screen is in a stable interactive state, with no page animation, Screen
   suspend or deinit;
 - the current page has a valid back target;
-- the pointer starts on the left or right capture strip and moves into the
-  screen to the commit threshold.
+- the pointer starts inside the left or right edge start region, travels
+  inward at least the gesture-start distance without a dominating vertical
+  movement, and reaches the commit threshold.
 
 The 0.7.1 geometry parameters are computed from the display resolution and
 clamped to lower and upper bounds:
 
 | Parameter | Rule |
 | --- | --- |
-| Edge capture width | 8% of screen width, clamped to 24..32 px; 29 px on a 368 px wide screen |
+| Edge start width | 8% of screen width, clamped to 24..32 px; 29 px on a 368 px wide screen |
+| Gesture start distance | Equal to the edge start width; the first deliberate inward travel before the gesture claims the press |
 | Commit distance | 15% of screen width, clamped to 48..80 px; 55 px on a 368 px wide screen |
 | Direction slop | 3% of screen width, clamped to 10..16 px |
 | Armed release hysteresis | 1/5 of the commit distance, clamped to 10..18 px |
@@ -466,17 +477,17 @@ repeatedly.
 Home's root page never has a gesture back entry even when the global switch is
 enabled; a Home sub-page returns to its previous Page. A sub-page of another App
 returns to the previous Page, and a non-Home root page can gesture back only
-when a previous App exists in the App history. With no target the capture strip
-stays inactive and edge input continues through the normal LVGL hit-test.
+when a previous App exists in the App history. With no target the edge markers
+stay inactive and edge input continues through the normal LVGL hit-test.
 
-During `PRESSING` the framework only updates the Canvas horizontal position by
-`inward / trigger_distance`. The left X moves from `-64` to `0`, the right X
-moves from the screen width to "screen width minus 64"; the Canvas size,
+During gesture tracking the framework only updates the Canvas horizontal
+position by `inward / trigger_distance`. The left X moves from `-64` to `0`, the
+right X moves from the screen width to "screen width minus 64"; the Canvas size,
 contour, opacity and Y anchor stay unchanged throughout. The `LV_SYMBOL_LEFT`
 Label is a Canvas child, appears only after ARMED is entered and hides
 immediately once a retraction leaves ARMED. The Page Screen coordinates,
 opacity, style and active state do not change with the finger in real time, and
-no full-screen snapshot is created. The `PRESSING` phase never captures a
+no full-screen snapshot is created. Gesture tracking never captures a
 snapshot; when the threshold is not reached before release, the direction is
 wrong, input is cancelled or the state is preempted, only the indicator is reset
 and no navigation command is produced; after the threshold is reached one
@@ -514,8 +525,8 @@ animation the policy value may still be `true` while effective capture is
 `false`; before initialization and after deinit the getter returns `false`. The
 setter returns `ESP_OK` when the policy is already applied or saved for the next
 Screen resume, otherwise it returns an admission or UI dispatcher error.
-Business pages must not access or rearrange the Sys Layer capture objects
-directly.
+Business pages must not access or rearrange the Sys Layer gesture diagnostic
+markers directly.
 
 ### 7.3 Control Center
 
@@ -1241,16 +1252,16 @@ back, Screen pause/resume, cleanup rollback and Sys Layer edge gestures. Besides
 the navigation result, gesture assertions should also check that exactly one
 Page Screen exists at stability, that the overlay/Image of an ordinary
 non-`NONE` transition is released after completion, that no snapshot is created
-during `PRESSING`, that the Page Screen does not change with `PRESSING`, that
+during `PENDING`, that the Page Screen does not change with `PENDING`, that
 the Canvas stays `64x144`, that the indicator Y anchor is fixed, that the left
 and right arcs mirror each other, and that the indicator, timers, subscriptions
 and active sessions return to the baseline after cancellation or completion. A8
 buffer tests should additionally sample depth and edge alpha at the top,
 quarter, middle and bottom to verify the Q15 curve and the 1 px antialiasing; on
-a 368 px wide screen, check the 29 px capture strip and the 55 px commit
-distance, and separately check that the left X is `-64/-31/0` and the right X is
-`368/335/304` (the middle values correspond to inward=28); the left hit at
-`x=28` with no hit at `x=29`, and the right hit at `x=339` with no hit at
+a 368 px wide screen, check the 29 px edge start region and the 55 px commit
+distance, and separately check that the left X is `-64/-26/0` and the right X is
+`368/330/304` (the middle values correspond to inward=33); the left start at
+`x=28` and no start at `x=29`, the right start at `x=339` and no start at
 `x=338`, and the commit boundary should cover inward displacements `54/55`. Also
 confirm that a slight diagonal swipe locks the horizontal direction, that an
 obvious vertical or outward movement is cancelled, and that the arrow is hidden

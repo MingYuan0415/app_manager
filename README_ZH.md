@@ -25,8 +25,9 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 8. 屏幕休眠和 deinit 会先快进当前动画，再进入稳定页面状态并关闭新准入。
 9. PM generation/commit、mailbox 超时和显示 DMA fence 语义保持独立有效。
 10. 冷启动期间物理按键和 inactivity PM 保持关闭；首帧、面板和依赖服务提交后才开放。
-11. 边缘返回捕获条和 indicator 只属于 Sys Layer，不进入 Page Screen 生命周期。
-12. 手势 PRESSING 只更新 indicator；Page Screen 的位置、透明度和样式始终不实时跟手。
+11. 边缘返回 indicator 和可用性标记只属于 Sys Layer；可穿透 read gate 不进入 Page
+    Screen 生命周期。
+12. 手势跟踪只更新 indicator；Page Screen 的位置、透明度和样式始终不实时跟手。
 
 ## 2. 模块职责
 
@@ -40,7 +41,7 @@ Page Screen 始终通过既有导航动画完成切换，不参与实时跟手�
 | `app_core/src/app_manager_navigation.c` | 固定容量 sync/async command gateway 和超时语义（产品基线 8 槽） |
 | `app_core/src/app_manager_lifecycle.c` | 生命周期执行、驻留策略、失败回滚和 cleanup ownership |
 | `app_core/src/app_manager_presentation.c` | neutral Screen、Page Screen、全分辨率快照/Image 转场、原生回退和触摸屏障 |
-| `app_core/src/app_manager_back_gesture.c` | Sys Layer 双边捕获、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
+| `app_core/src/app_manager_back_gesture.c` | 可穿透 read callback 边缘门控、程序化 A8 Canvas indicator、返回目标门控和运行时开关 |
 | `app_core/src/app_manager_mailbox.c` | 任意任务到 UI worker 的固定容量 dispatcher |
 | `app_core/src/app_manager_lvgl_adapter.c` | LVGL、显示、触摸、字体、资源和 suspend/resume 事务 |
 | `app_core/src/app_manager_task_switcher.c` | Sys Layer 系统任务切换器：纵向任务栈、逐行关闭（按钮或左滑）、二次确认全部清除、设备内存概览与生命周期协作 |
@@ -332,26 +333,33 @@ HOME、POWER 或 app-control。新导航到达时先把当前动画推进到完�
 
 ### 7.2 Sys Layer 边缘返回
 
-边缘返回属于 app-manager 的系统级输入，不属于任何 App 或 Page。框架在 LVGL
-Sys Layer 上永久创建左右两个透明捕获条；捕获条使用 `LV_OBJ_FLAG_CLICKABLE` 和
-`LV_OBJ_FLAG_PRESS_LOCK`，保证按下后移出窄边缘区域仍能收到本次指针序列。手势反馈是
-独立的 `64x144` A8 Canvas indicator，不接收点击，也不进入 Page 的
-MOUNT/UNMOUNT 生命周期。框架不携带静态图片，也不依赖 LVGL Vector 或 ThorVG；弧形
-alpha mask 在初始化时以 Q15 整数运算程序化生成。indicator 从本次手势所属的屏幕外侧
-水平移入；两侧图标文本都使用 `LV_SYMBOL_LEFT`，不改用 `LV_SYMBOL_RIGHT`。
+边缘返回属于 app-manager 的系统级输入，不属于任何 App 或 Page。框架在触摸输入设备上
+安装可穿透的 read callback 门控，并在 Sys Layer 保留左右两个不可点击的可用性标记。
+read callback 先观察原始触摸采样：只有按压起点落在边缘区域、并向屏幕内部移动达到
+手势启动距离后，才判定为返回手势。在此之前不捕获按压，点击、轻微抖动或纵向滚动仍按
+普通 LVGL press/click 交给边缘下方的控件处理；一旦判定为真实手势，控制器调用
+`lv_indev_wait_release()` 取消原按压的 click 并接管后续指针序列。门控会识别系统
+浮层：控制中心或任务切换器打开时，边缘手势在松手后关闭该浮层，不提交页面 BACK；
+页内模态 sheet 标记为输入屏障时，边缘手势不接管该按压。手势反馈是独立的 `64x144`
+A8 Canvas indicator，不接收点击，也不进入 Page 的 MOUNT/UNMOUNT 生命周期。
+框架不携带静态图片，也不依赖 LVGL Vector 或 ThorVG；弧形 alpha mask 在初始化时以
+Q15 整数运算程序化生成。indicator 从本次手势所属的屏幕外侧水平移入；两侧图标文本都
+使用 `LV_SYMBOL_LEFT`，不改用 `LV_SYMBOL_RIGHT`。
 
 一次有效手势必须同时满足：
 
 - 全局边缘返回开关已启用；
 - Screen 处于稳定可交互状态，没有页面动画、Screen suspend 或 deinit；
 - 当前页面存在合法返回目标；
-- 指针从左侧或右侧捕获条开始，并朝屏幕内部移动到提交阈值。
+- 指针起点位于左侧或右侧边缘启动区域，向内移动至少达到手势启动距离，且没有以纵向
+  位移为主，并继续移动到提交阈值。
 
 0.7.1 的几何参数按显示分辨率计算并限制上下界：
 
 | 参数 | 计算规则 |
 | --- | --- |
-| 边缘捕获宽度 | 屏宽 8%，限制为 24..32 px；368 px 屏宽下为 29 px |
+| 边缘启动宽度 | 屏宽 8%，限制为 24..32 px；368 px 屏宽下为 29 px |
+| 手势启动距离 | 等于边缘启动宽度；达到该向内位移前不接管按压 |
 | 提交距离 | 屏宽 15%，限制为 48..80 px；368 px 屏宽下为 55 px |
 | 方向判定 slop | 屏宽 3%，限制为 10..16 px |
 | armed 回退滞回 | 提交距离的 1/5，限制为 10..18 px |
@@ -376,16 +384,15 @@ Canvas 使用一块 9,220 bytes（64x144 A8 + 4 B 对齐余量）的固定外部
 
 Home 根页始终没有手势返回入口，即使全局开关已启用；Home 子页返回上一 Page。
 其他 App 的子页返回上一 Page，非 Home 根页只有在 App 历史中存在前一个 App 时才能
-手势返回。没有目标时捕获条保持无效，边缘输入继续由正常 LVGL hit-test 处理。
+手势返回。没有目标时边缘标记保持无效，边缘输入继续由正常 LVGL hit-test 处理。
 
-`PRESSING` 期间框架只按 `inward / trigger_distance` 更新 Canvas 的水平位置。左侧 X 从
+手势跟踪期间框架只按 `inward / trigger_distance` 更新 Canvas 的水平位置。左侧 X 从
 `-64` 移到 `0`，右侧 X 从屏宽移到“屏宽减 64”；Canvas 尺寸、轮廓、不透明度和 Y
 锚点全程不变。`LV_SYMBOL_LEFT` Label 是 Canvas 子对象，仅在进入 ARMED 后显示，回撤
 解除 ARMED 后立即隐藏。Page Screen 的坐标、透明度、样式和 active 状态不随手指实时
-变化，也不创建全屏快照。`PRESSING` 阶段绝不采集快照；释放前未达到阈值、方向错误、输入
-取消或状态被抢占时，只复位
-indicator，不产生导航命令；达到阈值后提交一条既有异步 `BACK`，并由 Page/App 返回
-场景的默认动画完成实际 Screen 切换。
+变化，也不创建全屏快照。手势跟踪阶段绝不采集快照；释放前未达到阈值、方向错误、输入
+取消或状态被抢占时，只复位 indicator，不产生导航命令；达到阈值后提交一条既有异步
+`BACK`，并由 Page/App 返回场景的默认动画完成实际 Screen 切换。
 
 按下时手势控制器会取得 navigation epoch token，并在移动和释放时持续校验。若期间已有
 其他导航获得准入，token 立即失效，本次手势只隐藏 indicator，不再提交过期 `BACK`；
@@ -410,7 +417,7 @@ bool app_manager_back_gesture_is_enabled(void);
 目标。Home、无 App 历史、Screen 暂停或动画期间，策略值仍可能为 `true`，但有效捕获为
 `false`；初始化前和 deinit 后 getter 返回 `false`。setter 在策略已应用或已保存供下次
 Screen resume 使用时返回 `ESP_OK`，否则返回准入或 UI dispatcher 错误。业务页面不得
-直接访问或重排 Sys Layer 捕获对象。
+直接访问或重排 Sys Layer 手势诊断标记对象。
 
 ### 7.3 控制中心
 
@@ -969,14 +976,14 @@ ctest --test-dir /tmp/mt-integration --output-on-failure
 覆盖 14 种效果、快照起始/中间/完成、原生回退、立即完成、触摸屏障和快进；`cross_layer` 覆盖实际应用的
 App/Page 前进返回、Screen pause/resume、清理回滚和 Sys Layer 边缘手势。手势断言除
 导航结果外，还应检查稳定时一个 Page Screen、普通非 `NONE` 转场的 overlay/Image 在完成后
-释放、`PRESSING` 期间不创建快照、Page Screen 不随 `PRESSING` 改变、Canvas 固定为
+释放、`PENDING` 期间不创建快照、Page Screen 不随 `PENDING` 改变、Canvas 固定为
 `64x144`、indicator Y 锚点固定、左右弧形互为镜像，
 以及 indicator、timer、订阅和活动会话在取消或完成后回到基线。A8 buffer 测试还应采样
 顶部、四分之一、中部和底部的 depth 与边缘 alpha，验证 Q15 曲线和 1 px 抗锯齿；
-368 px 屏宽下检查捕获条为 29 px、提交距离为 55 px，并分别检查左侧 X 为
-`-64/-31/0`、右侧 X 为 `368/335/304`（中间值对应 inward=28）；左侧 `x=28` 命中而
-`x=29` 不命中，右侧
-`x=339` 命中而 `x=338` 不命中，提交边界应覆盖向内位移 `54/55`。同时确认轻微斜滑
+368 px 屏宽下检查边缘启动区域为 29 px、提交距离为 55 px，并分别检查左侧 X 为
+`-64/-26/0`、右侧 X 为 `368/330/304`（中间值对应 inward=33）；左侧 `x=28` 启动而
+`x=29` 不启动，右侧
+`x=339` 启动而 `x=338` 不启动，提交边界应覆盖向内位移 `54/55`。同时确认轻微斜滑
 能够锁定水平，明显垂直或向外移动被取消，以及箭头在阈值前隐藏、ARMED 后显示、迟滞
 回撤后再次隐藏。
 
