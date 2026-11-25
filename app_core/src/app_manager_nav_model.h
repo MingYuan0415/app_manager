@@ -9,6 +9,18 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#define APP_MANAGER_SCROLL_OWNER_MAX 4U
+#define APP_MANAGER_SCROLL_PATH_MAX  8U
+
+/* Page scroll snapshots are bounded: at most four vertical scroll owners per
+ * page, each reachable through a child-index path of at most eight levels. */
+typedef struct app_manager_scroll_entry
+{
+    int32_t y;
+    uint8_t depth;
+    uint16_t path[APP_MANAGER_SCROLL_PATH_MAX];
+} app_manager_scroll_entry_t;
+
 typedef struct app_manager_app_node app_manager_app_node_t;
 typedef struct app_manager_page_node app_manager_page_node_t;
 
@@ -26,6 +38,8 @@ struct app_manager_page_node
     app_manager_typed_blob_t arguments;
     bool has_arguments;
     lv_obj_t *screen;
+    uint8_t scroll_count;
+    app_manager_scroll_entry_t scroll[APP_MANAGER_SCROLL_OWNER_MAX];
     app_manager_page_node_t *previous;
     app_manager_page_node_t *next;
     app_manager_app_node_t *app;

@@ -14,6 +14,9 @@
 #include <unistd.h>
 
 #define TEST_SCREEN_CAPACITY 4U
+#define TEST_CHILD_CAPACITY  8U
+#define TEST_SCROLL_OWNER_CAPACITY 5U
+#define TEST_SCROLL_OWNER_MAX 4U
 #define TEST_TRACE_CAPACITY  96U
 #define TEST_TIMEOUT_MS      2000U
 
@@ -21,6 +24,10 @@ struct _lv_obj_t
 {
     bool live;
     uint32_t generation;
+    struct _lv_obj_t *parent;
+    struct _lv_obj_t *children[TEST_CHILD_CAPACITY];
+    uint32_t child_count;
+    int32_t scroll_y;
 };
 
 typedef struct page_state
@@ -36,6 +43,10 @@ typedef struct page_state
     bool has_arguments;
     app_manager_typed_blob_t arguments;
     lv_obj_t *last_screen;
+    struct _lv_obj_t scroll_container;
+    struct _lv_obj_t scroll_owners[TEST_SCROLL_OWNER_CAPACITY];
+    uint32_t scroll_owner_count;
+    bool skip_scroll_owner_on_mount;
     void *instance_memory;
 } page_state_t;
 
@@ -191,6 +202,34 @@ static void _lifecycle_observer(
     }
 }
 
+static void _fake_attach_scroll_owner(lv_obj_t *screen, page_state_t *state)
+{
+    assert(screen != NULL);
+    assert(state != NULL);
+    assert(screen->child_count < TEST_CHILD_CAPACITY);
+    struct _lv_obj_t *container = &state->scroll_container;
+    memset(container, 0, sizeof(*container));
+    container->live = true;
+    container->parent = screen;
+    screen->children[screen->child_count++] = container;
+
+    uint32_t owner_count = state->scroll_owner_count;
+    if (owner_count == 0U)
+    {
+        owner_count = 1U;
+    }
+    assert(owner_count <= TEST_SCROLL_OWNER_CAPACITY);
+    for (uint32_t index = 0U; index < owner_count; index++)
+    {
+        struct _lv_obj_t *owner = &state->scroll_owners[index];
+        assert(container->child_count < TEST_CHILD_CAPACITY);
+        memset(owner, 0, sizeof(*owner));
+        owner->live = true;
+        owner->parent = container;
+        container->children[container->child_count++] = owner;
+    }
+}
+
 static void _page_handler(app_manager_msg_type_t message, void *user_data)
 {
     page_state_t *state = user_data;
@@ -222,6 +261,10 @@ static void _page_handler(app_manager_msg_type_t message, void *user_data)
     case APP_MANAGER_MSG_ONMOUNT:
         assert(screen != NULL);
         state->last_screen = screen;
+        if (!state->skip_scroll_owner_on_mount)
+        {
+            _fake_attach_scroll_owner(screen, state);
+        }
         break;
     case APP_MANAGER_MSG_ONRESUME:
     case APP_MANAGER_MSG_ONPAUSE:
@@ -341,6 +384,10 @@ static void _ops_mount(const app_manager_page_context_t *context)
     page_state_t *state = _ops_record(context, APP_MANAGER_MSG_ONMOUNT);
     assert(context->screen != NULL);
     state->last_screen = context->screen;
+    if (!state->skip_scroll_owner_on_mount)
+    {
+        _fake_attach_scroll_owner(context->screen, state);
+    }
     state->mounted = true;
 }
 
@@ -573,6 +620,7 @@ lv_obj_t *app_manager_presentation_create_page_screen(void)
         struct _lv_obj_t *screen = &s_presentation.screens[index];
         if (!screen->live)
         {
+            memset(screen, 0, sizeof(*screen));
             screen->live = true;
             screen->generation++;
             return screen;
@@ -595,6 +643,7 @@ esp_err_t app_manager_presentation_delete_page_screen(lv_obj_t *screen)
         return ESP_ERR_INVALID_STATE;
     }
     screen->live = false;
+    screen->child_count = 0U;
     return ESP_OK;
 }
 
@@ -725,6 +774,35 @@ static size_t _live_screen_count(void)
         count += s_presentation.screens[index].live ? 1U : 0U;
     }
     return count;
+}
+
+uint32_t lv_obj_get_child_count(const lv_obj_t *obj)
+{
+    assert(obj != NULL);
+    return obj->child_count;
+}
+
+lv_obj_t *lv_obj_get_child(const lv_obj_t *obj, int32_t index)
+{
+    assert(obj != NULL);
+    if (index < 0 || (uint32_t)index >= obj->child_count)
+    {
+        return NULL;
+    }
+    return obj->children[index];
+}
+
+int32_t lv_obj_get_scroll_y(const lv_obj_t *obj)
+{
+    assert(obj != NULL);
+    return obj->scroll_y;
+}
+
+void lv_obj_scroll_to_y(lv_obj_t *obj, int32_t y, lv_anim_enable_t anim)
+{
+    assert(obj != NULL);
+    (void)anim;
+    obj->scroll_y = y;
 }
 
 static void _expect_start_handoff_complete(void)
@@ -992,6 +1070,95 @@ static void _test_run_and_page_navigation(void)
     _expect_start_handoff_complete();
     assert(s_presentation.starts == starts_before + 1U);
     _expect_back_target(APP_MANAGER_LIFECYCLE_BACK_TARGET_NONE, NULL);
+}
+
+static void _test_scroll_restore_after_screen_pause(void)
+{
+    assert(app_page_is_actived("a", "root"));
+    s_a_root.scroll_owners[0].scroll_y = 120;
+
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(_live_screen_count() == 0U);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(s_a_root.scroll_owners[0].scroll_y == 120);
+
+    s_a_root.scroll_owners[0].scroll_y = 90;
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    call = _request(APP_MANAGER_NAV_OP_BACK, NULL, NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_a_root.scroll_owners[0].scroll_y == 90);
+}
+
+static void _test_scroll_restore_multiple_and_capped(void)
+{
+    assert(app_page_is_actived("a", "root"));
+
+    s_a_root.scroll_owner_count = 2U;
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    s_a_root.scroll_owners[0].scroll_y = 120;
+    s_a_root.scroll_owners[1].scroll_y = 45;
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(s_a_root.scroll_owners[0].scroll_y == 120);
+    assert(s_a_root.scroll_owners[1].scroll_y == 45);
+
+    s_a_root.scroll_owner_count = TEST_SCROLL_OWNER_CAPACITY;
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    for (uint32_t index = 0U; index < TEST_SCROLL_OWNER_CAPACITY; index++)
+    {
+        s_a_root.scroll_owners[index].scroll_y = 100 + (int32_t)(index * 10U);
+    }
+    assert(app_manager_ui_call(_screen_pause_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    assert(app_manager_ui_call(_screen_resume_on_ui, NULL, TEST_TIMEOUT_MS) ==
+           ESP_OK);
+    for (uint32_t index = 0U; index < TEST_SCROLL_OWNER_MAX; index++)
+    {
+        assert(s_a_root.scroll_owners[index].scroll_y ==
+               100 + (int32_t)(index * 10U));
+    }
+    assert(s_a_root.scroll_owners[TEST_SCROLL_OWNER_MAX].scroll_y == 0);
+
+    s_a_root.scroll_owner_count = 1U;
+}
+
+static void _test_scroll_restore_skips_invalid_path(void)
+{
+    assert(app_page_is_actived("a", "root"));
+    s_a_root.scroll_owners[0].scroll_y = 66;
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+    s_a_root.skip_scroll_owner_on_mount = true;
+    s_a_root.scroll_owners[0].scroll_y = 0;
+    call = _request(APP_MANAGER_NAV_OP_BACK, NULL, NULL);
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_a_root.scroll_owners[0].scroll_y == 0);
+    s_a_root.skip_scroll_owner_on_mount = false;
+}
+
+static void _test_scroll_snapshot_cleared_on_new_intent(void)
+{
+    assert(app_page_is_actived("a", "root"));
+    s_a_root.scroll_owners[0].scroll_y = 77;
+    nav_call_t call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "one");
+    assert(_navigate(&call) == ESP_OK);
+
+    call = _request(APP_MANAGER_NAV_OP_OPEN_PAGE, "a", "root");
+    call.request.has_arguments = true;
+    call.request.arguments = _arguments(9U, UINT32_C(0x55AA1234));
+    assert(_navigate(&call) == ESP_OK);
+    assert(s_a_root.scroll_owners[0].scroll_y == 0);
 }
 
 static void _test_pause_and_stop_rollback(void)
@@ -1995,6 +2162,10 @@ int main(void)
 
     _lifecycle_log_capture_begin();
     _test_run_and_page_navigation();
+    _test_scroll_restore_after_screen_pause();
+    _test_scroll_restore_multiple_and_capped();
+    _test_scroll_restore_skips_invalid_path();
+    _test_scroll_snapshot_cleared_on_new_intent();
     _test_presentation_start_failure_rollback();
     _test_forward_unmount_and_target_pause_failure();
     _test_pause_and_stop_rollback();

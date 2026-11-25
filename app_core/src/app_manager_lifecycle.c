@@ -449,6 +449,88 @@ static esp_err_t _lifecycle_start_page(app_manager_page_node_t *page)
     return _lifecycle_call_handler(page, APP_MANAGER_MSG_ONSTART);
 }
 
+static void _lifecycle_capture_scroll_children(
+    app_manager_page_node_t *page, lv_obj_t *object, uint16_t *path,
+    uint8_t depth)
+{
+    if (page == NULL || object == NULL || path == NULL)
+    {
+        return;
+    }
+    const uint32_t child_count = lv_obj_get_child_count(object);
+    for (uint32_t index = 0U; index < child_count; index++)
+    {
+        if (page->scroll_count >= APP_MANAGER_SCROLL_OWNER_MAX)
+        {
+            return;
+        }
+        lv_obj_t *child = lv_obj_get_child(object, (int32_t)index);
+        if (child == NULL)
+        {
+            continue;
+        }
+        path[depth] = (uint16_t)index;
+        const int32_t scroll_y = lv_obj_get_scroll_y(child);
+        if (scroll_y != 0)
+        {
+            app_manager_scroll_entry_t *entry =
+                &page->scroll[page->scroll_count++];
+            memset(entry, 0, sizeof(*entry));
+            entry->y = scroll_y;
+            entry->depth = (uint8_t)(depth + 1U);
+            memcpy(entry->path, path,
+                   sizeof(entry->path[0]) * (size_t)(depth + 1U));
+        }
+        if ((uint8_t)(depth + 1U) < APP_MANAGER_SCROLL_PATH_MAX)
+        {
+            _lifecycle_capture_scroll_children(page, child, path,
+                                               (uint8_t)(depth + 1U));
+        }
+    }
+}
+
+static void _lifecycle_capture_scroll(app_manager_page_node_t *page)
+{
+    if (page == NULL)
+    {
+        return;
+    }
+    page->scroll_count = 0U;
+    if (page->screen == NULL)
+    {
+        return;
+    }
+    uint16_t path[APP_MANAGER_SCROLL_PATH_MAX] = {0};
+    _lifecycle_capture_scroll_children(page, page->screen, path, 0U);
+}
+
+static void _lifecycle_restore_scroll(app_manager_page_node_t *page)
+{
+    if (page == NULL || page->screen == NULL || page->scroll_count == 0U)
+    {
+        return;
+    }
+    for (uint8_t index = 0U; index < page->scroll_count; index++)
+    {
+        const app_manager_scroll_entry_t *entry = &page->scroll[index];
+        lv_obj_t *object = page->screen;
+        bool found = true;
+        for (uint8_t depth = 0U; depth < entry->depth; depth++)
+        {
+            object = lv_obj_get_child(object, (int32_t)entry->path[depth]);
+            if (object == NULL)
+            {
+                found = false;
+                break;
+            }
+        }
+        if (found)
+        {
+            lv_obj_scroll_to_y(object, entry->y, LV_ANIM_OFF);
+        }
+    }
+}
+
 static esp_err_t _lifecycle_mount_page(app_manager_page_node_t *page)
 {
     esp_err_t result = ESP_OK;
@@ -480,6 +562,10 @@ static esp_err_t _lifecycle_mount_page(app_manager_page_node_t *page)
     {
         (void)app_manager_presentation_delete_page_screen(page->screen);
         page->screen = NULL;
+    }
+    if (result == ESP_OK)
+    {
+        _lifecycle_restore_scroll(page);
     }
     return result;
 }
@@ -513,6 +599,10 @@ static esp_err_t _lifecycle_unmount_page(app_manager_page_node_t *page,
     if (page->active)
     {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (delete_screen)
+    {
+        _lifecycle_capture_scroll(page);
     }
     esp_err_t result = _lifecycle_call_handler(page, APP_MANAGER_MSG_ONUNMOUNT);
     if (result == ESP_OK && delete_screen)
@@ -942,6 +1032,10 @@ static void _lifecycle_update_intent(app_manager_app_node_t *app,
                                      app_manager_page_node_t *page,
                                      const app_manager_nav_request_t *request)
 {
+    if (page != NULL)
+    {
+        page->scroll_count = 0U;
+    }
     _lifecycle_copy_arguments(app, page, request);
     (void)_lifecycle_call_handler(page, APP_MANAGER_MSG_ONNEWINTENT);
 }

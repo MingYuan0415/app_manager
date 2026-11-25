@@ -236,6 +236,11 @@ ONSTART -> ONMOUNT -> ONRESUME -> ONPAUSE -> ONUNMOUNT -> ONSTOP
 - lifecycle callback、ops context、`this_page_*` 返回值和 route `user_data` 不提供跨任务
   UI 所有权。
 - 清理错误只允许从 `ONPAUSE` 或 `ONSTOP` 报告。
+- 框架会在 `UNMOUNT` 删除 Page Screen 时保存最多四个可垂直滚动后代的滚动偏移，并在下一次
+  `ONMOUNT` 后恢复；每个后代用最多八层子对象索引路径定位。这样在 Page 实例生命周期内，
+  前进/返回、应用切换和屏幕暂停/恢复都能保持可见位置。页面仍需在 `ONMOUNT` 中从干净对象树
+  创建 UI，不需要保存任何 LVGL 指针。`ONNEWINTENT` 会丢弃待恢复的滚动快照，因为新参数
+  代表新的内容意图。
 
 ## 7. 独立 Screen 与转换引擎
 

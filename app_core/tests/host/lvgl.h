@@ -19,6 +19,19 @@ typedef struct _lv_event_t lv_event_t;
 typedef int32_t lv_event_code_t;
 /** @brief Fake LVGL event callback. */
 typedef void (*lv_event_cb_t)(lv_event_t *event);
+/** @brief Fake LVGL animation enable flag. */
+typedef int32_t lv_anim_enable_t;
+
+#define LV_ANIM_OFF 0
+
+/** @brief Return the number of children of a fake object. */
+uint32_t lv_obj_get_child_count(const lv_obj_t *obj);
+/** @brief Return one child of a fake object. */
+lv_obj_t *lv_obj_get_child(const lv_obj_t *obj, int32_t index);
+/** @brief Return the vertical scroll offset of a fake object. */
+int32_t lv_obj_get_scroll_y(const lv_obj_t *obj);
+/** @brief Set the vertical scroll offset of a fake object. */
+void lv_obj_scroll_to_y(lv_obj_t *obj, int32_t y, lv_anim_enable_t anim);
 
 /** @brief Fake inclusive LVGL rectangle. */
 typedef struct lv_area_t

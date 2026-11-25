@@ -283,6 +283,14 @@ Resource placement rules:
 - Lifecycle callbacks, ops context, `this_page_*` return values and route
   `user_data` do not provide cross-task UI ownership.
 - Cleanup errors may only be reported from `ONPAUSE` or `ONSTOP`.
+- The framework preserves the vertical scroll offsets of up to four scrollable
+  descendants when a Page Screen is deleted during `UNMOUNT`, and restores them
+  after the next `ONMOUNT`. Each descendant is addressed by a child-index path of
+  at most eight levels. This keeps the visible position across back/forward
+  navigation, app switching and screen pause/resume for the lifetime of the Page
+  instance. Pages still create their UI from a clean tree in `ONMOUNT`; no page
+  code needs to retain LVGL pointers. `ONNEWINTENT` discards a pending scroll
+  snapshot because new arguments define a new content intent.
 
 ## 7. Per-Page Screen and Transition Engine
 
